@@ -7,6 +7,8 @@ import type {
 	AssetId,
 	ExportOptions,
 	ExportPlan,
+	FormValue,
+	FormValues,
 	PageId,
 	PageRef,
 	PageSize,
@@ -46,6 +48,11 @@ export interface DocState {
 	readonly sources: readonly Source[];
 	readonly pages: readonly PageRef[];
 	readonly assets: readonly Asset[];
+	/**
+	 * Form answers per open source (source id -> field name -> value). Only sources in
+	 * `sources` appear; a source's answers leave with its last page and come back on undo.
+	 */
+	readonly formValues: FormValues;
 	/** Selected page ids. Not part of undo history. */
 	readonly selection: ReadonlySet<PageId>;
 	/** Anchor for shift-range selection, or null. */
@@ -103,6 +110,13 @@ export interface DocStore {
 	removeStamp(pageId: PageId, stampId: string): boolean;
 	addAsset(asset: Asset): void;
 	removeAsset(id: AssetId, opts?: { cascade?: boolean }): boolean;
+	/**
+	 * Answer one form field of an open source. One step "Fill form field"; consecutive
+	 * calls for the same field merge into that step. Throws on an unknown source.
+	 */
+	setFormValue(sourceId: SourceId, fieldName: string, value: FormValue): boolean;
+	/** Drop every answer typed into one source's form. One step "Clear form answers". */
+	clearFormValues(sourceId: SourceId): boolean;
 	clear(): boolean;
 	/** Drop everything including history; releases all sources. Not undoable. */
 	reset(): void;
@@ -138,6 +152,7 @@ interface Doc {
 	readonly sources: readonly Source[];
 	readonly pages: readonly PageRef[];
 	readonly assets: readonly Asset[];
+	readonly formValues: FormValues;
 }
 
 interface Entry {
@@ -148,7 +163,18 @@ interface Entry {
 	selAfter: ReadonlySet<PageId>;
 }
 
-const EMPTY_DOC: Doc = Object.freeze({ sources: [], pages: [], assets: [] });
+const EMPTY_VALUES: FormValues = Object.freeze({});
+const EMPTY_DOC: Doc = Object.freeze({ sources: [], pages: [], assets: [], formValues: EMPTY_VALUES });
+
+const HIGHLIGHT_COLORS = ['yellow', 'green', 'pink'];
+
+function isFormValue(v: unknown): v is FormValue {
+	return typeof v === 'string' || typeof v === 'boolean' || (Array.isArray(v) && v.every((x) => typeof x === 'string'));
+}
+
+function copyValue(v: FormValue): FormValue {
+	return Array.isArray(v) ? Object.freeze([...v]) as string[] : v;
+}
 const EMPTY_SET: ReadonlySet<PageId> = new Set();
 
 function plural(n: number, one: string, many: string): string {
@@ -204,6 +230,8 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 	const listeners = new Set<(s: DocState) => void>();
 
 	let gesture: { label: string; doc: Doc; sel: ReadonlySet<PageId> } | null = null;
+	/** The undo entry the last setFormValue created, and for which field, so the next edit of it can merge. */
+	let fillStep: { entry: Entry; sourceId: SourceId; field: string } | null = null;
 	let batchDepth = 0;
 	let pendingNotify = false;
 
@@ -216,6 +244,7 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 			sources: doc.sources,
 			pages: doc.pages,
 			assets: doc.assets,
+			formValues: doc.formValues,
 			selection,
 			anchor,
 			canUndo: !!u && !gesture,
@@ -248,7 +277,10 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 		return (id: string) => s.has(id);
 	};
 
-	/** Drop sources without pages, add back registry sources that pages need. */
+	/**
+	 * Drop sources without pages (and their form answers), add back registry sources
+	 * that pages need.
+	 */
 	function normalize(d: Doc): Doc {
 		const used = new Set(d.pages.map((p) => p.sourceId));
 		let sources = d.sources;
@@ -256,7 +288,14 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 		const have = new Set(sources.map((s) => s.id));
 		const missing = [...used].filter((id) => !have.has(id));
 		if (missing.length) sources = [...sources, ...missing.map((id) => registry.get(id)!)];
-		return sources === d.sources ? d : { ...d, sources };
+		let formValues = d.formValues;
+		const stale = Object.keys(formValues).filter((id) => !used.has(id));
+		if (stale.length) {
+			const next: FormValues = {};
+			for (const [id, v] of Object.entries(formValues)) if (used.has(id)) next[id] = v;
+			formValues = Object.freeze(next);
+		}
+		return sources === d.sources && formValues === d.formValues ? d : { ...d, sources, formValues };
 	}
 
 	/** Release sources that neither the document nor any history entry references. */
@@ -286,6 +325,7 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 	}
 
 	function pushEntry(label: string, before: Doc, selBefore: ReadonlySet<PageId>): void {
+		fillStep = null;
 		redoStack = [];
 		undoStack.push({ label, before, after: doc, selBefore, selAfter: selection });
 		if (undoStack.length > maxHistory) undoStack.splice(0, undoStack.length - maxHistory);
@@ -334,6 +374,8 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 	function checkStamp(d: Doc, s: Stamp): void {
 		if (s.kind === 'image' && !d.assets.some((a) => a.id === s.assetId))
 			throw new Error(`DocStore: unknown asset ${s.assetId}`);
+		if (s.kind === 'highlight' && !HIGHLIGHT_COLORS.includes(s.color))
+			throw new Error(`DocStore: unknown highlight colour ${s.color}`);
 	}
 
 	function spliceIn(d: Doc, refs: PageRef[], at: number): Doc {
@@ -556,6 +598,52 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 		}));
 	}
 
+	function setFormValue(sourceId: SourceId, fieldName: string, value: FormValue): boolean {
+		if (!doc.sources.some((s) => s.id === sourceId)) throw new Error(`DocStore: unknown source ${sourceId}`);
+		if (typeof fieldName !== 'string' || fieldName === '') throw new Error('DocStore: form field name must be a non-empty string');
+		if (!isFormValue(value)) throw new TypeError('DocStore: a form value is a string, a boolean or a list of strings');
+		const current = doc.formValues[sourceId]?.[fieldName];
+		if (current !== undefined && valuesEqual(current, value)) return false;
+		const top = undoStack[undoStack.length - 1];
+		const merge =
+			!gesture &&
+			fillStep !== null &&
+			fillStep.entry === top &&
+			top.after === doc &&
+			redoStack.length === 0 &&
+			fillStep.sourceId === sourceId &&
+			fillStep.field === fieldName;
+		const apply = (d: Doc): Doc => ({
+			...d,
+			formValues: Object.freeze({
+				...d.formValues,
+				[sourceId]: Object.freeze({ ...d.formValues[sourceId], [fieldName]: copyValue(value) })
+			})
+		});
+		if (merge) {
+			// Same field again: extend the existing step instead of adding one.
+			doc = apply(doc);
+			top.after = doc;
+			top.selAfter = selection;
+			lastEvent = { kind: 'do', label: top.label };
+			changed();
+			return true;
+		}
+		const ok = run('Fill form field', apply);
+		if (ok && !gesture) fillStep = { entry: undoStack[undoStack.length - 1], sourceId, field: fieldName };
+		return ok;
+	}
+
+	function clearFormValues(sourceId: SourceId): boolean {
+		return run('Clear form answers', (d) => {
+			const values = d.formValues[sourceId];
+			if (!values || Object.keys(values).length === 0) return null;
+			const next: FormValues = { ...d.formValues };
+			delete next[sourceId];
+			return { ...d, formValues: Object.freeze(next) };
+		});
+	}
+
 	function clear(): boolean {
 		return run('Clear workspace', (d) => (d.pages.length || d.assets.length ? EMPTY_DOC : null));
 	}
@@ -569,6 +657,7 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 		selection = EMPTY_SET;
 		anchor = null;
 		lastEvent = null;
+		fillStep = null;
 		sweep();
 		changed();
 	}
@@ -630,6 +719,7 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 		if (gesture) return false;
 		const e = undoStack.pop();
 		if (!e) return false;
+		fillStep = null;
 		redoStack.push(e);
 		doc = e.before;
 		restoreSelection(e.selBefore);
@@ -643,6 +733,7 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 		if (gesture) return false;
 		const e = redoStack.pop();
 		if (!e) return false;
+		fillStep = null;
 		undoStack.push(e);
 		doc = e.after;
 		restoreSelection(e.selAfter);
@@ -713,10 +804,16 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 
 	function toExportPlan(opts: ExportOptions, ids?: Iterable<PageId>): ExportPlan {
 		const set = ids === undefined ? null : toSet(ids);
-		return {
-			pages: doc.pages.filter((p) => !set || set.has(p.id)),
-			options: { ...opts }
-		};
+		const pages = doc.pages.filter((p) => !set || set.has(p.id));
+		const plan: ExportPlan = { pages, options: { ...opts } };
+		// Answers of the sources this plan uses; omitted when there are none.
+		const used = new Set(pages.map((p) => p.sourceId));
+		const formValues: FormValues = {};
+		for (const [id, v] of Object.entries(doc.formValues)) {
+			if (used.has(id) && Object.keys(v).length) formValues[id] = v;
+		}
+		if (Object.keys(formValues).length) plan.formValues = formValues;
+		return plan;
 	}
 
 	return {
@@ -759,6 +856,7 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 		},
 		markClean() {
 			cleanDoc = doc;
+			fillStep = null;
 			changed();
 		},
 		sourceOf,
@@ -778,6 +876,8 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 		removeStamp,
 		addAsset,
 		removeAsset,
+		setFormValue,
+		clearFormValues,
 		clear,
 		reset,
 		select,

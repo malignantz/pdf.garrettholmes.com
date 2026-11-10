@@ -100,6 +100,7 @@ export function createEngine(options: { createWorker?: () => WorkerLike } = {}):
 		blankPage: (size) => call('blankPage', [size]),
 		exportPlan: (plan, sources, assets) => call('exportPlan', [plan, sources, assets]),
 		unsupportedChars: (text) => call('unsupportedChars', [text]),
+		formFields: (source) => call('formFields', [source]),
 		terminate: () => reset('The PDF engine was stopped.')
 	};
 }

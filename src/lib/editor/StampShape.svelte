@@ -4,7 +4,7 @@
 	import type { Snippet } from 'svelte';
 	import type { HTMLAttributes } from 'svelte/elements';
 	import type { Asset, Stamp } from '../core/types';
-	import { acquireAssetUrl, markSvg, releaseAssetUrl, stampStyle } from './stamp-view';
+	import { HIGHLIGHT_CSS, acquireAssetUrl, markSvg, releaseAssetUrl, stampStyle } from './stamp-view';
 
 	interface Props extends Omit<HTMLAttributes<HTMLDivElement>, 'children'> {
 		stamp: Stamp;
@@ -52,6 +52,10 @@
 		</svg>
 	{:else if stamp.kind === 'text'}
 		<span class="txt">{stamp.text}</span>
+	{:else if stamp.kind === 'highlight'}
+		<span class="fill" style="background:{HIGHLIGHT_CSS[stamp.color]}"></span>
+	{:else if stamp.kind === 'redact'}
+		<span class="fill" style="background:#000"></span>
 	{/if}
 	{@render children?.()}
 </div>
@@ -99,6 +103,12 @@
 	}
 
 	.txt {
+		pointer-events: none;
+	}
+
+	.fill {
+		position: absolute;
+		inset: 0;
 		pointer-events: none;
 	}
 </style>

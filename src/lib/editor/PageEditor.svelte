@@ -461,7 +461,7 @@
 			const h = drag.handle!;
 			const cx = h === 'nw' || h === 'sw' ? drag.box.x : drag.box.x + drag.box.w;
 			const cy = h === 'nw' || h === 'ne' ? drag.box.y : drag.box.y + drag.box.h;
-			next = resizeBox(drag.box, h, { x: cx + f.x - drag.start.x, y: cy + f.y - drag.start.y }, true);
+			next = resizeBox(drag.box, h, { x: cx + f.x - drag.start.x, y: cy + f.y - drag.start.y }, s.kind !== 'highlight' && s.kind !== 'redact');
 		}
 		if (s.kind === 'text') {
 			if (drag.kind === 'move') store.updateStamp(page.id, s.id, { x: next.x, y: next.y });

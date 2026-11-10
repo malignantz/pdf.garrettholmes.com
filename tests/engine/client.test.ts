@@ -72,6 +72,7 @@ describe('client ↔ worker protocol', () => {
 		expect(res.checks.every((c) => c.ok)).toBe(true);
 		// Sources the store holds survive the call intact.
 		expect(src.bytes.byteLength).toBe(sourceBytes);
+		expect(await client.formFields(src)).toEqual([]);
 		expect(spawned).toBe(1);
 		client.terminate();
 	}, 60_000);

@@ -1,9 +1,10 @@
 /// <reference lib="webworker" />
 /**
  * Web Worker entry. Every engine file is served from our own origin: qpdf.wasm, the
- * stamp font and PDF.js's worker come in as Vite `?url` assets. PDF.js runs in a
- * nested worker of its own (importing its worker module here would make it take over
- * this worker's message port).
+ * stamp font and PDF.js's worker come in as Vite `?url` assets; MuPDF's wasm is
+ * emitted by Vite from the package's own `new URL(..., import.meta.url)` (see
+ * mupdf.ts). PDF.js runs in a nested worker of its own (importing its worker
+ * module here would make it take over this worker's message port).
  */
 
 import qpdfWasmUrl from '@neslinesli93/qpdf-wasm/dist/qpdf.wasm?url';

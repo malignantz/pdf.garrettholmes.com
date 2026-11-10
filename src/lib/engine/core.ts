@@ -5,8 +5,14 @@
  *
  *   openPdf     qpdf --decrypt rewrite → PDF.js geometry
  *   openImage   pdf-lib one-page PDF → qpdf --check
- *   exportPlan  qpdf --empty --pages (+ --rotate) → pdf-lib stamps (only if any)
- *               → qpdf finalize (compress / metadata / AES-256) → verify
+ *   exportPlan  qpdf --empty --pages (+ --rotate) → [forms] → [redact]
+ *               → [stamps + numbering] → [shrink →] qpdf finalize → verify
+ *
+ * Stages in brackets run only when the plan asks for them. Each lives in its own
+ * module (forms.ts, redact.ts, stamps.ts + numbering.ts, shrink.ts) and gets the
+ * shared `EngineDeps`; this file only wires them together and enforces the rules
+ * that span stages (redaction forces flatten and metadata removal, a target size
+ * forces compression).
  */
 
 import type {
@@ -14,6 +20,7 @@ import type {
 	Engine,
 	ExportPlan,
 	ExportResult,
+	FormValues,
 	PageRef,
 	PageSize,
 	Rotation,
@@ -21,7 +28,9 @@ import type {
 	Stamp,
 	VerifyCheck
 } from '../core/types';
+import type { EngineDeps } from './deps';
 import { EngineError, isOutOfMemory } from './errors';
+import { applyForms, detectForm, formsNeeded, listFormFields, verifyForms, type FormsContext } from './forms';
 import { StampFont } from './font';
 import { normalizeStampText, rotateSize } from './geometry';
 import {
@@ -33,8 +42,12 @@ import {
 	stripJpegMetadata,
 	type Orientation
 } from './images';
+import { mupdf as loadMupdf, type Mupdf } from './mupdf';
+import { numberingLabels, validateNumbering, verifyNumbering, type NumberingJob } from './numbering';
 import { PdfjsOpenError, inspectWithPdfjs, type PdfjsLib } from './pdfjs';
 import { QPDF_ERROR, QPDF_OK, QPDF_WARNINGS, Qpdf, type QpdfLoader, type QpdfResult } from './qpdf';
+import { applyRedactions, verifyRedactions, type RedactJob } from './redact';
+import { shrinkToTarget, type ShrinkReport } from './shrink';
 import { applyStamps, type StampJob } from './stamps';
 
 export interface EngineAssets {
@@ -43,6 +56,8 @@ export interface EngineAssets {
 	font: () => Promise<Uint8Array>;
 	/** PDF.js, already configured to run in this environment (fake worker or nested worker). */
 	pdfjs: () => Promise<PdfjsLib>;
+	/** MuPDF loader; defaults to mupdf.ts (works in Node and, once configured, in the worker). */
+	mupdf?: () => Promise<Mupdf>;
 }
 
 export interface EngineOptions {
@@ -54,6 +69,10 @@ export interface EngineOptions {
 }
 
 const SIZE_TOLERANCE = 0.5;
+/** Smallest ExportOptions.targetBytes accepted. */
+const MIN_TARGET_BYTES = 20_000;
+const STAMP_KINDS: readonly Stamp['kind'][] = ['image', 'text', 'mark', 'highlight', 'redact'];
+const HIGHLIGHT_COLORS = ['yellow', 'green', 'pink'];
 const MIN_PAGE = 3;
 const MAX_PAGE = 14400;
 
@@ -80,6 +99,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		});
 		return pdfLibP;
 	};
+	const deps: EngineDeps = { qpdf, mupdf: assets.mupdf ?? loadMupdf, pdfjs, pdfLib, font };
 
 	async function checkStructure(bytes: Uint8Array, what: string) {
 		const res = await qpdf.run({ args: ['--check', '/c.pdf'], inputs: { '/c.pdf': bytes } });
@@ -224,6 +244,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 				if (info.hasXfa) {
 					notes.push('This file contains an XFA form. Its pages may look different here than in Adobe Reader.');
 				}
+				const hasForm = await detectForm(deps, out);
 				return {
 					id: newId(),
 					name,
@@ -232,7 +253,8 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 					pages: info.pages,
 					originalSize: bytes.length,
 					wasEncrypted,
-					notes
+					notes,
+					...(hasForm ? { hasForm: true } : {})
 				};
 			}),
 
@@ -299,15 +321,28 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 
 		unsupportedChars: (text) => guard(() => font.unsupportedChars(text)),
 
-		exportPlan: (plan, sources, assets) => guard(() => exportPlan(plan, sources, assets))
+		exportPlan: (plan, sources, assets) => guard(() => exportPlan(plan, sources, assets)),
+
+		formFields: (source) => guard(async () => (source.hasForm === true ? listFormFields(deps, source) : []))
 	};
 
 	async function exportPlan(plan: ExportPlan, sources: Source[], assetList: Asset[]): Promise<ExportResult> {
 		const started = now();
-		const { pages, options } = plan;
+		const { pages } = plan;
 		if (pages.length === 0) throw new EngineError('unsupported', 'There are no pages to export.');
+		const hasRedaction = pages.some((p) => p.stamps.some((s) => s.kind === 'redact'));
+		const target = plan.options.targetBytes;
+		// Rules that span stages: redaction strips metadata and flattens forms; a size target compresses.
+		const options = {
+			...plan.options,
+			stripMetadata: plan.options.stripMetadata || hasRedaction,
+			flattenForms: plan.options.flattenForms === true || hasRedaction,
+			compress: plan.options.compress || target !== undefined
+		};
 		const password = options.password;
 		if (password !== undefined) validatePassword(password);
+		if (target !== undefined) validateTarget(target);
+		if (options.numbering !== undefined) validateNumbering(options.numbering);
 
 		// Validate the plan and work out what every output page must look like.
 		const byId = new Map(sources.map((s) => [s.id, s]));
@@ -331,6 +366,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			expected.push(rotateSize(src.pages[ref.pageIndex], ref.rotation));
 			validateStamps(i, ref.stamps, assetIds);
 		}
+		const formValues = usedFormValues(plan.formValues, byId, fileOf);
 		const total = used.reduce((n, s) => n + s.bytes.length, 0);
 		if (total > maxExport) throw new EngineError('too-large', 'These files are too large to combine on this device.');
 		for (const [i, ref] of pages.entries()) {
@@ -341,6 +377,16 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 					throw new EngineError('unsupported', `Text on page ${i + 1} uses characters the stamp font cannot draw: ${bad}`);
 				}
 			}
+		}
+		let numbering: NumberingJob | null = null;
+		if (options.numbering !== undefined) {
+			const labels = numberingLabels(options.numbering, pages.length);
+			if (labels.every((l) => l === null)) {
+				throw new EngineError('unsupported', 'Every page is set to be left without a number. Number fewer cover pages.');
+			}
+			const bad = await font.unsupportedChars(labels.filter((l) => l !== null).join(''));
+			if (bad) throw new EngineError('unsupported', `The page numbers use characters the stamp font cannot draw: ${bad}`);
+			numbering = { numbering: options.numbering, labels, expected };
 		}
 
 		const warnings: string[] = [];
@@ -353,7 +399,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		// (a) Assemble.
 		const inputs: Record<string, Uint8Array> = {};
 		for (const s of used) inputs[fileOf.get(s.id)!] = s.bytes;
-		const assembled = await runOrFail(
+		let bytes = await runOrFail(
 			{
 				args: ['--empty', '--pages', ...pageSelection(pages, fileOf), '--', ...rotateArgs(pages), '/out/assembled.pdf'],
 				inputs,
@@ -363,50 +409,107 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			warnings
 		);
 
-		// (b) Stamps.
-		let stamped = assembled;
+		// (b) Forms: answers, appearances, flatten.
+		const formsCtx: FormsContext = {
+			pages: pages.map((ref) => ({ source: byId.get(ref.sourceId)!, pageIndex: ref.pageIndex, rotation: ref.rotation })),
+			formValues,
+			flatten: options.flattenForms
+		};
+		const formsRan = formsNeeded(formsCtx);
+		if (formsRan) bytes = await applyForms(deps, bytes, formsCtx);
+
+		// (c) Redaction (verifies itself before returning).
+		const redactJobs: RedactJob[] = [];
+		const allowedText: string[][] = [];
+		pages.forEach((ref, i) => {
+			const boxes = ref.stamps.flatMap((s) => (s.kind === 'redact' ? [s.box] : []));
+			if (boxes.length === 0) return;
+			redactJobs.push({ pageIndex: i, boxes, expected: expected[i] });
+			allowedText.push([
+				...ref.stamps.flatMap((s) => (s.kind === 'text' ? normalizeStampText(s.text).split('\n').filter(Boolean) : [])),
+				...(numbering?.labels[i] ? [numbering.labels[i]!] : [])
+			]);
+		});
+		if (redactJobs.length) bytes = await applyRedactions(deps, bytes, redactJobs);
+
+		// (d) Stamps and page numbers.
 		const jobs: StampJob[] = [];
 		pages.forEach((ref, i) => {
-			const stamps = ref.stamps.filter((s) => s.kind !== 'text' || normalizeStampText(s.text).replace(/\n/g, '') !== '');
+			const stamps = ref.stamps.filter(
+				(s) => s.kind !== 'redact' && (s.kind !== 'text' || normalizeStampText(s.text).replace(/\n/g, '') !== '')
+			);
 			if (stamps.length) jobs.push({ pageIndex: i, stamps, expected: expected[i] });
 		});
-		if (jobs.length) {
+		if (jobs.length || numbering) {
 			const [lib, fk] = await Promise.all([pdfLib(), font.fontkit()]);
-			stamped = await applyStamps({ lib, fontkit: fk, fontBytes: () => font.bytes() }, assembled, jobs, assetList);
+			bytes = await applyStamps(
+				{ lib, fontkit: fk, fontBytes: () => font.bytes() },
+				bytes,
+				jobs,
+				assetList,
+				numbering ?? undefined
+			);
 		}
 
-		// (c) Finalize.
-		const finalArgs: string[] = ['/in/doc.pdf'];
-		const finalInputs: Record<string, Uint8Array> = { '/in/doc.pdf': stamped };
-		if (options.compress) {
-			finalArgs.push('--object-streams=generate', '--compress-streams=y', '--recompress-flate');
+		// (e) [Shrink →] finalize.
+		const finalize = (b: Uint8Array) => finalizeBytes(b, options, warnings);
+		let final: Uint8Array;
+		let shrink: ShrinkReport | undefined;
+		const stageChecks: VerifyCheck[] = [];
+		if (target !== undefined) {
+			const r = await shrinkToTarget(deps, bytes, target, finalize);
+			final = r.bytes;
+			shrink = r.shrink;
+			stageChecks.push(...r.checks);
+		} else {
+			final = await finalize(bytes);
 		}
-		if (options.stripMetadata) {
-			const update = await metadataRemoval(stamped);
-			if (update) {
-				finalInputs['/in/update.json'] = update;
-				finalArgs.push('--update-from-json=/in/update.json');
-			}
-			finalArgs.push('--remove-info', '--remove-metadata');
-		}
-		if (password !== undefined) {
-			finalArgs.push('--encrypt', `--user-password=${password}`, `--owner-password=${password}`, '--bits=256', '--');
-		}
-		finalArgs.push('/out/final.pdf');
-		const final = await runOrFail({ args: finalArgs, inputs: finalInputs, outputs: ['/out/final.pdf'] }, '/out/final.pdf', warnings);
 
-		// (d) Verify.
+		// (f) Verify.
 		const checks = await verify(final, expected, password, options.stripMetadata);
+		if (formsRan) checks.push(...(await verifyForms(deps, final, formsCtx, password)));
+		if (redactJobs.length) checks.push(...(await verifyRedactions(deps, final, redactJobs, allowedText, password)));
+		if (numbering) checks.push(...(await verifyNumbering(deps, final, numbering.labels, password)));
+		checks.push(...stageChecks);
 		if (!checks.every((c) => c.ok)) {
 			throw new EngineError('verification-failed', 'The exported file did not pass its checks, so it was not saved.', checks);
 		}
-		return {
+		const result: ExportResult = {
 			bytes: final,
 			pageCount: pages.length,
 			checks,
 			warnings: [...new Set(warnings)],
 			elapsedMs: Math.round(now() - started)
 		};
+		if (shrink) result.shrink = shrink;
+		return result;
+	}
+
+	/** qpdf finalize: compression, metadata removal, AES-256. */
+	async function finalizeBytes(
+		bytes: Uint8Array,
+		options: { compress: boolean; stripMetadata: boolean; password?: string },
+		warnings: string[]
+	): Promise<Uint8Array> {
+		const finalArgs: string[] = ['/in/doc.pdf'];
+		const finalInputs: Record<string, Uint8Array> = { '/in/doc.pdf': bytes };
+		if (options.compress) {
+			finalArgs.push('--object-streams=generate', '--compress-streams=y', '--recompress-flate');
+		}
+		if (options.stripMetadata) {
+			const update = await metadataRemoval(bytes);
+			if (update) {
+				finalInputs['/in/update.json'] = update;
+				finalArgs.push('--update-from-json=/in/update.json');
+			}
+			finalArgs.push('--remove-info', '--remove-metadata');
+		}
+		if (options.password !== undefined) {
+			const pw = options.password;
+			finalArgs.push('--encrypt', `--user-password=${pw}`, `--owner-password=${pw}`, '--bits=256', '--');
+		}
+		finalArgs.push('/out/final.pdf');
+		return runOrFail({ args: finalArgs, inputs: finalInputs, outputs: ['/out/final.pdf'] }, '/out/final.pdf', warnings);
 	}
 
 	async function runOrFail(
@@ -652,11 +755,13 @@ function validateStamps(pageNo: number, stamps: Stamp[], assetIds: Set<string>) 
 	const inUnit = (v: number) => v >= -eps && v <= 1 + eps;
 	for (const s of stamps) {
 		const bad = () => new EngineError('unsupported', `A stamp on page ${pageNo + 1} is outside the page. Move it onto the page and try again.`);
+		if (!STAMP_KINDS.includes(s?.kind)) throw new EngineError('internal', `A stamp on page ${pageNo + 1} is of an unknown kind.`);
 		if (s.kind === 'text') {
 			if (typeof s.text !== 'string' || !fin(s.x, s.y, s.size)) throw bad();
 			if (!inUnit(s.x) || !inUnit(s.y) || !(s.size > 0 && s.size <= 1)) throw bad();
 			if (!['black', 'blue', 'red'].includes(s.color)) throw new EngineError('internal', 'Unknown text color.');
 		} else {
+			// image, mark, highlight, redact: a box inside the page with a positive size.
 			const b = s.box;
 			if (!b || !fin(b.x, b.y, b.w, b.h)) throw bad();
 			if (!(b.w > 0 && b.h > 0) || !inUnit(b.x) || !inUnit(b.y) || b.x + b.w > 1 + eps || b.y + b.h > 1 + eps) throw bad();
@@ -664,8 +769,36 @@ function validateStamps(pageNo: number, stamps: Stamp[], assetIds: Set<string>) 
 				throw new EngineError('internal', `A stamp on page ${pageNo + 1} uses an image that is missing.`);
 			}
 			if (s.kind === 'mark' && !['check', 'cross', 'dot'].includes(s.mark)) throw new EngineError('internal', 'Unknown mark.');
+			if (s.kind === 'highlight' && !HIGHLIGHT_COLORS.includes(s.color)) throw new EngineError('internal', 'Unknown highlight colour.');
 		}
 	}
+}
+
+function validateTarget(target: number) {
+	if (typeof target !== 'number' || !Number.isInteger(target) || target < MIN_TARGET_BYTES) {
+		throw new EngineError('unsupported', `Choose a target size of at least ${MIN_TARGET_BYTES / 1000} KB.`);
+	}
+}
+
+/**
+ * plan.formValues limited to the sources this plan uses. Every key must be an open
+ * source and every value a FormValue; answers for open sources the plan does not
+ * use are dropped.
+ */
+function usedFormValues(values: FormValues | undefined, open: Map<string, Source>, usedFiles: Map<string, string>): FormValues {
+	const out: FormValues = {};
+	if (values === undefined) return out;
+	if (typeof values !== 'object' || values === null) throw new EngineError('internal', 'The form answers are malformed.');
+	for (const [sourceId, fields] of Object.entries(values)) {
+		if (!open.has(sourceId)) throw new EngineError('internal', 'Form answers refer to a file that is no longer open.');
+		if (typeof fields !== 'object' || fields === null) throw new EngineError('internal', 'The form answers are malformed.');
+		for (const v of Object.values(fields)) {
+			const ok = typeof v === 'string' || typeof v === 'boolean' || (Array.isArray(v) && v.every((x) => typeof x === 'string'));
+			if (!ok) throw new EngineError('internal', 'The form answers are malformed.');
+		}
+		if (usedFiles.has(sourceId) && Object.keys(fields).length > 0) out[sourceId] = fields;
+	}
+	return out;
 }
 
 function validatePassword(pw: string) {

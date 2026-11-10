@@ -18,7 +18,8 @@ Options: `maxHistory` (default 200), `onSourceReleased(sourceId)`, `generateId` 
 
 ## State (`store.state`, immutable, replaced on every change)
 
-`sources`, `pages`, `assets`, `selection` (`ReadonlySet<PageId>`), `anchor`,
+`sources`, `pages`, `assets`, `formValues` (`FormValues`: source id -> field name -> value),
+`selection` (`ReadonlySet<PageId>`), `anchor`,
 `canUndo`, `canRedo`, `undoLabel`, `redoLabel`, `lastEvent` (`{kind: 'do'|'undo'|'redo', label}`,
 use it for "Undid: Rotate 3 pages" toasts), `isDirty`.
 
@@ -26,6 +27,9 @@ use it for "Undid: Rotate 3 pages" toasts), `isDirty`.
   Key `{#each}` by `page.id`.
 - `sources` lists only sources that have pages. Emptied sources disappear from state but their
   bytes stay alive while undo/redo can still bring them back (see GC).
+- `formValues` only has entries for sources in `sources`. When a source's last page goes, its
+  answers go with it (undo brings both back); once the source is garbage-collected they are gone.
+  Answers belong to the source, so duplicated pages share them.
 - Never mutate anything you read from state.
 
 ## Commands
@@ -44,12 +48,14 @@ step and does not notify. Unknown ids are ignored.
 | `duplicatePages(ids) -> PageId[]` | each copy goes right after its original; new page ids; stamps deep-copied with new stamp ids. Returns new ids in document order. |
 | `reversePages(ids?)` | no ids: reverse all. With ids: those pages swap places among their own positions. |
 | `sortBySource()` | stable group by source order (order of `state.sources`). |
-| `addStamp(pageId, stamp) -> stampId` | `id` optional. Throws on unknown page, or image stamp whose asset is missing. |
+| `addStamp(pageId, stamp) -> stampId` | `id` optional. Any stamp kind (`image`, `text`, `mark`, `highlight`, `redact`). Throws on unknown page, image stamp whose asset is missing, or unknown highlight colour. |
 | `updateStamp(pageId, stampId, patch)` | shallow merge; `id`/`kind` and keys foreign to the stamp kind are ignored; equal values are a no-op. |
 | `removeStamp(pageId, stampId)` | |
 | `addAsset(asset)` | throws on duplicate id. |
 | `removeAsset(id, {cascade?})` | **Refuses (returns false) if any stamp uses the asset**, unless `cascade: true`, which also removes those stamps in the same step ("Remove signature and 2 stamps"). Check `assetUsage(id)` first to ask the user. |
-| `clear()` | removes pages, sources and assets; undoable. |
+| `setFormValue(sourceId, fieldName, value)` | answer one form field (`string`, `boolean` or `string[]`, see `FormValue`). Step "Fill form field"; **consecutive calls for the same source and field merge into one step** (typing), until another command, undo/redo or `markClean()`. Equal value: no-op. Throws on a source not in `sources`, an empty field name or a bad value. Arrays are copied. |
+| `clearFormValues(sourceId)` | drops every answer of that source. Step "Clear form answers"; no-op (false) when it has none. |
+| `clear()` | removes pages, sources, assets and form answers; undoable. |
 | `reset()` | new workspace: wipes everything **and history**, releases all sources. Not undoable. |
 
 ### Index semantics (`movePages`, `insertPages`, `addSource`)
@@ -117,7 +123,8 @@ swallowed.
 already released), `assetUsage(assetId)`,
 `toExportPlan(options, ids?)`: all pages, or only `ids` **in document order** (pass
 `store.state.selection` to extract the selected pages; an empty iterable gives an empty plan, so
-check `plan.pages.length`). The returned `pages` array is a fresh copy.
+check `plan.pages.length`). The returned `pages` array is a fresh copy. `plan.formValues` holds the
+answers of the sources the plan's pages use, and is omitted when there are none.
 
 ## Svelte adapter
 

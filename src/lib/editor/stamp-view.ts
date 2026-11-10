@@ -6,7 +6,7 @@
  *  - images use one object URL per asset, reference-counted.
  */
 
-import type { Asset, AssetId, Stamp } from '../core/types';
+import type { Asset, AssetId, HighlightColor, Stamp } from '../core/types';
 import { MARKS, STAMP_COLORS, STAMP_FONT } from '../engine/geometry';
 import fontUrl from '../engine/fonts/NotoSans-Regular.ttf?url';
 
@@ -42,6 +42,13 @@ export function inkRgb(color: 'black' | 'blue'): [number, number, number] {
 	const [r, g, b] = STAMP_COLORS[color];
 	return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
 }
+
+/** On-screen fill of a highlight stamp (the export blends with Multiply; this is a preview). */
+export const HIGHLIGHT_CSS: Record<HighlightColor, string> = {
+	yellow: 'rgb(255 230 0 / 0.4)',
+	green: 'rgb(80 220 100 / 0.4)',
+	pink: 'rgb(255 110 180 / 0.4)'
+};
 
 export const TEXT_LINE_HEIGHT = STAMP_FONT.lineHeight;
 
@@ -120,6 +127,8 @@ export function stampName(s: Stamp, assets: readonly Asset[]): string {
 		return t ? `Text "${t.length > 40 ? t.slice(0, 40) + '…' : t}"` : 'Empty text';
 	}
 	if (s.kind === 'mark') return s.mark === 'check' ? 'Check mark' : s.mark === 'cross' ? 'Cross mark' : 'Dot';
+	if (s.kind === 'highlight') return 'Highlight';
+	if (s.kind === 'redact') return 'Redaction';
 	const a = assets.find((x) => x.id === s.assetId);
 	return a?.kind === 'initials' ? 'Initials' : a?.kind === 'signature' ? 'Signature' : 'Image';
 }

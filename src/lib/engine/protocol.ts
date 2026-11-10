@@ -20,7 +20,14 @@ export type EngineResponse =
 	| { tag: typeof TAG; id: number; ok: true; value: unknown }
 	| { tag: typeof TAG; id: number; ok: false; error: EngineErrorShape };
 
-export const METHODS: readonly EngineMethod[] = ['openPdf', 'openImage', 'blankPage', 'exportPlan', 'unsupportedChars'];
+export const METHODS: readonly EngineMethod[] = [
+	'openPdf',
+	'openImage',
+	'blankPage',
+	'exportPlan',
+	'unsupportedChars',
+	'formFields'
+];
 
 export function isRequest(data: unknown): data is EngineRequest {
 	const d = data as EngineRequest | null;

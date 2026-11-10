@@ -4,7 +4,7 @@
  * so everything here is unit-tested in tests/workspace/.
  */
 
-import type { PageId, PageRef, Source } from '../core/types';
+import type { PageId, PageRef, Source, VerifyCheck } from '../core/types';
 
 // ---------------------------------------------------------------- drop slots
 
@@ -306,7 +306,7 @@ export function sourceLabel(s: Source | undefined): string {
  * qpdf or PDF.js. The engine's own wording goes in a "Details" disclosure.
  */
 export function plainCheck(
-	c: { name: 'structure' | 'page-count' | 'page-sizes' | 'reopen' | 'encryption'; ok: boolean; detail: string },
+	c: VerifyCheck,
 	pageCount: number
 ): string {
 	const pages = plural(pageCount, 'page');
@@ -327,5 +327,19 @@ export function plainCheck(
 		case 'encryption':
 			if (/no password/i.test(c.detail) && c.ok) return 'It has no password, as you chose.';
 			return c.ok ? 'It opens only with your password.' : 'The password protection is not right.';
+		case 'redaction':
+			return c.ok ? 'Nothing can be read under the blacked-out areas.' : 'Something could still be read under a blacked-out area.';
+		case 'forms':
+			return c.ok ? 'Every form answer is in the file.' : 'Some form answers did not make it into the file.';
+		case 'numbering':
+			return c.ok ? 'Every numbered page carries its number.' : 'Some page numbers are missing.';
+		case 'visual':
+			return c.ok ? 'Every page still looks the same after shrinking.' : 'Some pages looked different after shrinking.';
+		case 'target-size':
+			// ok also when the target was out of reach: the smallest verified file is still delivered.
+			if (!c.ok) return 'The file size could not be checked.';
+			return /could not be reached/i.test(c.detail)
+				? 'It could not be made as small as you asked; this is the smallest version.'
+				: 'It fits the size you asked for.';
 	}
 }

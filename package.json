@@ -34,6 +34,7 @@
 		"@cantoo/fontkit": "^2.0.12",
 		"@cantoo/pdf-lib": "^2.11.1",
 		"@neslinesli93/qpdf-wasm": "^0.3.1",
+		"mupdf": "^1.28.6",
 		"pdfjs-dist": "^6.5.438"
 	},
 	"license": "AGPL-3.0-or-later"

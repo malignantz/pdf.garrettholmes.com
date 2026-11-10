@@ -29,6 +29,7 @@ import {
 } from './geometry';
 import type { Rotation } from '../core/types';
 import { parsePng } from './images';
+import type { NumberingJob } from './numbering';
 
 export interface StampJob {
 	/** 0-based page index in the assembled file. */
@@ -57,8 +58,15 @@ export async function applyStamps(
 	deps: StampDeps,
 	bytes: Uint8Array,
 	jobs: StampJob[],
-	assets: Asset[]
+	assets: Asset[],
+	numbering?: NumberingJob
 ): Promise<Uint8Array> {
+	// Phase 2 stubs, owned by the stamps + numbering stream. Redaction boxes are not
+	// drawn here: the redact stage (redact.ts) has already applied them.
+	if (numbering) throw new EngineError('unsupported', 'Page numbers are not available yet.');
+	if (jobs.some((j) => j.stamps.some((s) => s.kind === 'highlight'))) {
+		throw new EngineError('unsupported', 'Highlights are not available yet.');
+	}
 	const { lib } = deps;
 	const { PDFDocument, PDFName, PDFArray, PDFDict, PDFRef, PDFRawStream, PDFContentStream, ParseSpeeds } = lib;
 	const ops = lib;
@@ -176,7 +184,9 @@ export async function applyStamps(
 		let fontName: string | null = null;
 
 		for (const stamp of job.stamps) {
-			if (stamp.kind === 'image') {
+			if (stamp.kind === 'redact' || stamp.kind === 'highlight') {
+				continue;
+			} else if (stamp.kind === 'image') {
 				const asset = assetById.get(stamp.assetId);
 				if (!asset) throw new EngineError('internal', 'A stamp refers to an image that is missing.');
 				let img = images.get(asset.id);
@@ -195,7 +205,7 @@ export async function applyStamps(
 				body.push(ops.pushGraphicsState(), cm(ops, m), ops.drawObject(xname), ops.popGraphicsState());
 			} else if (stamp.kind === 'mark') {
 				body.push(...markOps(ops, geom, stamp));
-			} else {
+			} else if (stamp.kind === 'text') {
 				const f = await getFont();
 				if (!fontName) {
 					fonts ??= sub('Font');

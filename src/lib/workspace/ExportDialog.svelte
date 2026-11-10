@@ -186,7 +186,12 @@
 		'page-count': 'Page count',
 		'page-sizes': 'Page sizes',
 		reopen: 'Opens cleanly',
-		encryption: 'Password'
+		encryption: 'Password',
+		redaction: 'Redaction',
+		forms: 'Form answers',
+		numbering: 'Page numbers',
+		visual: 'Pages look the same',
+		'target-size': 'File size'
 	};
 
 	function headline(r: ExportResult): string {

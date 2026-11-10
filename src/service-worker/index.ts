@@ -5,8 +5,11 @@
  * one visit the whole app, engines included, runs with no network.
  *
  * - `shell-<version>`: this version's precache; older ones are deleted on activate.
- * - Requests are served cache-first; anything same-origin that is not in the
- *   precache (rare) is fetched and kept in a runtime cache for next time.
+ * - Requests are served cache-first. A build file that is not precached is fetched
+ *   on first use and kept in `lazy` for next time. That is how MuPDF (~10 MB wasm,
+ *   listed in /_app/lazy.json) is handled: not downloaded at install, offline once
+ *   used. Build files have content-hashed names, so `lazy` survives updates; on
+ *   activate it is pruned to the files the new build still lists as lazy.
  * - A new version waits until the page asks it to take over (the "Reload" toast).
  */
 import { self } from '$app/service-worker';
@@ -14,7 +17,8 @@ import { immutable, assets, prerendered } from '$app/manifest';
 import { version } from '$app/env';
 
 const SHELL = `shell-${version}`;
-const RUNTIME = `runtime-${version}`;
+const LAZY = 'lazy';
+const LAZY_LIST = '/_app/lazy.json';
 
 // Manifest paths are relative to the base path ('' is the home page).
 const skip = new Set(['_headers', 'robots.txt']);
@@ -41,6 +45,12 @@ self.addEventListener('install', (event) => {
 			} catch {
 				// Older build without the list: those files are cached on first use instead.
 			}
+			// Kept for activate, which prunes the lazy cache against it.
+			try {
+				await cache.add(new Request(LAZY_LIST, { cache: 'no-store' }));
+			} catch {
+				// No list: activate keeps the lazy cache as it is.
+			}
 			// First install: nothing to replace, so take over at once.
 			if (!self.registration.active) await self.skipWaiting();
 		})()
@@ -51,8 +61,9 @@ self.addEventListener('activate', (event) => {
 	event.waitUntil(
 		(async () => {
 			for (const key of await caches.keys()) {
-				if (key !== SHELL && key !== RUNTIME) await caches.delete(key);
+				if (key !== SHELL && key !== LAZY) await caches.delete(key);
 			}
+			await pruneLazy();
 			await self.clients.claim();
 		})()
 	);
@@ -102,13 +113,28 @@ async function respond(req: Request, url: URL): Promise<Response> {
 		}
 	}
 
-	const runtime = await caches.open(RUNTIME);
-	const cached = await runtime.match(req);
+	const lazy = await caches.open(LAZY);
+	const cached = await lazy.match(url.pathname);
 	if (cached) return cached;
 
 	const res = await fetch(req);
-	if (res.ok && res.type === 'basic' && url.pathname.startsWith('/_app/immutable/')) {
-		await runtime.put(req, res.clone());
+	if (res.ok && res.status === 200 && res.type === 'basic' && url.pathname.startsWith('/_app/immutable/')) {
+		await lazy.put(url.pathname, res.clone());
 	}
 	return res;
+}
+
+/** Drop lazily cached build files the current build no longer uses. */
+async function pruneLazy(): Promise<void> {
+	try {
+		const listed = await (await caches.open(SHELL)).match(LAZY_LIST);
+		if (!listed) return;
+		const keep = new Set((await listed.json()) as string[]);
+		const lazy = await caches.open(LAZY);
+		for (const req of await lazy.keys()) {
+			if (!keep.has(new URL(req.url).pathname)) await lazy.delete(req);
+		}
+	} catch {
+		// Pruning is housekeeping; never block activation on it.
+	}
 }
