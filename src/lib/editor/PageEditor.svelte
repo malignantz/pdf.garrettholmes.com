@@ -371,10 +371,12 @@
 	const armedHint = $derived.by(() => {
 		if (!armed) return '';
 		const what = TOOLS.find((t) => t.id === armed)!.label.toLowerCase();
-		const verb = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches ? 'Tap' : 'Click';
-		if (armed === 'highlight') return `Drag over what to highlight, or ${verb.toLowerCase()} for a box. Press Escape when done.`;
-		if (armed === 'redact') return `Drag over what to remove, or ${verb.toLowerCase()} for a box. Press Escape when done.`;
-		return isMark(armed) ? `${verb} each spot to place a ${what} mark. Press Escape when done.` : `${verb} the page where the ${what} goes.`;
+		const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+		const verb = coarse ? 'Tap' : 'Click';
+		const done = coarse ? 'Tap the tool again when done.' : 'Press Escape when done.';
+		if (armed === 'highlight') return `Drag over what to highlight, or ${verb.toLowerCase()} for a box. ${done}`;
+		if (armed === 'redact') return `Drag over what to remove, or ${verb.toLowerCase()} for a box. ${done}`;
+		return isMark(armed) ? `${verb} each spot to place a ${what} mark. ${done}` : `${verb} the page where the ${what} goes.`;
 	});
 
 	function toolClick(t: Tool, e: MouseEvent) {
