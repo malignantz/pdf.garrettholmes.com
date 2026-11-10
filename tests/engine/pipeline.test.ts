@@ -93,10 +93,8 @@ describe('export pipeline rules', () => {
 		expect(res.pageCount).toBe(1);
 	}, T);
 
-	it('refuses redaction, highlight and numbering while their stages are stubs', async () => {
+	it('refuses highlight and numbering while their stages are stubs (redaction: redact.test.ts)', async () => {
 		const src = await openCorpus('multi.pdf');
-		const r = await rejects(run([ref(src, 0, 0, [{ id: 'r', kind: 'redact', box }])], [src]));
-		expect([r.code, r.message]).toEqual(['unsupported', 'Redaction is not available yet.']);
 		const h = await rejects(run([ref(src, 0, 0, [{ id: 'h', kind: 'highlight', color: 'pink', box }])], [src]));
 		expect(h.code).toBe('unsupported');
 		expect(h.message).toMatch(/Highlights/);

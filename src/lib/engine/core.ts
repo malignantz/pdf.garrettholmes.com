@@ -424,7 +424,8 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		pages.forEach((ref, i) => {
 			const boxes = ref.stamps.flatMap((s) => (s.kind === 'redact' ? [s.box] : []));
 			if (boxes.length === 0) return;
-			redactJobs.push({ pageIndex: i, boxes, expected: expected[i] });
+			const overlays = ref.stamps.flatMap((s) => (s.kind === 'image' || s.kind === 'mark' || s.kind === 'highlight' ? [s.box] : []));
+			redactJobs.push({ pageIndex: i, boxes, expected: expected[i], overlays });
 			allowedText.push([
 				...ref.stamps.flatMap((s) => (s.kind === 'text' ? normalizeStampText(s.text).split('\n').filter(Boolean) : [])),
 				...(numbering?.labels[i] ? [numbering.labels[i]!] : [])
