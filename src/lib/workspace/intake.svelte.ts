@@ -202,7 +202,7 @@ async function toPng(file: File, name: string): Promise<Uint8Array> {
 			'unsupported',
 			heic
 				? `Could not open ${name}. This browser cannot read HEIC photos. Save it as JPEG first, or open it in Safari.`
-				: `Could not open ${name}. This browser cannot read that image format. Save it as PNG or JPEG first.`
+				: `Could not open ${name}. The image may be damaged, or this browser cannot read its format. Save it as PNG or JPEG and try again.`
 		);
 	}
 	try {

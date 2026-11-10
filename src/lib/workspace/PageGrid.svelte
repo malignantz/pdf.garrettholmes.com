@@ -89,7 +89,9 @@
 	let drag = $state.raw<Drag | null>(null);
 	/** Tile rectangles relative to the grid, measured once at lift (the layout does not change mid-drag). */
 	let rects: Rect[] = [];
-	let suppressClick = false;
+	/** Clicks that follow a long-press or a drop must not change the selection. */
+	let suppressUntil = 0;
+	const suppress = (ms = 600) => (suppressUntil = performance.now() + ms);
 	let lastPointerType = 'mouse';
 	let scrollRaf = 0;
 
@@ -104,6 +106,8 @@
 	function onpointerdown(e: PointerEvent) {
 		lastPointerType = e.pointerType;
 		if (drag) return;
+		// A new press: whatever click belonged to the previous gesture has already fired.
+		suppressUntil = 0;
 		const target = e.target as HTMLElement;
 		if (target.closest('[data-action]')) return;
 		const cell = cellOf(target);
@@ -116,7 +120,7 @@
 			p.timer = setTimeout(() => {
 				if (press !== p) return;
 				p.armed = true;
-				suppressClick = true;
+				suppress(10_000);
 				navigator.vibrate?.(8);
 				onlongpress(p.id);
 			}, LONG_PRESS_MS);
@@ -148,14 +152,17 @@
 			return;
 		}
 		if (press && e.pointerId === press.pointerId) {
-			if (press.armed) setTimeout(() => (suppressClick = false), 0);
+			if (press.armed) suppress();
 			cancelPress();
 		}
 	}
 
 	function onpointercancel(e: PointerEvent) {
 		if (drag && e.pointerId === dragPointer) finishDrag(false);
-		else if (press && e.pointerId === press.pointerId) cancelPress();
+		else if (press && e.pointerId === press.pointerId) {
+			if (press.armed) suppress();
+			cancelPress();
+		}
 	}
 
 	function cancelPress() {
@@ -207,7 +214,7 @@
 			preview: url,
 			previewAspect: aspect
 		};
-		suppressClick = true;
+		suppress(10_000);
 		updateSlot();
 		announce(`Moving ${moving.length === 1 ? '1 page' : `${moving.length} pages`}. Release to drop, Escape to cancel.`);
 		scrollRaf = requestAnimationFrame(autoScroll);
@@ -264,8 +271,7 @@
 		dragPointer = -1;
 		if (commit && d.slot >= 0 && !isNoopMove(pages, d.set, d.slot)) onmove(d.ids, d.slot);
 		else announce(commit ? 'Pages stayed where they were.' : 'Move cancelled.');
-		// The click that follows pointerup must not change the selection.
-		setTimeout(() => (suppressClick = false), 0);
+		suppress();
 	}
 
 	/** Escape while dragging. Returns true when it cancelled a drag. */
@@ -288,8 +294,8 @@
 		const target = e.target as HTMLElement;
 		const actionBtn = target.closest<HTMLElement>('[data-action]');
 		const cell = cellOf(target);
-		if (suppressClick) {
-			suppressClick = false;
+		if (performance.now() < suppressUntil) {
+			suppressUntil = 0;
 			return;
 		}
 		if (!cell) {

@@ -168,7 +168,7 @@
 	}
 
 	function pickFiles() {
-		fileInput?.click();
+		(fileInput ?? document.querySelector<HTMLInputElement>('input[type=file]'))?.click();
 	}
 
 	function onFileInput() {
@@ -573,16 +573,19 @@
 	</TopBarActions>
 {/if}
 
-<input
-	bind:this={fileInput}
-	class="visually-hidden"
-	type="file"
-	multiple
-	accept={ACCEPT}
-	tabindex="-1"
-	aria-hidden="true"
-	onchange={onFileInput}
-/>
+{#if hasPages}
+	<!-- The empty state has its own picker; this one is for "Add files". -->
+	<input
+		bind:this={fileInput}
+		class="visually-hidden"
+		type="file"
+		multiple
+		accept={ACCEPT}
+		tabindex="-1"
+		aria-hidden="true"
+		onchange={onFileInput}
+	/>
+{/if}
 
 <div class="workspace" inert={!!editorId}>
 	{#if hasPages}

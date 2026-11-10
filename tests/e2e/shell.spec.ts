@@ -72,7 +72,7 @@ test('choose files is reachable by keyboard and opens the picker', async ({ page
 	await expect(input).toHaveAttribute('multiple', '');
 
 	await input.setInputFiles({ name: 'one.pdf', mimeType: 'application/pdf', buffer: MINIMAL_PDF });
-	await expect(page.getByText('1 file chosen.', { exact: false })).toBeVisible();
+	await expect(page.getByRole('option', { name: 'Page 1, one.pdf' })).toBeVisible({ timeout: 30_000 });
 });
 
 test('dropping files on the desk hands them to the page', async ({ page }) => {
@@ -86,7 +86,9 @@ test('dropping files on the desk hands them to the page', async ({ page }) => {
 	await page.dispatchEvent('main', 'dragenter', { dataTransfer: dt });
 	await expect(page.getByRole('heading', { name: 'Drop to add them' })).toBeVisible();
 	await page.dispatchEvent('main', 'drop', { dataTransfer: dt });
-	await expect(page.getByText('2 files chosen.', { exact: false })).toBeVisible();
+	// Both files are broken; each gets its own plain error naming it.
+	await expect(page.getByText(/Could not open a\.pdf\./)).toBeVisible({ timeout: 30_000 });
+	await expect(page.getByText(/Could not open b\.png\./)).toBeVisible();
 });
 
 test('privacy page renders and links to the source', async ({ page }) => {
