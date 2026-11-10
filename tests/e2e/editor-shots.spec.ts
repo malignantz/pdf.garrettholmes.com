@@ -69,7 +69,7 @@ for (const scheme of ['light', 'dark'] as const) {
 }
 
 // Highlight and Redact, at device scale 1: a highlight over text with a redaction box,
-// a selected highlight with its colours, and (phone) the tool bar scrolled to its end.
+// and a selected highlight with its colours.
 test('editor screenshots: drawn tools', async ({ browser }, info) => {
 	test.skip(!dir, 'set EDITOR_SHOTS to an output folder');
 	test.setTimeout(90_000);
@@ -111,12 +111,41 @@ test('editor screenshots: drawn tools', async ({ browser }, info) => {
 	await page.getByRole('radio', { name: 'Green' }).click();
 	await page.waitForTimeout(200);
 	await page.screenshot({ path: `${dir}/${tag}-drawn-2-highlight-selected.png` });
-	if (phone) {
-		await page.keyboard.press('Escape');
-		const bar = page.getByRole('toolbar', { name: 'Tools' });
-		await bar.evaluate((el) => el.scrollTo({ left: (el.scrollWidth - el.clientWidth) / 2 }));
-		await page.waitForTimeout(500);
-		await page.screenshot({ path: `${dir}/${tag}-drawn-3-toolbar-scrolled.png` });
-	}
 	await ctx.close();
 });
+
+// Phone tool bar: five fixed slots, the More sheet open, and a sheet tool armed (light and dark, 412 and 320 px).
+for (const scheme of ['light', 'dark'] as const) {
+	for (const width of [412, 320]) {
+		test(`editor screenshots: phone More sheet (${scheme}, ${width}px)`, async ({ browser }, info) => {
+			test.skip(!dir, 'set EDITOR_SHOTS to an output folder');
+			test.skip(info.project.name !== 'phone', 'phone layout');
+			test.skip(scheme === 'dark' && width !== 412, 'one dark size is enough');
+			const ctx = await browser.newContext({
+				baseURL: info.project.use.baseURL,
+				viewport: { width, height: width === 412 ? 839 : 640 },
+				deviceScaleFactor: 2,
+				hasTouch: true,
+				isMobile: true,
+				colorScheme: scheme
+			});
+			const page = await ctx.newPage();
+			const tag = `phone-${scheme}-${width}`;
+			const settle = () => page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== 'running'));
+			await openEditor(page, 'file=multi.pdf&page=1');
+			await page.screenshot({ path: `${dir}/${tag}-more-1-bar.png` });
+			const more = page.getByRole('toolbar', { name: 'Tools' }).getByRole('button', { name: /More tools$/ });
+			await more.tap();
+			await settle();
+			await page.screenshot({ path: `${dir}/${tag}-more-2-sheet-open.png` });
+			await page.getByRole('menuitemradio', { name: 'Redact' }).tap();
+			await settle();
+			await page.waitForTimeout(150);
+			await page.screenshot({ path: `${dir}/${tag}-more-3-redact-armed.png` });
+			await more.tap();
+			await settle();
+			await page.screenshot({ path: `${dir}/${tag}-more-4-sheet-armed.png` });
+			await ctx.close();
+		});
+	}
+}

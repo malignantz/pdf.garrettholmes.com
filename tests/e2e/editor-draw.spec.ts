@@ -1,7 +1,7 @@
 // Highlight and Redact: boxes drawn with a drag (mouse, pen or one finger).
 import type { CDPSession, Page, TestInfo } from '@playwright/test';
 import { test, expect } from './fixtures';
-import { chooseTool, openEditor, pageBox, stamps, tapPage } from './editor-helpers';
+import { chooseTool, moreButton, openEditor, pageBox, stamps, tapPage } from './editor-helpers';
 
 type Box = { x: number; y: number; w: number; h: number };
 
@@ -356,55 +356,203 @@ test.describe('drawn tools', () => {
 });
 
 test.describe('phone tool bar', () => {
-	for (const width of [360, 412]) {
-		test(`scrolls sideways to show all nine tools at ${width}px`, async ({ page }, info) => {
+	const labelFits = (el: Element) => {
+		const span = el.querySelector('span')!;
+		const r = span.getBoundingClientRect();
+		const b = el.getBoundingClientRect();
+		return span.scrollWidth <= Math.ceil(r.width) + 0.5 && r.left >= b.left - 0.5 && r.right <= b.right + 0.5;
+	};
+
+	for (const width of [320, 360, 412]) {
+		test(`five fixed slots and the More sheet fit at ${width}px`, async ({ page }, info) => {
 			test.skip(!isPhone(info), 'phone layout');
-			await page.setViewportSize({ width, height: 800 });
+			await page.setViewportSize({ width, height: 760 });
 			await openEditor(page, 'file=multi.pdf&page=1');
 			const bar = page.getByRole('toolbar', { name: 'Tools' });
-			await expect(bar.getByRole('button')).toHaveCount(9);
-			// No sideways scrolling of the page itself.
+			const buttons = bar.getByRole('button');
+			await expect(buttons).toHaveCount(5);
+			const names = await buttons.evaluateAll((els) => els.map((e) => e.textContent!.trim()));
+			expect(names).toEqual(['Signature', 'Text', 'Check', 'Highlight', 'More']);
+			const m = await bar.evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth }));
+			expect(m.sw).toBeLessThanOrEqual(m.cw);
 			expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
-			const m = await bar.evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth, cls: el.className }));
-			expect(m.sw).toBeGreaterThan(m.cw);
-			expect(m.cls).toContain('fade-end');
-			expect(m.cls).not.toContain('fade-start');
-			for (const b of await bar.getByRole('button').all()) {
+			const widths: number[] = [];
+			for (const b of await buttons.all()) {
 				const bb = (await b.boundingBox())!;
 				expect(bb.width).toBeGreaterThanOrEqual(48);
 				expect(bb.height).toBeGreaterThanOrEqual(48);
+				expect(bb.x + bb.width).toBeLessThanOrEqual(width);
+				expect(await b.evaluate(labelFits)).toBe(true);
+				widths.push(bb.width);
 			}
+			expect(Math.max(...widths) - Math.min(...widths)).toBeLessThan(1);
 
-			// A finger swipe scrolls the bar to its end.
-			const bb = (await bar.boundingBox())!;
-			const { touch } = await touchSession(page);
-			const y = bb.y + bb.height / 2;
-			await touch('touchStart', [[bb.x + bb.width - 30, y]]);
-			for (let i = 1; i <= 10; i++) await touch('touchMove', [[bb.x + bb.width - 30 - i * 25, y]]);
-			await touch('touchEnd', []);
-			await expect.poll(() => bar.evaluate((el) => el.scrollLeft)).toBeGreaterThan(0);
-			await bar.evaluate((el) => el.scrollTo({ left: el.scrollWidth }));
-			await expect(bar).toHaveClass(/fade-start/);
-			await expect(bar).not.toHaveClass(/fade-end/);
-			const red = (await tool(page, 'Redact').boundingBox())!;
-			expect(red.x + red.width).toBeLessThanOrEqual(bb.x + bb.width + 1);
-
-			// Back to the start; tapping the half-hidden Highlight tool scrolls it fully into view.
-			await bar.evaluate((el) => el.scrollTo({ left: 0 }));
-			await expect(bar).not.toHaveClass(/fade-start/);
-			const hl = tool(page, 'Highlight');
-			let hb = (await hl.boundingBox())!;
-			const right = bb.x + bb.width;
-			// Scroll so that only its left part shows.
-			await bar.evaluate((el, d) => el.scrollTo({ left: d }), Math.max(0, hb.x + hb.width * 0.6 - right));
-			hb = (await hl.boundingBox())!;
-			expect(hb.x + hb.width).toBeGreaterThan(right);
-			await page.touchscreen.tap(Math.min(hb.x + 10, right - 6), hb.y + hb.height / 2);
-			await expect(hl).toHaveAttribute('aria-pressed', 'true');
-			await expect.poll(async () => {
-				const b2 = (await hl.boundingBox())!;
-				return b2.x + b2.width <= right;
-			}).toBe(true);
+			await moreButton(page).click();
+			const menu = page.getByRole('menu', { name: 'More tools' });
+			await expect(menu).toBeVisible();
+			await page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== 'running'));
+			const items = menu.getByRole('menuitemradio');
+			expect(await items.evaluateAll((els) => els.map((e) => e.textContent!.trim()))).toEqual(['Initials', 'Date', 'Cross', 'Dot', 'Redact']);
+			const mb = (await menu.boundingBox())!;
+			const barBox = (await bar.boundingBox())!;
+			expect(mb.x).toBeGreaterThanOrEqual(0);
+			expect(mb.x + mb.width).toBeLessThanOrEqual(width);
+			expect(mb.y + mb.height).toBeLessThanOrEqual(barBox.y);
+			for (const it of await items.all()) {
+				const bb = (await it.boundingBox())!;
+				expect(bb.width).toBeGreaterThanOrEqual(48);
+				expect(bb.height).toBeGreaterThanOrEqual(48);
+				expect(await it.evaluate(labelFits)).toBe(true);
+			}
+			expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+			expect(await bar.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
 		});
 	}
+
+	test('More: pick a tool, the slot shows it armed, pick it again to put it away', async ({ page }, info) => {
+		test.skip(!isPhone(info), 'phone layout');
+		await openEditor(page, 'file=multi.pdf&page=1');
+		const more = moreButton(page);
+		await expect(more).toHaveAttribute('aria-haspopup', 'menu');
+		await expect(more).toHaveAttribute('aria-expanded', 'false');
+		await more.tap();
+		await expect(more).toHaveAttribute('aria-expanded', 'true');
+		const menu = page.getByRole('menu', { name: 'More tools' });
+		// Focus moves into the sheet.
+		await expect(menu.getByRole('menuitemradio', { name: 'Initials' })).toBeFocused();
+		await menu.getByRole('menuitemradio', { name: 'Redact' }).tap();
+		await expect(menu).toBeHidden();
+		await expect(more).toHaveAttribute('aria-expanded', 'false');
+		await expect(more).toBeFocused();
+		await expect(more).toHaveAccessibleName('Redact, armed. More tools');
+		await expect(more).toHaveText('Redact');
+		await expect(more).toHaveClass(/armed-more/);
+		// Redact stays armed for several boxes.
+		await dragOnPage(page, info, [0.2, 0.3], [0.5, 0.34]);
+		await dragOnPage(page, info, [0.2, 0.5], [0.5, 0.54]);
+		expect((await stamps(page)).filter((s) => s.kind === 'redact')).toHaveLength(2);
+		await expect(more).toHaveAccessibleName('Redact, armed. More tools');
+
+		// The sheet marks the armed tool; tapping it puts the tool away and the slot is More again.
+		// (A click: the first emulated tap after a raw touch drag is swallowed by the test driver.)
+		await more.click();
+		const red = menu.getByRole('menuitemradio', { name: 'Redact' });
+		await expect(red).toHaveAttribute('aria-checked', 'true');
+		await expect(red).toBeFocused();
+		await expect(menu.getByRole('menuitemradio', { name: 'Dot' })).toHaveAttribute('aria-checked', 'false');
+		await red.click();
+		await expect(menu).toBeHidden();
+		await expect(more).toHaveAccessibleName('More tools');
+		await expect(more).toHaveText('More');
+		await expect(more).not.toHaveClass(/armed-more/);
+		await expect(page.locator('.viewport.armed')).toHaveCount(0);
+
+		// Arming a bar tool after a sheet tool returns the slot to More.
+		await chooseTool(page, 'Dot');
+		await expect(more).toHaveText('Dot');
+		await chooseTool(page, 'Check');
+		await expect(tool(page, 'Check')).toHaveAttribute('aria-pressed', 'true');
+		await expect(more).toHaveText('More');
+	});
+
+	test('More: outside tap, Escape and More again close the sheet', async ({ page }, info) => {
+		test.skip(!isPhone(info), 'phone layout');
+		await openEditor(page, 'file=multi.pdf&page=1');
+		const more = moreButton(page);
+		const menu = page.getByRole('menu', { name: 'More tools' });
+
+		// A tap on the page closes the sheet and does not place the armed check mark.
+		await chooseTool(page, 'Check');
+		await more.tap();
+		await expect(menu).toBeVisible();
+		const b = await pageBox(page);
+		await page.touchscreen.tap(b.x + b.width * 0.5, b.y + b.height * 0.4);
+		await expect(menu).toBeHidden();
+		expect(await stamps(page)).toHaveLength(0);
+		await expect(tool(page, 'Check')).toHaveAttribute('aria-pressed', 'true');
+
+		// Escape closes the sheet only; a second Escape puts the tool away.
+		await more.tap();
+		await expect(menu).toBeVisible();
+		await page.keyboard.press('Escape');
+		await expect(menu).toBeHidden();
+		await expect(more).toBeFocused();
+		await expect(tool(page, 'Check')).toHaveAttribute('aria-pressed', 'true');
+		await page.keyboard.press('Escape');
+		await expect(tool(page, 'Check')).toHaveAttribute('aria-pressed', 'false');
+
+		// More again.
+		await more.tap();
+		await expect(menu).toBeVisible();
+		await more.tap();
+		await expect(menu).toBeHidden();
+		await expect(more).toHaveAttribute('aria-expanded', 'false');
+
+		// Another bar tool: closes the sheet and arms that tool.
+		await more.tap();
+		await tool(page, 'Highlight').tap();
+		await expect(menu).toBeHidden();
+		await expect(tool(page, 'Highlight')).toHaveAttribute('aria-pressed', 'true');
+	});
+
+	test('More: the selected-stamp bar steps aside while the sheet is open', async ({ page }, info) => {
+		test.skip(!isPhone(info), 'phone layout');
+		await openEditor(page, 'file=multi.pdf&page=1');
+		await chooseTool(page, 'Highlight');
+		await dragOnPage(page, info, [0.2, 0.3], [0.6, 0.34]);
+		await page.keyboard.press('Escape');
+		await page.locator('[data-stamp]').first().click({ position: { x: 4, y: 4 } });
+		const selbar = page.getByRole('toolbar', { name: /highlight/i });
+		await expect(selbar).toBeVisible();
+		await moreButton(page).click();
+		await expect(page.getByRole('menu', { name: 'More tools' })).toBeVisible();
+		await expect(selbar).toBeHidden();
+		await page.keyboard.press('Escape');
+		await expect(selbar).toBeVisible();
+	});
+
+	test('More: keyboard opens, moves, picks and leaves the sheet', async ({ page }, info) => {
+		test.skip(!isPhone(info), 'phone layout');
+		await openEditor(page, 'file=multi.pdf&page=1');
+		const more = moreButton(page);
+		const menu = page.getByRole('menu', { name: 'More tools' });
+		const item = (name: string) => menu.getByRole('menuitemradio', { name, exact: true });
+		await more.focus();
+		await page.keyboard.press('ArrowUp');
+		await expect(item('Initials')).toBeFocused();
+		await page.keyboard.press('End');
+		await expect(item('Redact')).toBeFocused();
+		await page.keyboard.press('Home');
+		await page.keyboard.press('ArrowDown');
+		await expect(item('Dot')).toBeFocused();
+		await page.keyboard.press('ArrowUp');
+		await expect(item('Initials')).toBeFocused();
+		await page.keyboard.press('ArrowLeft');
+		await expect(item('Redact')).toBeFocused();
+		await page.keyboard.press('ArrowRight');
+		await expect(item('Initials')).toBeFocused();
+		// Arrow keys stay in the sheet: the page did not change.
+		await expect(page.getByText('1 of 6')).toBeVisible();
+		await page.keyboard.press('Escape');
+		await expect(menu).toBeHidden();
+		await expect(more).toBeFocused();
+
+		// Tab leaves the sheet and closes it.
+		await page.keyboard.press('Enter');
+		await expect(item('Initials')).toBeFocused();
+		await page.keyboard.press('Tab');
+		await expect(menu).toBeHidden();
+		await expect(more).not.toBeFocused();
+
+		// Enter on Date places it at the centre, selected (the keyboard path).
+		await more.focus();
+		await page.keyboard.press('Enter');
+		await page.keyboard.press('ArrowRight');
+		await expect(item('Date')).toBeFocused();
+		await page.keyboard.press('Enter');
+		await expect(menu).toBeHidden();
+		const [d] = await stamps(page);
+		expect(d.kind).toBe('text');
+		await expect(page.locator(`[data-stamp="${d.id}"]`)).toBeFocused();
+	});
 });

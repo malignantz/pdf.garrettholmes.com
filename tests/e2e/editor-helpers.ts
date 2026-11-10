@@ -67,8 +67,23 @@ export async function drawOnPad(page: Page) {
 	await page.mouse.up();
 }
 
+/** Pick a tool from the bar, or (phones) from the More sheet when the bar does not show it. */
 export async function chooseTool(page: Page, name: string) {
-	await page.getByRole('toolbar', { name: 'Tools' }).getByRole('button', { name, exact: true }).click();
+	const bar = page.getByRole('toolbar', { name: 'Tools' });
+	const btn = bar.getByRole('button', { name, exact: true });
+	if (await btn.isVisible()) {
+		await btn.click();
+		return;
+	}
+	await moreButton(page).click();
+	const menu = page.getByRole('menu', { name: 'More tools' });
+	await menu.getByRole('menuitemradio', { name, exact: true }).click();
+	await expect(menu).toBeHidden();
+}
+
+/** The phone bar's More slot (its name starts with an armed sheet tool, if any). */
+export function moreButton(page: Page) {
+	return page.getByRole('toolbar', { name: 'Tools' }).getByRole('button', { name: /More tools$/ });
 }
 
 /** Signature tool -> draw -> use. Leaves the tool armed. */

@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { chooseTool, makeSignature, openEditor, pageBox, stamps, tapPage, drawOnPad } from './editor-helpers';
+import { chooseTool, makeSignature, moreButton, openEditor, pageBox, stamps, tapPage, drawOnPad } from './editor-helpers';
 
 test.describe('page editor', () => {
 	test('sign, add text and a check, move, resize, undo', async ({ page }) => {
@@ -246,10 +246,19 @@ test.describe('page editor', () => {
 		expect(t.text).toBe('Hi ');
 	});
 
-	test('keyboard: tools place at the centre, arrows nudge, page keys navigate', async ({ page }) => {
+	test('keyboard: tools place at the centre, arrows nudge, page keys navigate', async ({ page }, info) => {
 		await openEditor(page, 'file=multi.pdf&page=2');
-		const tool = page.getByRole('button', { name: 'Cross', exact: true });
-		await tool.focus();
+		if (info.project.name === 'phone') {
+			// Cross is in the More sheet: open it, arrow to Cross, Enter.
+			await moreButton(page).focus();
+			await page.keyboard.press('Enter');
+			await expect(page.getByRole('menuitemradio', { name: 'Initials' })).toBeFocused();
+			await page.keyboard.press('ArrowRight');
+			await page.keyboard.press('ArrowRight');
+			await expect(page.getByRole('menuitemradio', { name: 'Cross' })).toBeFocused();
+		} else {
+			await page.getByRole('button', { name: 'Cross', exact: true }).focus();
+		}
 		await page.keyboard.press('Enter');
 		const [mark] = await stamps(page, 1);
 		expect(mark.kind).toBe('mark');

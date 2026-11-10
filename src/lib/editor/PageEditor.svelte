@@ -326,6 +326,9 @@
 		{ id: 'highlight', label: 'Highlight', icon: 'highlight' },
 		{ id: 'redact', label: 'Redact', icon: 'redact' }
 	];
+	/** On phones the bar shows these four and a More slot; the rest are in the More sheet. */
+	const PHONE_BAR = new Set<Tool>(['signature', 'text', 'check', 'highlight']);
+	const MORE_TOOLS = TOOLS.filter((t) => !PHONE_BAR.has(t.id));
 	const isMark = (t: Tool | null): t is 'check' | 'cross' | 'dot' => t === 'check' || t === 'cross' || t === 'dot';
 	/** Tools whose box is drawn with a drag; they stay armed for several boxes. */
 	const isDrawn = (t: Tool | null): t is 'highlight' | 'redact' => t === 'highlight' || t === 'redact';
@@ -389,7 +392,6 @@
 		}
 		armed = t;
 		armedAsset = null;
-		void tick().then(() => revealTool(t));
 		if (byKeyboard) {
 			// No pointer to aim with: place in the middle, selected, so arrow keys move it.
 			place(t, { x: 0.5, y: 0.5 }, true);
@@ -1088,41 +1090,93 @@
 		};
 	});
 
-	// ------------------------------------------------------------ tool bar (scrolls sideways on phones)
-	let toolsEl: HTMLDivElement | undefined = $state();
-	let fadeStart = $state(false);
-	let fadeEnd = $state(false);
+	// ------------------------------------------------------------ More sheet (phones)
+	// The phone bar has five fixed slots; the tools that do not fit open from More.
+	let moreBtn: HTMLButtonElement | undefined = $state();
+	let moreMenu: HTMLDivElement | undefined = $state();
+	let moreOpen = $state(false);
+	let moreIndex = $state(0);
+	/** A tool from the sheet that is armed: the More slot shows it. */
+	const armedMore = $derived(MORE_TOOLS.find((t) => t.id === armed) ?? null);
+	const moreLabel = $derived(armedMore ? `${armedMore.label}, armed. More tools` : 'More tools');
 
-	function updateFades() {
-		const el = toolsEl;
-		if (!el) return;
-		const max = el.scrollWidth - el.clientWidth;
-		fadeStart = max > 1 && el.scrollLeft > 1;
-		fadeEnd = max > 1 && el.scrollLeft < max - 1;
+	const moreItems = () => (moreMenu ? [...moreMenu.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')] : []);
+
+	function openMore() {
+		finishEditing(true);
+		endNudge();
+		moreIndex = Math.max(0, MORE_TOOLS.findIndex((t) => t.id === armed));
+		moreOpen = true;
+		void tick().then(() => moreItems()[moreIndex]?.focus({ preventScroll: true }));
 	}
 
+	function closeMore(returnFocus = true) {
+		if (!moreOpen) return;
+		moreOpen = false;
+		if (returnFocus) moreBtn?.focus({ preventScroll: true });
+	}
+
+	function moreFocus(i: number) {
+		const n = MORE_TOOLS.length;
+		moreIndex = Math.max(0, Math.min(n - 1, i));
+		moreItems()[moreIndex]?.focus({ preventScroll: true });
+	}
+
+	function moreBtnKey(e: KeyboardEvent) {
+		if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !moreOpen) {
+			e.preventDefault();
+			e.stopPropagation();
+			openMore();
+		}
+	}
+
+	/** Keys inside the sheet: a three-column grid. Nothing reaches the editor's own keys. */
+	function moreKey(e: KeyboardEvent) {
+		e.stopPropagation();
+		const n = MORE_TOOLS.length;
+		const cols = 3;
+		const i = moreIndex;
+		if (e.key === 'ArrowRight') moreFocus((i + 1) % n);
+		else if (e.key === 'ArrowLeft') moreFocus((i - 1 + n) % n);
+		else if (e.key === 'ArrowDown') moreFocus(Math.floor(i / cols) < Math.floor((n - 1) / cols) ? i + cols : i);
+		else if (e.key === 'ArrowUp') moreFocus(i - cols >= 0 ? i - cols : i);
+		else if (e.key === 'Home') moreFocus(0);
+		else if (e.key === 'End') moreFocus(n - 1);
+		else if (e.key === 'Escape') closeMore();
+		else if (e.key === 'Tab') {
+			// Leave the sheet like any menu: the browser moves focus on from here.
+			closeMore(false);
+			return;
+		} else return;
+		e.preventDefault();
+	}
+
+	function pickMore(t: Tool, e: MouseEvent) {
+		closeMore();
+		toolClick(t, e);
+	}
+
+	// A tap anywhere outside the sheet and the More slot closes it. On the page the
+	// scrim takes that tap, so it does not also place a stamp.
 	$effect(() => {
-		const el = toolsEl;
-		if (!el) return;
-		updateFades();
-		const ro = new ResizeObserver(updateFades);
-		ro.observe(el);
-		return () => ro.disconnect();
+		if (!moreOpen) return;
+		const down = (e: PointerEvent) => {
+			const t = e.target as Node | null;
+			if (!t || moreMenu?.contains(t) || moreBtn?.contains(t)) return;
+			if (t instanceof Element && t.closest('.more-scrim')) return;
+			closeMore();
+		};
+		const mq = matchMedia('(max-width: 899px)');
+		const wide = () => {
+			if (!mq.matches) closeMore(false);
+		};
+		document.addEventListener('pointerdown', down, true);
+		mq.addEventListener('change', wide);
+		return () => {
+			document.removeEventListener('pointerdown', down, true);
+			mq.removeEventListener('change', wide);
+		};
 	});
-
-	/** Bring an armed tool fully into view in a bar that scrolls sideways. */
-	function revealTool(t: Tool) {
-		const el = toolsEl;
-		const btn = el?.querySelector<HTMLElement>(`[data-tool="${t}"]`);
-		if (!el || !btn || el.scrollWidth <= el.clientWidth + 1) return;
-		const pad = 24;
-		const left = btn.offsetLeft - el.offsetLeft;
-		const right = left + btn.offsetWidth;
-		let to = el.scrollLeft;
-		if (left - pad < el.scrollLeft) to = left - pad;
-		else if (right + pad > el.scrollLeft + el.clientWidth) to = right + pad - el.clientWidth;
-		if (to !== el.scrollLeft) el.scrollTo({ left: to, behavior: 'smooth' });
-	}
 
 	/** Stamps in the order the export draws them (redaction, highlights, the rest). */
 	const ordered = $derived(page ? paintOrder(page.stamps) : []);
@@ -1145,7 +1199,7 @@
 	<header class="top">
 		<div class="nav">
 			<IconButton icon="chevron-left" label="Previous page" shortcut="PageUp" tooltip="bottom" disabled={index <= 0} onclick={() => go(-1)} />
-			<span class="indicator" aria-live="polite"><span class="num">{index + 1}</span> of <span class="num">{pages.length}</span></span>
+			<span class="indicator" aria-live="polite"><span class="num">{index + 1}</span> <span class="of">of</span> <span class="num">{pages.length}</span></span>
 			<IconButton icon="chevron-right" label="Next page" shortcut="PageDown" tooltip="bottom" disabled={index >= pages.length - 1} onclick={() => go(1)} />
 		</div>
 		<div class="history">
@@ -1160,19 +1214,12 @@
 		<Button variant="primary" onclick={done}>Done</Button>
 	</header>
 
-	<div
-		class="tools"
-		class:fade-start={fadeStart}
-		class:fade-end={fadeEnd}
-		role="toolbar"
-		aria-label="Tools"
-		bind:this={toolsEl}
-		onscroll={updateFades}
-	>
+	<div class="tools" role="toolbar" aria-label="Tools">
 		{#each TOOLS as t (t.id)}
 			<button
 				type="button"
 				class="tool"
+				class:in-more={!PHONE_BAR.has(t.id)}
 				aria-pressed={armed === t.id}
 				data-tool={t.id}
 				onclick={(e) => toolClick(t.id, e)}
@@ -1181,6 +1228,44 @@
 				<span>{t.label}</span>
 			</button>
 		{/each}
+		<button
+			bind:this={moreBtn}
+			type="button"
+			class="tool more"
+			class:armed-more={!!armedMore}
+			aria-label={moreLabel}
+			aria-haspopup="menu"
+			aria-expanded={moreOpen}
+			aria-controls={moreOpen ? 'more-tools' : undefined}
+			data-tool="more"
+			onclick={() => (moreOpen ? closeMore() : openMore())}
+			onkeydown={moreBtnKey}
+		>
+			<Icon name={armedMore?.icon ?? 'more-tools'} />
+			<span>{armedMore?.label ?? 'More'}</span>
+		</button>
+		{#if moreOpen}
+			<div bind:this={moreMenu} id="more-tools" class="more-sheet" role="menu" aria-label="More tools" tabindex="-1" onkeydown={moreKey}>
+				<p class="more-title" aria-hidden="true">More tools</p>
+				<div class="more-grid" role="none">
+					{#each MORE_TOOLS as t, i (t.id)}
+						<button
+							type="button"
+							role="menuitemradio"
+							class="more-item"
+							aria-checked={armed === t.id}
+							tabindex={i === moreIndex ? 0 : -1}
+							data-tool={t.id}
+							onclick={(e) => pickMore(t.id, e)}
+							onfocus={() => (moreIndex = i)}
+						>
+							<Icon name={t.icon} />
+							<span>{t.label}</span>
+						</button>
+					{/each}
+				</div>
+			</div>
+		{/if}
 	</div>
 
 	<div class="main">
@@ -1327,7 +1412,10 @@
 			</div>
 		{/if}
 
-		{#if editing && editingStamp?.kind === 'text'}
+		{#if moreOpen}
+			<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions (Escape closes the sheet) -->
+			<div class="more-scrim" aria-hidden="true" onclick={() => closeMore()}></div>
+		{:else if editing && editingStamp?.kind === 'text'}
 			<div class="selbar" role="toolbar" aria-label="Text">
 				{#if badChars}
 					<p id="bad-chars" class="bad" role="alert">Cannot use: <span class="chars">{[...badChars].join(' ')}</span></p>
@@ -1482,9 +1570,17 @@
 		background: var(--hover);
 	}
 
-	.tool[aria-pressed='true'] {
+	.tool[aria-pressed='true'],
+	.tool.armed-more {
 		background: var(--accent);
 		color: var(--accent-ink);
+	}
+
+	/* The More slot and its sheet are for phones; the side rail shows every tool. */
+	.tool.more,
+	.more-sheet,
+	.more-scrim {
+		display: none;
 	}
 
 	.main {
@@ -1795,7 +1891,8 @@
 	/* Phone and narrow windows: tools move to a bottom bar in thumb reach. */
 	@media (max-width: 899px) {
 		.editor {
-			grid-template-columns: 1fr;
+			/* minmax: a header that is a little too wide must not widen the tool bar off screen. */
+			grid-template-columns: minmax(0, 1fr);
 			grid-template-rows: auto 1fr auto;
 			grid-template-areas:
 				'top'
@@ -1811,47 +1908,192 @@
 			display: none;
 		}
 
-		/* Nine tools do not fit a phone: the bar scrolls sideways, with a soft fade on the side that has more. */
+		/* Five fixed, equal slots: four tools and More. Nothing scrolls. */
 		.tools {
+			position: relative;
 			flex-direction: row;
-			justify-content: flex-start;
 			padding: var(--s-1) calc(var(--s-1) + var(--safe-right)) calc(var(--s-1) + var(--safe-bottom))
 				calc(var(--s-1) + var(--safe-left));
 			border-right: 0;
 			border-top: 1px solid var(--line);
-			overflow-x: auto;
-			overflow-y: hidden;
-			overscroll-behavior-x: contain;
-			-webkit-overflow-scrolling: touch;
-			scrollbar-width: none;
-			touch-action: pan-x;
-			--fade-l: 0px;
-			--fade-r: 0px;
-			mask-image: linear-gradient(to right, transparent 0, #000 var(--fade-l), #000 calc(100% - var(--fade-r)), transparent 100%);
-		}
-
-		.tools::-webkit-scrollbar {
-			display: none;
-		}
-
-		.tools.fade-start {
-			--fade-l: 28px;
-		}
-
-		.tools.fade-end {
-			--fade-r: 28px;
+			overflow: visible;
+			/* Above the page area, so the sheet that rises from the bar covers the scrim and the hints. */
+			z-index: 6;
 		}
 
 		.tool {
-			flex: 1 0 54px;
+			flex: 1 1 0;
 			width: auto;
-			min-width: 48px;
+			min-width: 0;
 			min-height: 56px;
 			font-size: 11px;
 		}
 
+		.tool span {
+			white-space: nowrap;
+		}
+
+		.tool.in-more {
+			display: none;
+		}
+
+		.tool.more {
+			display: flex;
+			position: relative;
+		}
+
+		.tool.more[aria-expanded='true']:not(.armed-more) {
+			background: var(--press);
+		}
+
+		/* An armed tool from the sheet: a small caret says the slot still opens the sheet. */
+		.tool.armed-more::after {
+			content: '';
+			position: absolute;
+			top: 7px;
+			right: 9px;
+			width: 5px;
+			height: 5px;
+			border-top: 1.5px solid currentColor;
+			border-left: 1.5px solid currentColor;
+			rotate: 45deg;
+			opacity: 0.8;
+		}
+
+		.more-sheet {
+			display: block;
+			position: absolute;
+			bottom: calc(100% + var(--s-2));
+			right: calc(var(--s-2) + var(--safe-right));
+			width: min(380px, calc(100% - 2 * var(--s-2) - var(--safe-left) - var(--safe-right)));
+			padding: var(--s-2) var(--s-2) var(--s-2);
+			background: var(--surface);
+			border: 1px solid var(--line);
+			border-radius: var(--radius-sheet);
+			box-shadow: var(--shadow-float);
+			transform-origin: 90% 100%;
+			outline: none;
+		}
+
+		.more-title {
+			padding: var(--s-1) var(--s-2) var(--s-2);
+			font-size: var(--text-caption);
+			color: var(--ink-soft);
+		}
+
+		.more-grid {
+			display: grid;
+			grid-template-columns: repeat(3, 1fr);
+			gap: var(--s-1);
+		}
+
+		.more-item {
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+			justify-content: center;
+			gap: var(--s-1);
+			min-height: 64px;
+			padding: var(--s-2) var(--s-1);
+			border-radius: var(--radius-control);
+			background: color-mix(in srgb, var(--desk) 55%, var(--surface));
+			color: var(--ink);
+			font-size: var(--text-caption);
+			white-space: nowrap;
+		}
+
+		.more-item:hover {
+			background: color-mix(in srgb, var(--desk) 55%, var(--surface)) linear-gradient(var(--hover), var(--hover));
+		}
+
+		.more-item:focus-visible {
+			outline-offset: -2px;
+		}
+
+		.more-item[aria-checked='true'] {
+			background: var(--accent);
+			color: var(--accent-ink);
+		}
+
+		.more-item[aria-checked='true']:focus-visible {
+			outline-color: var(--ink);
+		}
+
+		.more-scrim {
+			display: block;
+			position: absolute;
+			inset: 0;
+			z-index: 4;
+			background: color-mix(in srgb, var(--desk-deep) 45%, transparent);
+			touch-action: none;
+		}
+
+		@media (prefers-reduced-motion: no-preference) {
+			.more-sheet {
+				animation: more-rise var(--dur-slow) var(--ease);
+			}
+
+			.more-scrim {
+				animation: more-fade var(--dur-slow) var(--ease);
+			}
+
+			@keyframes more-rise {
+				from {
+					opacity: 0;
+					transform: translateY(8px) scale(0.97);
+				}
+			}
+
+			@keyframes more-fade {
+				from {
+					opacity: 0;
+				}
+			}
+		}
+
 		.selbar {
 			bottom: var(--s-3);
+		}
+	}
+
+	/* The narrowest phones (320–399px): a tighter header so Done stays on screen. "1 of 6" reads "1/6". */
+	@media (max-width: 399px) {
+		.top {
+			gap: 2px;
+			padding-left: calc(var(--s-2) + var(--safe-left));
+			padding-right: calc(var(--s-2) + var(--safe-right));
+		}
+
+		.nav,
+		.history {
+			gap: 0;
+		}
+
+		.indicator {
+			min-width: 0;
+			padding: 0 2px;
+			/* Hides the spaces and "of"; the numbers and a slash keep their size. */
+			font-size: 0;
+		}
+
+		.indicator .num,
+		.of::after {
+			font-size: var(--text-control);
+		}
+
+		.of::after {
+			content: '/' / '';
+		}
+
+		.top :global(.btn) {
+			padding: 0 var(--s-3);
+		}
+	}
+
+	@media (max-width: 359px) {
+		.indicator .num,
+		.of::after {
+			font-size: var(--text-caption);
 		}
 	}
 </style>
