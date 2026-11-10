@@ -1,0 +1,41 @@
+import { defineConfig, devices } from '@playwright/test';
+import { existsSync } from 'node:fs';
+
+// On the Debian box (and its CI runner) Playwright uses the system Chrome.
+const systemChrome = '/opt/google/chrome/chrome';
+const launchOptions = existsSync(systemChrome) ? { executablePath: systemChrome } : {};
+const port = 4317;
+
+export default defineConfig({
+	testDir: 'tests/e2e',
+	fullyParallel: true,
+	forbidOnly: !!process.env.CI,
+	retries: process.env.CI ? 1 : 0,
+	workers: process.env.CI ? 2 : undefined,
+	reporter: process.env.CI ? [['list'], ['github']] : 'list',
+	use: {
+		baseURL: `http://127.0.0.1:${port}`,
+		trace: 'off',
+		launchOptions
+	},
+	projects: [
+		{
+			name: 'desktop-chrome',
+			use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 }, launchOptions }
+		},
+		{
+			name: 'phone',
+			use: { ...devices['Pixel 7'], launchOptions }
+		}
+	],
+	webServer: {
+		// The real build, served with its real _headers (CSP included).
+		// CI builds in an earlier step and sets E2E_SKIP_BUILD.
+		command: `${process.env.E2E_SKIP_BUILD ? '' : 'npm run build && '}node scripts/serve-build.mjs ${port}`,
+		url: `http://127.0.0.1:${port}/`,
+		reuseExistingServer: !process.env.CI,
+		timeout: 180_000,
+		stdout: 'ignore',
+		stderr: 'pipe'
+	}
+});

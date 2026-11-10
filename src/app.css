@@ -1,0 +1,314 @@
+/*
+ * "The Desk" — design tokens, reset and base styles. See DESIGN.md.
+ * No framework, no web fonts. Components use these tokens only.
+ *
+ * Colour follows prefers-color-scheme. A subtree can force a theme with
+ * data-theme="light" | "dark" (used by the /kit review page); each theme block
+ * redeclares the derived tokens so they resolve against that theme's colours.
+ */
+
+:root {
+	/* Type */
+	--font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+	--font-serif: ui-serif, 'Iowan Old Style', 'Palatino Linotype', Georgia, serif;
+	--font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+	--text-base: 1rem;
+	--text-control: 0.9375rem;
+	--text-caption: 0.8125rem;
+	--text-chip: 0.6875rem;
+
+	/* Spacing: 4, 8, 12, 16, 24, 32, 48 */
+	--s-1: 4px;
+	--s-2: 8px;
+	--s-3: 12px;
+	--s-4: 16px;
+	--s-5: 24px;
+	--s-6: 32px;
+	--s-7: 48px;
+
+	/* Shape */
+	--radius-control: 6px;
+	--radius-sheet: 10px;
+	--radius-page: 2px;
+
+	/* Sizes */
+	--control-h: 36px;
+	--bar-h: 52px;
+	--icon: 20px;
+
+	/* Motion: short and functional */
+	--dur-fast: 120ms;
+	--dur: 160ms;
+	--dur-slow: 180ms;
+	--ease: cubic-bezier(0.2, 0, 0, 1);
+
+	/* Safe areas (notches, home indicator) */
+	--safe-top: env(safe-area-inset-top, 0px);
+	--safe-right: env(safe-area-inset-right, 0px);
+	--safe-bottom: env(safe-area-inset-bottom, 0px);
+	--safe-left: env(safe-area-inset-left, 0px);
+}
+
+/* Light (default) */
+:root,
+[data-theme='light'] {
+	color-scheme: light;
+
+	--desk: #ece8de;
+	--desk-deep: #e0dacb;
+	--surface: #fbfaf6;
+	--sheet: #ffffff;
+	--ink: #1d1a14;
+	--ink-soft: #5b5342;
+	--line: #d7cdb6;
+	--accent: #a03518;
+	--accent-ink: #ffffff;
+	--ok: #3d5638;
+	--danger: #7c2811;
+
+	/* Derived: mixed from the tokens above, never new hues */
+	--hover: color-mix(in srgb, var(--ink) 7%, transparent);
+	--press: color-mix(in srgb, var(--ink) 12%, transparent);
+	--accent-hover: color-mix(in srgb, var(--accent) 86%, var(--ink));
+	--line-strong: color-mix(in srgb, var(--line) 45%, var(--ink-soft)); /* 3:1 on surface, for control edges */
+	--scrim: rgb(29 26 20 / 0.38);
+	--mark-stroke: var(--ink);
+	--mark-back: var(--desk-deep);
+	--sheet-line: #e7e1d3;
+	--shadow-page: 0 1px 2px rgb(0 0 0 / 0.12), 0 4px 14px rgb(0 0 0 / 0.08);
+	--shadow-float: 0 2px 6px rgb(0 0 0 / 0.1), 0 12px 32px rgb(0 0 0 / 0.14);
+}
+
+/* Dark: the same declarations, applied by media query on :root or by attribute on a subtree */
+@media (prefers-color-scheme: dark) {
+	:root:not([data-theme='light']) {
+		color-scheme: dark;
+
+		--desk: #15130f;
+		--desk-deep: #0e0c09;
+		--surface: #211e18;
+		--sheet: #ffffff;
+		--ink: #f1e9d8;
+		--ink-soft: #bcae92;
+		--line: #3a342a;
+		--accent: #ec7b55;
+		--accent-ink: #15130f;
+		--ok: #9db894;
+		--danger: #ec7b55;
+
+		--hover: color-mix(in srgb, var(--ink) 8%, transparent);
+		--press: color-mix(in srgb, var(--ink) 14%, transparent);
+		--accent-hover: color-mix(in srgb, var(--accent) 88%, var(--ink));
+		--line-strong: color-mix(in srgb, var(--line) 45%, var(--ink-soft));
+		--scrim: rgb(0 0 0 / 0.55);
+		--mark-stroke: var(--desk);
+		--mark-back: var(--ink-soft);
+		--sheet-line: #e7e1d3;
+		--shadow-page: 0 1px 2px rgb(0 0 0 / 0.5), 0 4px 14px rgb(0 0 0 / 0.35);
+		--shadow-float: 0 2px 6px rgb(0 0 0 / 0.4), 0 12px 32px rgb(0 0 0 / 0.5);
+	}
+}
+
+[data-theme='dark'] {
+	color-scheme: dark;
+
+	--desk: #15130f;
+	--desk-deep: #0e0c09;
+	--surface: #211e18;
+	--sheet: #ffffff;
+	--ink: #f1e9d8;
+	--ink-soft: #bcae92;
+	--line: #3a342a;
+	--accent: #ec7b55;
+	--accent-ink: #15130f;
+	--ok: #9db894;
+	--danger: #ec7b55;
+
+	--hover: color-mix(in srgb, var(--ink) 8%, transparent);
+	--press: color-mix(in srgb, var(--ink) 14%, transparent);
+	--accent-hover: color-mix(in srgb, var(--accent) 88%, var(--ink));
+	--line-strong: color-mix(in srgb, var(--line) 45%, var(--ink-soft));
+	--scrim: rgb(0 0 0 / 0.55);
+	--mark-stroke: var(--desk);
+	--mark-back: var(--ink-soft);
+	--sheet-line: #e7e1d3;
+	--shadow-page: 0 1px 2px rgb(0 0 0 / 0.5), 0 4px 14px rgb(0 0 0 / 0.35);
+	--shadow-float: 0 2px 6px rgb(0 0 0 / 0.4), 0 12px 32px rgb(0 0 0 / 0.5);
+}
+
+/* Touch: 48px minimum targets */
+@media (pointer: coarse) {
+	:root {
+		--control-h: 48px;
+		--bar-h: 56px;
+	}
+}
+
+[data-theme] {
+	background: var(--desk);
+	color: var(--ink);
+}
+
+/* ---------- Reset ---------- */
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+* {
+	margin: 0;
+}
+
+html {
+	-webkit-text-size-adjust: 100%;
+	text-size-adjust: 100%;
+	-webkit-tap-highlight-color: transparent;
+	hanging-punctuation: first last;
+}
+
+body {
+	min-height: 100dvh;
+	background: var(--desk);
+	color: var(--ink);
+	font-family: var(--font-sans);
+	font-size: var(--text-base);
+	line-height: 1.5;
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+	text-rendering: optimizeLegibility;
+}
+
+img,
+picture,
+svg,
+canvas,
+video {
+	display: block;
+	max-width: 100%;
+}
+
+input,
+button,
+textarea,
+select {
+	font: inherit;
+	color: inherit;
+	letter-spacing: inherit;
+}
+
+button {
+	cursor: pointer;
+	background: none;
+	border: 0;
+	padding: 0;
+}
+
+button:disabled {
+	cursor: default;
+}
+
+h1,
+h2,
+h3,
+h4 {
+	line-height: 1.2;
+	text-wrap: balance;
+	font-weight: 600;
+}
+
+p {
+	text-wrap: pretty;
+}
+
+a {
+	color: inherit;
+	text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+	text-underline-offset: 0.18em;
+	text-decoration-thickness: 1px;
+}
+
+a:hover {
+	text-decoration-color: currentColor;
+}
+
+::selection {
+	background: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+/* ---------- Focus ---------- */
+
+:focus {
+	outline: none;
+}
+
+:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+
+/* ---------- Helpers ---------- */
+
+.visually-hidden {
+	position: absolute !important;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	clip-path: inset(50%);
+	white-space: nowrap;
+	border: 0;
+}
+
+.num {
+	font-variant-numeric: tabular-nums;
+}
+
+.serif {
+	font-family: var(--font-serif);
+}
+
+.caption {
+	font-size: var(--text-caption);
+	color: var(--ink-soft);
+}
+
+.chip {
+	font-size: var(--text-chip);
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	font-variant-numeric: tabular-nums;
+	font-weight: 600;
+}
+
+.skip-link {
+	position: absolute;
+	left: var(--s-3);
+	top: var(--s-3);
+	z-index: 100;
+	padding: var(--s-2) var(--s-3);
+	background: var(--surface);
+	border-radius: var(--radius-control);
+	transform: translateY(-200%);
+}
+
+.skip-link:focus-visible {
+	transform: none;
+}
+
+/* ---------- Motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+	/* Progress indicators opt out with data-essential-motion and slow down instead. */
+	*:not([data-essential-motion]),
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
+	}
+}
