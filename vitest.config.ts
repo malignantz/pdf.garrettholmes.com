@@ -7,7 +7,7 @@ export default defineConfig({
 	plugins: [sveltekit()],
 	test: {
 		environment: 'node',
-		include: ['tests/{engine,render,doc,editor}/**/*.test.ts'],
+		include: ['tests/{engine,render,doc,editor,workspace}/**/*.test.ts'],
 		passWithNoTests: true,
 		testTimeout: 30_000
 	}

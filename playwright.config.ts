@@ -4,7 +4,8 @@ import { existsSync } from 'node:fs';
 // On the Debian box (and its CI runner) Playwright uses the system Chrome.
 const systemChrome = '/opt/google/chrome/chrome';
 const launchOptions = existsSync(systemChrome) ? { executablePath: systemChrome } : {};
-const port = 4317;
+// E2E_PORT lets parallel worktrees on one machine run their own server.
+const port = Number(process.env.E2E_PORT ?? 4317);
 
 export default defineConfig({
 	testDir: 'tests/e2e',
