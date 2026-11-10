@@ -106,6 +106,11 @@
 		pointer-events: none;
 	}
 
+	/* Like the export: Multiply, so text under a highlight stays as dark as it was. */
+	.highlight {
+		mix-blend-mode: multiply;
+	}
+
 	.fill {
 		position: absolute;
 		inset: 0;

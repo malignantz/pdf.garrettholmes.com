@@ -67,3 +67,56 @@ for (const scheme of ['light', 'dark'] as const) {
 		await page.screenshot({ path: `${dir}/${tag}-4-saved-list.png` });
 	});
 }
+
+// Highlight and Redact, at device scale 1: a highlight over text with a redaction box,
+// a selected highlight with its colours, and (phone) the tool bar scrolled to its end.
+test('editor screenshots: drawn tools', async ({ browser }, info) => {
+	test.skip(!dir, 'set EDITOR_SHOTS to an output folder');
+	test.setTimeout(90_000);
+	const phone = info.project.name === 'phone';
+	const ctx = await browser.newContext({
+		baseURL: info.project.use.baseURL,
+		viewport: phone ? { width: 412, height: 839 } : { width: 1440, height: 900 },
+		deviceScaleFactor: 1,
+		hasTouch: phone,
+		isMobile: phone
+	});
+	const page = await ctx.newPage();
+	const tag = info.project.name;
+	await openEditor(page, 'file=multi.pdf&page=1');
+	const b = (await page.getByTestId('editor-page').boundingBox())!;
+	const drag = async (x0: number, y0: number, x1: number, y1: number) => {
+		await page.mouse.move(b.x + x0 * b.width, b.y + y0 * b.height);
+		await page.mouse.down();
+		await page.mouse.move(b.x + x1 * b.width, b.y + y1 * b.height, { steps: 6 });
+		await page.mouse.up();
+	};
+	// The fixture's only text is the "multi p1" label at the top left: highlight it, redact beside it.
+	await chooseTool(page, 'Redact');
+	await drag(0.16, 0.012, 0.3, 0.036);
+	await chooseTool(page, 'Highlight');
+	await drag(0.004, 0.012, 0.125, 0.036);
+	await page.keyboard.press('Escape');
+	await page.keyboard.press('Escape');
+	// Zoom in on them so the text under the highlight can be seen.
+	await page.mouse.move(b.x + (phone ? 0.02 : 0.15) * b.width, b.y + 0.024 * b.height);
+	await page.keyboard.down('Control');
+	await page.mouse.wheel(0, -100);
+	await page.keyboard.up('Control');
+	await page.mouse.move(0, 0);
+	// Let the one-time redaction note go, and the sharp redraw land.
+	await page.waitForTimeout(7500);
+	await page.screenshot({ path: `${dir}/${tag}-drawn-1-highlight-redact.png` });
+	await page.locator('.stamp.highlight.ed').first().click({ position: { x: 4, y: 4 } });
+	await page.getByRole('radio', { name: 'Green' }).click();
+	await page.waitForTimeout(200);
+	await page.screenshot({ path: `${dir}/${tag}-drawn-2-highlight-selected.png` });
+	if (phone) {
+		await page.keyboard.press('Escape');
+		const bar = page.getByRole('toolbar', { name: 'Tools' });
+		await bar.evaluate((el) => el.scrollTo({ left: (el.scrollWidth - el.clientWidth) / 2 }));
+		await page.waitForTimeout(500);
+		await page.screenshot({ path: `${dir}/${tag}-drawn-3-toolbar-scrolled.png` });
+	}
+	await ctx.close();
+});

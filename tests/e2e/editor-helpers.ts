@@ -3,7 +3,7 @@ import { expect } from './fixtures';
 
 export interface StampJson {
 	id: string;
-	kind: 'image' | 'text' | 'mark';
+	kind: 'image' | 'text' | 'mark' | 'highlight' | 'redact';
 	box?: { x: number; y: number; w: number; h: number };
 	x?: number;
 	y?: number;

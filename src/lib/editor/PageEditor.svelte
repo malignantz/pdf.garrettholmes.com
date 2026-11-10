@@ -1,8 +1,14 @@
+<script lang="ts" module>
+	/** The note about what redaction does is shown once per visit. */
+	let redactNoteShown = false;
+</script>
+
 <script lang="ts">
 	// Full-screen view of one page for placing stamps: signature, initials, text,
-	// date and marks. Zoom/pan, page navigation, undo/redo through the store.
+	// date and marks (placed by a tap), highlight and redaction boxes (drawn by a
+	// drag). Zoom/pan, page navigation, undo/redo through the store.
 	import { flushSync, onMount, tick, untrack } from 'svelte';
-	import type { Asset, PageId, PageRef, Stamp, StampBox } from '../core/types';
+	import type { Asset, HighlightColor, PageId, PageRef, Stamp, StampBox } from '../core/types';
 	import { getApp } from '../app';
 	import { useDocStore } from '../doc/store.svelte';
 	import type { NewStamp } from '../doc/store';
@@ -15,7 +21,7 @@
 	import StampShape from './StampShape.svelte';
 	import SignaturePad from './SignaturePad.svelte';
 	import CopyDialog from './CopyDialog.svelte';
-	import { ensureStampFont, stampName, cssColor } from './stamp-view';
+	import { ensureStampFont, stampName, cssColor, HIGHLIGHT_COLORS, HIGHLIGHT_CSS, paintOrder } from './stamp-view';
 	import { stampForPage } from './copy';
 	import {
 		arrowDelta,
@@ -158,7 +164,7 @@
 
 	// ------------------------------------------------------------ viewport pointers (tap, pan, pinch, swipe)
 	const pointers = new Map<number, Point>();
-	let pmode: 'none' | 'tap' | 'pan' | 'swipe' | 'pinch' = 'none';
+	let pmode: 'none' | 'tap' | 'pan' | 'swipe' | 'pinch' | 'draw' = 'none';
 	let pstart = { x: 0, y: 0, t: 0, view: { zoom: 1, panX: 0, panY: 0 } as View };
 	let pinch0 = { view: { zoom: 1, panX: 0, panY: 0 } as View, m: { x: 0, y: 0 }, d: 1 };
 
@@ -176,6 +182,8 @@
 			pmode = 'tap';
 			pstart = { x: p.x, y: p.y, t: performance.now(), view: { ...view } };
 		} else if (pointers.size === 2) {
+			// A second finger always means pinch: a box being drawn is dropped.
+			draft = null;
 			pmode = 'pinch';
 			const { m, d } = mid();
 			pinch0 = { view: { ...view }, m, d };
@@ -193,8 +201,16 @@
 		}
 		const dx = p.x - pstart.x;
 		const dy = p.y - pstart.y;
-		if (pmode === 'tap' && Math.hypot(dx, dy) > 8) pmode = pstart.view.zoom > 1.0001 ? 'pan' : 'swipe';
-		if (pmode === 'pan') setView({ ...pstart.view, panX: pstart.view.panX + dx, panY: pstart.view.panY + dy });
+		if (pmode === 'tap' && Math.hypot(dx, dy) > 8) {
+			const f0 = screenToFraction(pstart, pstart.view, base);
+			// With a drawn tool armed, one finger (or the mouse) on the page draws instead of panning.
+			if (isDrawn(armed) && insidePage(f0)) {
+				pmode = 'draw';
+				draftStart = f0;
+			} else pmode = pstart.view.zoom > 1.0001 ? 'pan' : 'swipe';
+		}
+		if (pmode === 'draw') draft = drawnBox(draftStart, toFraction(e));
+		else if (pmode === 'pan') setView({ ...pstart.view, panX: pstart.view.panX + dx, panY: pstart.view.panY + dy });
 	}
 
 	function vpUp(e: PointerEvent) {
@@ -202,6 +218,7 @@
 		const p = vpPoint(e);
 		pointers.delete(e.pointerId);
 		if (pmode === 'tap') onTap(toFraction(e));
+		else if (pmode === 'draw') finishDraw(toFraction(e));
 		else if (pmode === 'swipe') {
 			const dx = p.x - pstart.x;
 			const dy = p.y - pstart.y;
@@ -216,7 +233,55 @@
 
 	function vpCancel(e: PointerEvent) {
 		pointers.delete(e.pointerId);
+		if (pmode === 'draw') draft = null;
 		if (pointers.size === 0) pmode = 'none';
+	}
+
+	const insidePage = (f: Point) => f.x >= 0 && f.x <= 1 && f.y >= 0 && f.y <= 1;
+
+	// ------------------------------------------------------------ drawing a box (highlight, redact)
+	/** The box being drawn, as page fractions. Local state only: the store sees one stamp on release. */
+	let draft = $state<StampBox | null>(null);
+	let draftStart: Point = { x: 0, y: 0 };
+
+	function drawnBox(a: Point, b: Point): StampBox {
+		const c = (v: number) => Math.min(1, Math.max(0, v));
+		const x0 = c(Math.min(a.x, b.x));
+		const x1 = c(Math.max(a.x, b.x));
+		const y0 = c(Math.min(a.y, b.y));
+		const y1 = c(Math.max(a.y, b.y));
+		return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+	}
+
+	/** A drag that stays within this many screen pixels is a slip: it places the default box. */
+	const SLIP_PX = 12;
+	/** A side thinner than this (a quick stroke along a line) gets the default size. */
+	const MIN_DRAWN_PX = 6;
+
+	/** Default drawn box: about 30% of the page wide, one text line high. */
+	function defaultBoxSize() {
+		return { width: 0.3, height: Math.min(0.2, textSize * 1.4) };
+	}
+
+	function finishDraw(end: Point) {
+		const t = armed;
+		const b = drawnBox(draftStart, end);
+		draft = null;
+		if (!isDrawn(t)) return;
+		const pw = base.width * view.zoom;
+		const ph = base.height * view.zoom;
+		const def = defaultBoxSize();
+		const thinW = b.w * pw < MIN_DRAWN_PX;
+		const thinH = b.h * ph < MIN_DRAWN_PX;
+		let box: StampBox;
+		if ((thinW && thinH) || Math.max(b.w * pw, b.h * ph) < SLIP_PX) box = boxAround(draftStart, def.width, def.height);
+		else {
+			// One side too thin: that side gets the default size, centred on the stroke.
+			const w = thinW ? def.width : b.w;
+			const h = thinH ? def.height : b.h;
+			box = boxAround({ x: b.x + b.w / 2, y: b.y + b.h / 2 }, w, h);
+		}
+		addBox(t, box, false);
 	}
 
 	// ------------------------------------------------------------ live region
@@ -227,7 +292,7 @@
 	}
 
 	// ------------------------------------------------------------ tools
-	type Tool = 'signature' | 'initials' | 'text' | 'date' | 'check' | 'cross' | 'dot';
+	type Tool = 'signature' | 'initials' | 'text' | 'date' | 'check' | 'cross' | 'dot' | 'highlight' | 'redact';
 	const TOOLS: { id: Tool; label: string; icon: IconName }[] = [
 		{ id: 'signature', label: 'Signature', icon: 'sign' },
 		{ id: 'initials', label: 'Initials', icon: 'initials' },
@@ -235,9 +300,42 @@
 		{ id: 'date', label: 'Date', icon: 'calendar' },
 		{ id: 'check', label: 'Check', icon: 'check' },
 		{ id: 'cross', label: 'Cross', icon: 'cross' },
-		{ id: 'dot', label: 'Dot', icon: 'dot' }
+		{ id: 'dot', label: 'Dot', icon: 'dot' },
+		{ id: 'highlight', label: 'Highlight', icon: 'highlight' },
+		{ id: 'redact', label: 'Redact', icon: 'redact' }
 	];
 	const isMark = (t: Tool | null): t is 'check' | 'cross' | 'dot' => t === 'check' || t === 'cross' || t === 'dot';
+	/** Tools whose box is drawn with a drag; they stay armed for several boxes. */
+	const isDrawn = (t: Tool | null): t is 'highlight' | 'redact' => t === 'highlight' || t === 'redact';
+
+	// Last highlight colour, remembered on this device (a convenience; fine if storage is blocked).
+	const HL_KEY = 'pdf-editor-highlight';
+	function readHl(): HighlightColor {
+		try {
+			const v = localStorage.getItem(HL_KEY);
+			return v === 'green' || v === 'pink' ? v : 'yellow';
+		} catch {
+			return 'yellow';
+		}
+	}
+	let hlColor = $state<HighlightColor>(readHl());
+	function rememberHl(c: HighlightColor) {
+		hlColor = c;
+		try {
+			localStorage.setItem(HL_KEY, c);
+		} catch {
+			// Storage blocked: the choice lasts for this visit only.
+		}
+	}
+
+	/** Shown once per visit, the first time a redaction box is placed. */
+	let note = $state('');
+	let noteTimer: ReturnType<typeof setTimeout> | undefined;
+	function showNote(msg: string) {
+		clearTimeout(noteTimer);
+		note = msg;
+		noteTimer = setTimeout(() => (note = ''), 7000);
+	}
 
 	let armed = $state<Tool | null>(null);
 	let armedAsset = $state.raw<Asset | null>(null);
@@ -249,6 +347,8 @@
 		if (!armed) return '';
 		const what = TOOLS.find((t) => t.id === armed)!.label.toLowerCase();
 		const verb = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches ? 'Tap' : 'Click';
+		if (armed === 'highlight') return `Drag over what to highlight, or ${verb.toLowerCase()} for a box. Press Escape when done.`;
+		if (armed === 'redact') return `Drag over what to remove, or ${verb.toLowerCase()} for a box. Press Escape when done.`;
 		return isMark(armed) ? `${verb} each spot to place a ${what} mark. Press Escape when done.` : `${verb} the page where the ${what} goes.`;
 	});
 
@@ -267,6 +367,7 @@
 		}
 		armed = t;
 		armedAsset = null;
+		void tick().then(() => revealTool(t));
 		if (byKeyboard) {
 			// No pointer to aim with: place in the middle, selected, so arrow keys move it.
 			place(t, { x: 0.5, y: 0.5 }, true);
@@ -332,6 +433,9 @@
 			select(id, byKeyboard);
 			announce(`Date placed: ${text}. Press Enter to edit it.`);
 			void tick().then(() => clampText(id));
+		} else if (isDrawn(t)) {
+			const sz = defaultBoxSize();
+			addBox(t, boxAround(f, sz.width, sz.height), byKeyboard);
 		} else if (t === 'text') {
 			disarm();
 			const size = textSize;
@@ -346,6 +450,23 @@
 			flushSync();
 			void tick().then(() => clampText(id));
 			announce('Type your text. Press Escape when done.');
+		}
+	}
+
+	/** Add a highlight or redaction box. The tool stays armed, except on the keyboard path. */
+	function addBox(t: 'highlight' | 'redact', box: StampBox, byKeyboard: boolean) {
+		if (!page) return;
+		const pid = page.id;
+		const ns: NewStamp = t === 'highlight' ? { kind: 'highlight', color: hlColor, box } : { kind: 'redact', box };
+		const id = store.transaction(t === 'highlight' ? 'Add highlight' : 'Add redaction', () => store.addStamp(pid, ns));
+		if (byKeyboard) {
+			disarm();
+			select(id, true);
+		} else select(id);
+		announce(t === 'highlight' ? `Highlight placed, ${hlColor}.` : 'Redaction placed.');
+		if (t === 'redact' && !redactNoteShown) {
+			redactNoteShown = true;
+			showNote('Redacted areas are removed from the file when you export, not just covered.');
 		}
 	}
 
@@ -599,6 +720,13 @@
 		endNudge();
 		if (selected?.kind !== 'text' || !page) return;
 		store.updateStamp(page.id, selected.id, { color });
+	}
+
+	function setHighlightColor(color: HighlightColor) {
+		endNudge();
+		if (selected?.kind !== 'highlight' || !page) return;
+		store.updateStamp(page.id, selected.id, { color });
+		rememberHl(color);
 	}
 
 	function resizeText(factor: number) {
@@ -856,11 +984,51 @@
 		const prevOverflow = document.documentElement.style.overflow;
 		document.documentElement.style.overflow = 'hidden';
 		return () => {
+			clearTimeout(noteTimer);
 			document.documentElement.style.overflow = prevOverflow;
 			if (store.gestureActive) store.commitGesture();
 			if (opener && opener.isConnected) opener.focus({ preventScroll: true });
 		};
 	});
+
+	// ------------------------------------------------------------ tool bar (scrolls sideways on phones)
+	let toolsEl: HTMLDivElement | undefined = $state();
+	let fadeStart = $state(false);
+	let fadeEnd = $state(false);
+
+	function updateFades() {
+		const el = toolsEl;
+		if (!el) return;
+		const max = el.scrollWidth - el.clientWidth;
+		fadeStart = max > 1 && el.scrollLeft > 1;
+		fadeEnd = max > 1 && el.scrollLeft < max - 1;
+	}
+
+	$effect(() => {
+		const el = toolsEl;
+		if (!el) return;
+		updateFades();
+		const ro = new ResizeObserver(updateFades);
+		ro.observe(el);
+		return () => ro.disconnect();
+	});
+
+	/** Bring an armed tool fully into view in a bar that scrolls sideways. */
+	function revealTool(t: Tool) {
+		const el = toolsEl;
+		const btn = el?.querySelector<HTMLElement>(`[data-tool="${t}"]`);
+		if (!el || !btn || el.scrollWidth <= el.clientWidth + 1) return;
+		const pad = 24;
+		const left = btn.offsetLeft - el.offsetLeft;
+		const right = left + btn.offsetWidth;
+		let to = el.scrollLeft;
+		if (left - pad < el.scrollLeft) to = left - pad;
+		else if (right + pad > el.scrollLeft + el.clientWidth) to = right + pad - el.clientWidth;
+		if (to !== el.scrollLeft) el.scrollTo({ left: to, behavior: 'smooth' });
+	}
+
+	/** Stamps in the order the export draws them (redaction, highlights, the rest). */
+	const ordered = $derived(page ? paintOrder(page.stamps) : []);
 
 	/** One resize handle, set off from the stamp so it never covers small text or marks. */
 	const RESIZE: Handle = 'se';
@@ -895,7 +1063,15 @@
 		<Button variant="primary" onclick={done}>Done</Button>
 	</header>
 
-	<div class="tools" role="toolbar" aria-label="Tools">
+	<div
+		class="tools"
+		class:fade-start={fadeStart}
+		class:fade-end={fadeEnd}
+		role="toolbar"
+		aria-label="Tools"
+		bind:this={toolsEl}
+		onscroll={updateFades}
+	>
 		{#each TOOLS as t (t.id)}
 			<button
 				type="button"
@@ -932,7 +1108,7 @@
 				<div class="page" style={pageStyle} data-testid="editor-page">
 					<PageCanvas {source} pageIndex={page.pageIndex} rotation={page.rotation} renderer={app.renderer} alt={`Page ${index + 1}`} />
 					<div class="layer" bind:this={layer} class:passthrough={!!armed}>
-						{#each page.stamps as s (s.id)}
+						{#each ordered as s (s.id)}
 							{@const isSel = s.id === selectedId}
 							{@const isEdit = editing?.id === s.id}
 							<StampShape
@@ -971,7 +1147,7 @@
 										onpointerdown={(e) => e.stopPropagation()}
 									></textarea>
 								{/if}
-								{#if isSel && !isEdit}
+								{#if isSel && !isEdit && !armed}
 									<!-- Touch only (see CSS): a finger covers a small stamp, so moving gets its own grip. -->
 									<span
 										class="handle move"
@@ -998,13 +1174,27 @@
 								{/if}
 							</StampShape>
 						{/each}
+						{#if draft && isDrawn(armed)}
+							<StampShape
+								stamp={armed === 'highlight' ? { id: 'draft', kind: 'highlight', color: hlColor, box: draft } : { id: 'draft', kind: 'redact', box: draft }}
+								{aspect}
+								class="ed selected draft"
+								data-testid="draft-box"
+								aria-hidden="true"
+							/>
+						{/if}
 					</div>
 				</div>
 			{/if}
 		</div>
 
-		{#if armed}
-			<p class="armed-hint" role="status">{armedHint}</p>
+		{#if armed || note}
+			<div class="hints">
+				{#if armed}<p class="armed-hint" role="status">{armedHint}</p>{/if}
+				{#if note}
+					<p class="armed-hint note" role="status" data-testid="editor-note">{note}</p>
+				{/if}
+			</div>
 		{/if}
 
 		{#if editing && editingStamp?.kind === 'text'}
@@ -1035,6 +1225,20 @@
 					<span class="pt num" aria-label={`Size ${fontPt} points`}>{fontPt} pt</span>
 					<IconButton icon="zoom-in" label="Larger text" onclick={() => resizeText(1.15)} />
 					<Button variant="quiet" icon="text" onclick={() => startEditing(selected!.id)}>Edit</Button>
+				{:else if selected.kind === 'highlight'}
+					<div class="colors" role="radiogroup" aria-label="Highlight colour">
+						{#each HIGHLIGHT_COLORS as c (c)}
+							<button
+								type="button"
+								role="radio"
+								class="color"
+								aria-checked={selected.color === c}
+								aria-label={c[0].toUpperCase() + c.slice(1)}
+								style="--c: {HIGHLIGHT_CSS[c]}"
+								onclick={() => setHighlightColor(c)}
+							></button>
+						{/each}
+					</div>
 				{/if}
 				<IconButton icon="duplicate" label="Duplicate" shortcut="Ctrl+D" onclick={duplicateSelected} />
 				{#if pages.length > 1}
@@ -1232,6 +1436,19 @@
 		outline-offset: 3px;
 	}
 
+	/* Redaction: solid black, see-through while selected or drawn so the user sees what it covers. */
+	.layer :global(.ed.redact.selected .fill) {
+		opacity: 0.75;
+	}
+
+	.layer :global(.ed.draft) {
+		pointer-events: none;
+	}
+
+	.layer :global(.ed.draft::before) {
+		content: none;
+	}
+
 	.layer :global(.ed.editing) {
 		cursor: text;
 		box-shadow: 0 0 0 1.5px var(--accent);
@@ -1337,12 +1554,21 @@
 		}
 	}
 
-	.armed-hint {
+	.hints {
 		position: absolute;
 		top: var(--s-3);
 		left: 50%;
 		transform: translateX(-50%);
+		display: grid;
+		justify-items: center;
+		gap: var(--s-2);
+		width: max-content;
 		max-width: calc(100% - 2 * var(--s-4));
+		pointer-events: none;
+		z-index: 3;
+	}
+
+	.armed-hint {
 		padding: var(--s-2) var(--s-4);
 		background: var(--ink);
 		color: var(--surface);
@@ -1449,19 +1675,39 @@
 			display: none;
 		}
 
+		/* Nine tools do not fit a phone: the bar scrolls sideways, with a soft fade on the side that has more. */
 		.tools {
 			flex-direction: row;
-			justify-content: space-between;
+			justify-content: flex-start;
 			padding: var(--s-1) calc(var(--s-1) + var(--safe-right)) calc(var(--s-1) + var(--safe-bottom))
 				calc(var(--s-1) + var(--safe-left));
 			border-right: 0;
 			border-top: 1px solid var(--line);
 			overflow-x: auto;
 			overflow-y: hidden;
+			overscroll-behavior-x: contain;
+			-webkit-overflow-scrolling: touch;
+			scrollbar-width: none;
+			touch-action: pan-x;
+			--fade-l: 0px;
+			--fade-r: 0px;
+			mask-image: linear-gradient(to right, transparent 0, #000 var(--fade-l), #000 calc(100% - var(--fade-r)), transparent 100%);
+		}
+
+		.tools::-webkit-scrollbar {
+			display: none;
+		}
+
+		.tools.fade-start {
+			--fade-l: 28px;
+		}
+
+		.tools.fade-end {
+			--fade-r: 28px;
 		}
 
 		.tool {
-			flex: 1 0 48px;
+			flex: 1 0 54px;
 			width: auto;
 			min-width: 48px;
 			min-height: 56px;
