@@ -43,12 +43,29 @@ export function inkRgb(color: 'black' | 'blue'): [number, number, number] {
 	return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
 }
 
-/** On-screen fill of a highlight stamp (the export blends with Multiply; this is a preview). */
+/**
+ * On-screen fill of a highlight stamp: the export's colours (engine/stamps.ts
+ * HIGHLIGHT_RGB), drawn with `mix-blend-mode: multiply` like the export.
+ */
 export const HIGHLIGHT_CSS: Record<HighlightColor, string> = {
-	yellow: 'rgb(255 230 0 / 0.4)',
-	green: 'rgb(80 220 100 / 0.4)',
-	pink: 'rgb(255 110 180 / 0.4)'
+	yellow: '#FFEB3B',
+	green: '#A5F36B',
+	pink: '#FF9CCB'
 };
+
+export const HIGHLIGHT_COLORS: readonly HighlightColor[] = ['yellow', 'green', 'pink'];
+
+/**
+ * Draw order matching the export: redaction is applied to the page itself, then
+ * highlights are drawn, then every other stamp in its own order.
+ */
+export function paintOrder<T extends Stamp>(stamps: readonly T[]): T[] {
+	const rank = (s: Stamp) => (s.kind === 'redact' ? 0 : s.kind === 'highlight' ? 1 : 2);
+	return stamps
+		.map((s, i) => ({ s, i }))
+		.sort((a, b) => rank(a.s) - rank(b.s) || a.i - b.i)
+		.map((x) => x.s);
+}
 
 export const TEXT_LINE_HEIGHT = STAMP_FONT.lineHeight;
 
@@ -127,7 +144,7 @@ export function stampName(s: Stamp, assets: readonly Asset[]): string {
 		return t ? `Text "${t.length > 40 ? t.slice(0, 40) + '…' : t}"` : 'Empty text';
 	}
 	if (s.kind === 'mark') return s.mark === 'check' ? 'Check mark' : s.mark === 'cross' ? 'Cross mark' : 'Dot';
-	if (s.kind === 'highlight') return 'Highlight';
+	if (s.kind === 'highlight') return `Highlight, ${s.color}`;
 	if (s.kind === 'redact') return 'Redaction';
 	const a = assets.find((x) => x.id === s.assetId);
 	return a?.kind === 'initials' ? 'Initials' : a?.kind === 'signature' ? 'Signature' : 'Image';

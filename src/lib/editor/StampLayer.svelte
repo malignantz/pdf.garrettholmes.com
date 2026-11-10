@@ -6,7 +6,7 @@
 	import type { Asset, PageRef } from '../core/types';
 	import { getApp } from '../app';
 	import StampShape from './StampShape.svelte';
-	import { ensureStampFont } from './stamp-view';
+	import { ensureStampFont, paintOrder } from './stamp-view';
 
 	let { page, assets }: { page: PageRef; assets: readonly Asset[] } = $props();
 
@@ -24,7 +24,7 @@
 
 {#if page.stamps.length > 0}
 	<div class="stamp-layer" aria-hidden="true">
-		{#each page.stamps as stamp (stamp.id)}
+		{#each paintOrder(page.stamps) as stamp (stamp.id)}
 			<StampShape {stamp} asset={stamp.kind === 'image' ? byId.get(stamp.assetId) : undefined} {aspect} />
 		{/each}
 	</div>
