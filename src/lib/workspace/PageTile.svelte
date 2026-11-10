@@ -122,6 +122,9 @@
 		-webkit-user-select: none;
 		touch-action: manipulation;
 		cursor: default;
+		/* Off-screen tiles skip style, layout and paint; the grid sets the measured size. */
+		content-visibility: auto;
+		contain-intrinsic-size: auto var(--cell-w, 160px) auto var(--cell-h, 240px);
 	}
 
 	.frame {

@@ -83,6 +83,7 @@
 		/** Thumbnail of the first dragged page, copied at lift. */
 		preview: string | null;
 		previewAspect: number;
+		touch: boolean;
 	}
 
 	let press: Press | null = null;
@@ -212,7 +213,8 @@
 			y: e.clientY,
 			slot: -1,
 			preview: url,
-			previewAspect: aspect
+			previewAspect: aspect,
+			touch: e.pointerType !== 'mouse'
 		};
 		suppress(10_000);
 		updateSlot();
@@ -285,7 +287,10 @@
 		return drag !== null;
 	}
 
-	const indicator = $derived(drag && drag.slot >= 0 ? indicatorFor(rects, drag.slot, drag.gap) : null);
+	const indicator = $derived.by(() => {
+		if (!drag || drag.slot < 0 || !grid) return null;
+		return indicatorFor(rects, drag.slot, drag.gap, drag.y - grid.getBoundingClientRect().top);
+	});
 	const noop = $derived(drag ? isNoopMove(pages, drag.set, drag.slot) : true);
 
 	// ------------------------------------------------------------ click / keys
@@ -359,6 +364,27 @@
 	// Roving tabindex needs one tabbable tile even before anything was focused.
 	const tabbable = $derived(focusedId && pages.some((p) => p.id === focusedId) ? focusedId : (pages[0]?.id ?? null));
 
+	// Off-screen tiles use content-visibility; give them the real tile size so
+	// the scroll height is right before they are ever laid out.
+	$effect(() => {
+		if (!grid) return;
+		const el = grid;
+		const measure = () => {
+			const first = el.querySelector<HTMLElement>(':scope > [data-id]');
+			if (!first) return;
+			const r = first.getBoundingClientRect();
+			if (r.width > 0) {
+				el.style.setProperty('--cell-w', `${r.width}px`);
+				el.style.setProperty('--cell-h', `${r.height}px`);
+			}
+		};
+		const ro = new ResizeObserver(measure);
+		ro.observe(el);
+		const first = el.querySelector<HTMLElement>(':scope > [data-id]');
+		if (first) ro.observe(first);
+		return () => ro.disconnect();
+	});
+
 	$effect(() => {
 		if (!grid) return;
 		const el = grid;
@@ -419,7 +445,7 @@
 </p>
 
 {#if drag}
-	<div class="drag-preview" aria-hidden="true" style:transform="translate({drag.x}px, {drag.y}px)">
+	<div class="drag-preview" class:touch={drag.touch} aria-hidden="true" style:transform="translate({drag.touch ? Math.min(Math.max(drag.x, 56), innerWidth - 72) : drag.x}px, {drag.y}px)">
 		<div class="stack" class:many={drag.ids.length > 1} style:--a={drag.previewAspect}>
 			{#if drag.ids.length > 1}<span class="under u2"></span><span class="under u1"></span>{/if}
 			<span class="top">
@@ -505,6 +531,11 @@
 		pointer-events: none;
 		/* Offset so the finger or cursor does not cover the preview. */
 		margin: -28px 0 0 14px;
+	}
+
+	/* Under a finger: centred above the touch point, so the finger does not hide it. */
+	.drag-preview.touch {
+		margin: -150px 0 0 -40px;
 	}
 
 	.stack {

@@ -81,7 +81,9 @@ function groupRows(rects: readonly Rect[]): Row[] {
 export function indicatorFor(
 	rects: readonly Rect[],
 	slot: number,
-	gap: number
+	gap: number,
+	/** Pointer y: at a row break, show the bar in the row the pointer is in. */
+	y?: number
 ): { x: number; top: number; height: number } | null {
 	if (rects.length === 0) return null;
 	const before = slot > 0 ? rects[slot - 1] : undefined;
@@ -89,6 +91,9 @@ export function indicatorFor(
 	// Same row: centre the bar in the gap between them.
 	if (before && after && Math.abs(before.top - after.top) <= before.height / 2) {
 		return { x: (before.left + before.width + after.left) / 2, top: after.top, height: after.height };
+	}
+	if (before && after && y !== undefined && y < before.top + before.height + gap / 2) {
+		return { x: before.left + before.width + gap / 2, top: before.top, height: before.height };
 	}
 	if (after) return { x: after.left - gap / 2, top: after.top, height: after.height };
 	const b = before!;

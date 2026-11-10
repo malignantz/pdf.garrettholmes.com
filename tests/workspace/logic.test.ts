@@ -90,6 +90,10 @@ describe('indicatorFor', () => {
 	it('after the last tile', () => {
 		expect(indicatorFor(g, 6, 20)).toEqual({ x: 350, top: 160, height: 140 });
 	});
+	it('at a row break follows the pointer row', () => {
+		expect(indicatorFor(g, 3, 20, 50)).toEqual({ x: 350, top: 0, height: 140 });
+		expect(indicatorFor(g, 3, 20, 200)).toEqual({ x: -10, top: 160, height: 140 });
+	});
 	it('null for no tiles', () => {
 		expect(indicatorFor([], 0, 20)).toBeNull();
 	});
