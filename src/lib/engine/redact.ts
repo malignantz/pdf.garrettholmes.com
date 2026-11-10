@@ -1,13 +1,126 @@
 /**
- * True redaction with MuPDF: remove text, image pixels, line art, links and
+ * True redaction with MuPDF: remove text, image pixels, drawings, links and
  * annotations under each box, paint the box black, and prove it.
  *
- * Stub until the redaction stream lands: a plan with any redaction is refused.
+ * What the stage does, per redacted page (the assembled file is unencrypted):
+ *
+ *  1. Box mapping. A StampBox is a fraction of the page as displayed (after /Rotate,
+ *     CropBox-relative, top-left origin). MuPDF "page space" is exactly that frame
+ *     in points with UserUnit applied (`page.getBounds()` is [0 0 W H] of the
+ *     displayed page; `page.getTransform()` maps PDF user space into it), so a box
+ *     is `bounds.x0 + f.x·W` etc. The page's displayed size must match the plan's
+ *     expected size or the stage refuses (a box on the wrong frame would miss).
+ *
+ *  2. Glyph granularity. MuPDF removes a glyph when (roughly) its centre is under the
+ *     redaction rectangle, so a partly covered character would survive (seen in
+ *     tests). Before applying, each box is grown to the union of the boxes of every
+ *     glyph that touches it: MuPDF structured-text quads (font ascent/descent and,
+ *     separately, exact outlines) plus an em box per glyph from a device pass (which
+ *     also sees clipped and invisible text). The grown rectangles are applied to text
+ *     only (pictures, drawings and annotations are judged against the boxes the user
+ *     drew, so one huge glyph cannot widen what else is removed), and only the boxes
+ *     the user drew are painted black (a neighbouring glyph that was only touched
+ *     disappears and leaves a gap; it is not painted over).
+ *
+ *  3. MuPDF `applyRedactions(black=false, IMAGE_PIXELS, LINE_ART_REMOVE_IF_TOUCHED,
+ *     TEXT_REMOVE)` (after a text-only pass over the grown rectangles). MuPDF rewrites the page content into a new stream, copies every
+ *     Form XObject the page uses (so pages sharing streams, forms or images with this
+ *     page are not changed), removes text under the rectangles (including invisible
+ *     OCR text, Type 3 text, text in hidden layers and in forms), blanks image pixels
+ *     in a new copy of the image (blanked pixels become opaque white in the stored
+ *     data, soft-mask values opaque, image-mask bits unpainted; the black is the
+ *     painted box), and removes links.
+ *
+ *  4. Our own pass over MuPDF's output (page stream and its new forms). It needs a
+ *     tokenizer; MuPDF's output is regular (inline images always ASCIIHex) and
+ *     anything else is refused:
+ *     - Drawings: MuPDF's REMOVE_IF_TOUCHED misses paths with several subpaths (seen
+ *       with a glyph outline drawn as one path), and REMOVE_IF_COVERED would keep a
+ *       path that is only partly under the box. Path data under the box stays in the
+ *       file under the black paint even when the rest is visible (text converted to
+ *       outlines is exactly that), so that is not acceptable: every painted path
+ *       whose geometry (control-point bounding box) touches a box is removed whole,
+ *       and every `sh` shading whose clip touches a box is removed whole. Cost: a
+ *       table line or background that passes under a box disappears entirely.
+ *       Paths used only as clips are kept (they paint nothing).
+ *     - Marked content: MuPDF keeps `/Span <</ActualText (…)>> BDC` even when it
+ *       removed the glyphs, so the hidden text would still be in the file. Every
+ *       string-valued property (ActualText, Alt, E, …; not Lang) of every marked-
+ *       content sequence on a redacted page is dropped, inline and named.
+ *     - Resources: MuPDF leaves resources that nothing draws any more (a pattern
+ *       whose cell holds text, an ExtGState whose soft mask draws text, an image
+ *       whose `Do` was removed). Each resource dictionary of the page and its forms
+ *       is cut down to the names its content uses. A pattern that is selected as a
+ *       colour but no longer painted with (MuPDF removed the path) does not count:
+ *       its `scn` becomes `0 g` and the pattern goes.
+ *     - Soft masks: the content of a soft-mask group is not page content, so it is
+ *       neither redacted nor fully checked. A redacted page whose content uses a soft
+ *       mask containing text or images is refused.
+ *
+ *  5. Annotations: MuPDF removes links only. Every entry of /Annots whose /Rect
+ *     touches a box (or has no usable /Rect) is removed, whatever its subtype,
+ *     widgets included; then popups and replies (/Parent, /IRT) of removed ones, judged
+ *     by identity and by place (qpdf's page copy can leave a reply pointing at a second
+ *     copy of the annotation, which would otherwise keep its text alive); then
+ *     removed widgets are taken out of /AcroForm /Fields and /CO (with parents left
+ *     without kids).
+ *
+ *  6. Document level: /StructTreeRoot is dropped (its /Alt and /ActualText may spell
+ *     out the removed text; the tags would be stale anyway); /Thumb is dropped from
+ *     redacted pages. Metadata removal is the finalize stage's job (core forces it).
+ *
+ *  7. Black: the content is wrapped in q … Q and `q 0 g <boxes> re f Q` appended.
+ *     Saved with `garbage=compact` so removed objects are not left behind as orphans.
+ *
+ *  8. The saved bytes are checked (strict); core runs the same check on the final
+ *     file (`verifyRedactions`) with our later stamps allowed.
+ *
+ * The check (any failure refuses the export):
+ *  - Optional content: hidden layers are made visible for the check (the file is
+ *    re-opened without /OCProperties), so hidden text and drawings are seen.
+ *  - Text, MuPDF: no structured-text character other than whitespace (default quads
+ *    and, separately, exact outlines) touches a box, except characters of
+ *    `allowedText`.
+ *  - Text, PDF.js: no text item touches a box, in PDF.js's own displayed-page
+ *    geometry. An item is taken from its baseline to 75% of its height along its
+ *    advance (a little inside MuPDF's quads, so both engines agree on neighbours
+ *    that only touch a box edge), except allowed strings.
+ *  - Device pass (MuPDF interpreter, contents and annotations): no glyph core, no
+ *    painted path, no shading inside its clip, no tiling pattern touches a box,
+ *    except the axis-aligned black rectangles we painted (and, on the final file,
+ *    our later image/mark/highlight stamps and allowed text). Every image drawn over
+ *    a box has stored pixels (and soft-mask values) under the box that are uniform:
+ *    the stored data carries no picture there.
+ *  - Annotations: no /Annots entry touches a box.
+ *  - Pixels: a MuPDF render of each box, inset by 1 px, is black (channels ≤ 40).
+ *    In the stage every pixel must be black: nothing of ours is drawn yet. On the
+ *    final file our own later stamps may sit on a box, so pixels inside overlay
+ *    boxes and inside the (padded) quads of allowed text are skipped, and 99.5% of
+ *    the rest must be black: allowed glyphs can ink slightly outside their quads.
+ *    Everything that could leave readable data is already covered by the content
+ *    checks above, so this small tolerance cannot hide a leak.
+ *
+ * Refused (a clear message, no file) rather than risked:
+ *  - soft masks with text or images on a redacted page (see 4);
+ *  - content MuPDF did not rewrite but which still needs an edit (should not happen:
+ *    MuPDF copies every form of a redacted page);
+ *  - inline images not written as ASCIIHex/ASCII85 in MuPDF's output, or content the
+ *    tokenizer cannot read;
+ *  - anything the check finds (a glyph MuPDF kept, an image it did not blank, …).
+ * Handled by removal, not refused: Type 3 fonts (as text), tiling patterns (the
+ * painted path goes), shadings (removed whole), clipped content, outlined text
+ * (removed whole), image masks and soft-masked images (blanked by MuPDF, checked).
+ * Not covered: bookmarks, named destinations, document JavaScript or other pages
+ * that quote the same text (search-and-redact is in the backlog).
  */
 
+import type * as MU from 'mupdf';
 import type { PageSize, StampBox, VerifyCheck } from '../core/types';
 import type { EngineDeps } from './deps';
 import { EngineError } from './errors';
+import { applyMatrix, multiply, type Matrix } from './geometry';
+import type { Mupdf } from './mupdf';
+import type { PdfjsLib } from './pdfjs';
 
 export interface RedactJob {
 	/** 0-based page index in the assembled file (= output page index). */
@@ -16,16 +129,54 @@ export interface RedactJob {
 	boxes: StampBox[];
 	/** Displayed size the plan expects for this page (PDF points, UserUnit applied). */
 	expected: PageSize;
+	/**
+	 * Boxes of our own later image, mark and highlight stamps on this page (same frame).
+	 * Only the check on the final file uses them: what is drawn inside them is ours.
+	 */
+	overlays?: StampBox[];
 }
 
+type Rect = [number, number, number, number];
+type Doc = MU.PDFDocument;
+type Obj = MU.PDFObject;
+
+const SIZE_TOLERANCE = 0.5;
+/** Strings in marked-content properties that may stay (language tags carry no text). */
+const KEEP_STRING_KEYS = new Set(['Lang']);
+const RESOURCE_KINDS = ['XObject', 'Font', 'ExtGState', 'ColorSpace', 'Pattern', 'Shading', 'Properties'] as const;
+type ResourceKind = (typeof RESOURCE_KINDS)[number];
+const DEVICE_SPACES = new Set(['DeviceGray', 'DeviceRGB', 'DeviceCMYK', 'Pattern', 'G', 'RGB', 'CMYK', 'I', 'Indexed']);
+
 /**
- * The redact stage. Must check its own result (nothing readable under any box,
- * boxes black) before returning, and throw EngineError('verification-failed')
- * with a 'redaction' check otherwise.
+ * The redact stage. Checks its own result (nothing readable under any box, boxes
+ * black) before returning, and throws EngineError('verification-failed') with
+ * 'redaction' checks otherwise.
  */
-export async function applyRedactions(_deps: EngineDeps, bytes: Uint8Array, jobs: RedactJob[]): Promise<Uint8Array> {
-	if (jobs.length > 0) throw new EngineError('unsupported', 'Redaction is not available yet.');
-	return bytes;
+export async function applyRedactions(deps: EngineDeps, bytes: Uint8Array, jobs: RedactJob[]): Promise<Uint8Array> {
+	if (jobs.length === 0) return bytes;
+	const m = await deps.mupdf();
+	let out: Uint8Array;
+	const doc = openDoc(m, bytes);
+	try {
+		out = redactDocument(m, doc, jobs);
+	} catch (e) {
+		if (e instanceof ContentError) {
+			const err = new EngineError(
+				'unsupported',
+				`Page ${e.pageNo} has content that cannot be redacted reliably, so nothing was exported.`
+			);
+			(err as { cause?: unknown }).cause = e.message;
+			throw err;
+		}
+		throw e;
+	} finally {
+		destroy(doc);
+	}
+	const checks = await checkRedactions(deps, out, jobs, { allowed: jobs.map(() => []), strict: true });
+	if (!checks.every((c) => c.ok)) {
+		throw new EngineError('verification-failed', 'A redaction could not be verified, so the file was not saved.', checks);
+	}
+	return out;
 }
 
 /**
@@ -33,11 +184,1489 @@ export async function applyRedactions(_deps: EngineDeps, bytes: Uint8Array, jobs
  * stamps and page numbers may have drawn on job i's page (they may overlap a box).
  */
 export async function verifyRedactions(
-	_deps: EngineDeps,
-	_finalBytes: Uint8Array,
-	_jobs: RedactJob[],
-	_allowedText: string[][],
-	_password?: string
+	deps: EngineDeps,
+	finalBytes: Uint8Array,
+	jobs: RedactJob[],
+	allowedText: string[][],
+	password?: string
 ): Promise<VerifyCheck[]> {
-	return [];
+	if (jobs.length === 0) return [];
+	return checkRedactions(deps, finalBytes, jobs, { allowed: allowedText, password, strict: false });
+}
+
+// ---------------------------------------------------------------------------
+// The stage
+
+function redactDocument(m: Mupdf, doc: Doc, jobs: RedactJob[]): Uint8Array {
+	const preCount = doc.countObjects();
+	// Glyph boxes are measured with hidden layers visible, so hidden text is grown over too.
+	const probe = hasOptionalContent(doc) ? withoutOptionalContent(m, doc) : null;
+	try {
+		for (const job of jobs) {
+			const pageNo = job.pageIndex + 1;
+			const page = doc.loadPage(job.pageIndex);
+			const boxes = pageBoxes(page, job);
+			const grown = growToGlyphs(m, probe ? probe.loadPage(job.pageIndex) : page, boxes);
+			// Text first, over the grown rectangles; then everything, over the boxes themselves.
+			for (const r of grown) page.createAnnotation('Redact').setRect(r);
+			page.applyRedactions(false, m.PDFPage.REDACT_IMAGE_NONE, m.PDFPage.REDACT_LINE_ART_NONE, m.PDFPage.REDACT_TEXT_REMOVE);
+			for (const r of boxes) page.createAnnotation('Redact').setRect(r);
+			page.applyRedactions(
+				false,
+				m.PDFPage.REDACT_IMAGE_PIXELS,
+				m.PDFPage.REDACT_LINE_ART_REMOVE_IF_TOUCHED,
+				m.PDFPage.REDACT_TEXT_REMOVE
+			);
+			const pageObj = page.getObject();
+			const pageTf = page.getTransform() as Matrix;
+			cleanContent(m, doc, pageObj, pageTf, boxes, preCount, pageNo, page.getBounds() as Rect);
+			removeAnnotations(doc, pageObj, pageTf, boxes);
+			paintBlack(doc, pageObj, pageTf, boxes);
+			pageObj.delete('Thumb');
+		}
+	} finally {
+		if (probe) destroy(probe);
+	}
+	doc.getTrailer().get('Root').delete('StructTreeRoot');
+	return doc.saveToBuffer('garbage=compact,compress').asUint8Array().slice();
+}
+
+/** Boxes of a job in MuPDF page space; refuses if the page is not the planned size. */
+function pageBoxes(page: MU.PDFPage, job: RedactJob): Rect[] {
+	const b = page.getBounds() as Rect;
+	const w = b[2] - b[0];
+	const h = b[3] - b[1];
+	if (Math.abs(w - job.expected.width) > SIZE_TOLERANCE || Math.abs(h - job.expected.height) > SIZE_TOLERANCE) {
+		const check: VerifyCheck = {
+			name: 'page-sizes',
+			ok: false,
+			detail: `Page ${job.pageIndex + 1}: the redaction step sees ${r2(w)}×${r2(h)} pt, the plan expects ${r2(job.expected.width)}×${r2(job.expected.height)} pt.`
+		};
+		throw new EngineError('verification-failed', 'The pages did not come out the expected size, so the file was not saved.', [check]);
+	}
+	return job.boxes.map((s) => fractionRect(b, s));
+}
+
+function fractionRect(b: Rect, s: StampBox): Rect {
+	const w = b[2] - b[0];
+	const h = b[3] - b[1];
+	return [b[0] + s.x * w, b[1] + s.y * h, b[0] + (s.x + s.w) * w, b[1] + (s.y + s.h) * h];
+}
+
+/** Each box grown to cover every glyph that touches it (any amount). */
+function growToGlyphs(m: Mupdf, page: MU.PDFPage, boxes: Rect[]): Rect[] {
+	const grown = boxes.map((b) => [...b] as Rect);
+	const touch = (r: Rect) => {
+		boxes.forEach((b, i) => {
+			if (touches(r, b, 0)) grown[i] = union(grown[i], r);
+		});
+	};
+	for (const opts of ['preserve-whitespace', 'preserve-whitespace,accurate-bboxes']) {
+		const st = page.toStructuredText(opts);
+		st.walk({
+			onChar(_c, _origin, _font, _size, quad) {
+				touch(quadRect(quad as number[]));
+			}
+		});
+		destroy(st);
+	}
+	runDevice(m, page, { glyph: (g) => touch(g.em) });
+	return grown;
+}
+
+// ---------------------------------------------------------------------------
+// Our pass over MuPDF's output
+
+class ContentError extends Error {
+	constructor(
+		readonly pageNo: number,
+		message: string
+	) {
+		super(message);
+	}
+}
+
+type Usage = Record<ResourceKind, Set<string>>;
+function newUsage(): Usage {
+	const u = {} as Usage;
+	for (const k of RESOURCE_KINDS) u[k] = new Set();
+	return u;
+}
+
+interface Edit {
+	start: number;
+	end: number;
+	text: string;
+}
+
+interface StreamWork {
+	obj: Obj;
+	bytes: Uint8Array;
+	edits: Map<number, Edit>;
+}
+
+interface PassCtx {
+	doc: Doc;
+	pageNo: number;
+	pageTf: Matrix;
+	boxes: Rect[];
+	preCount: number;
+	streams: Map<number, StreamWork>;
+	/** Resource dictionaries we own (made local) and the names their content uses. */
+	resources: { dict: Obj; usage: Usage }[];
+	extGStates: Obj[];
+	patterns: PatternUse[];
+	active: Set<number>;
+}
+
+interface GState {
+	ctm: Matrix;
+	clip: Rect | null;
+	/** Pattern set as the fill / stroke colour, if any. */
+	fillPat: PatternUse | null;
+	strokePat: PatternUse | null;
+}
+
+/** A `scn`/`SCN` that selects a pattern; rewritten to a plain colour if nothing paints with it. */
+interface PatternUse {
+	name: string;
+	usage: Usage;
+	work: StreamWork;
+	s: number;
+	e: number;
+	stroke: boolean;
+	used: boolean;
+}
+
+function cleanContent(
+	m: Mupdf,
+	doc: Doc,
+	pageObj: Obj,
+	pageTf: Matrix,
+	boxes: Rect[],
+	preCount: number,
+	pageNo: number,
+	bounds: Rect
+) {
+	void m;
+	const ctx: PassCtx = {
+		doc,
+		pageNo,
+		pageTf,
+		boxes,
+		preCount,
+		streams: new Map(),
+		resources: [],
+		extGStates: [],
+		patterns: [],
+		active: new Set()
+	};
+	const res = localResources(doc, pageObj, pageObj.getInheritable('Resources'));
+	const usage = newUsage();
+	ctx.resources.push({ dict: res, usage });
+
+	const contents = pageObj.get('Contents');
+	const parts: Obj[] = [];
+	if (contents.isArray()) {
+		const a = contents.resolve();
+		for (let i = 0; i < a.length; i++) parts.push(a.get(i));
+	} else if (!contents.isNull()) parts.push(contents);
+	const state: GState[] = [{ ctm: [1, 0, 0, 1, 0, 0], clip: bounds, fillPat: null, strokePat: null }];
+	for (const part of parts) {
+		if (!part.isIndirect() || part.asIndirect() < preCount) {
+			throw new ContentError(pageNo, 'page content was not rewritten by MuPDF');
+		}
+		walkStream(ctx, part, res, usage, state);
+	}
+
+	// A pattern selected but never painted with (MuPDF removed the painting) is dropped,
+	// so its cell (which may hold text) does not stay in the file.
+	for (const p of ctx.patterns) {
+		if (!p.usage.Pattern.has(p.name)) p.work.edits.set(p.s, { start: p.s, end: p.e, text: p.stroke ? '0 G' : '0 g' });
+	}
+	for (const w of ctx.streams.values()) {
+		if (w.edits.size) w.obj.writeStream(applyEdits(w.bytes, [...w.edits.values()]));
+	}
+	for (const { dict, usage: u } of ctx.resources) pruneResources(doc, dict, u);
+	// Soft masks are not rewritten: refuse when one could hold text or pictures.
+	for (const gs of ctx.extGStates) {
+		const smask = gs.get('SMask');
+		if (smask.isNull() || !smask.resolve().isDictionary()) continue;
+		const group = smask.resolve().get('G');
+		if (group.isNull()) continue;
+		if (containsTextOrImages(group, new Set(), 0)) {
+			throw new EngineError(
+				'unsupported',
+				`Page ${pageNo} uses a transparency mask that contains text or pictures. It cannot be redacted reliably, so nothing was exported.`
+			);
+		}
+	}
+}
+
+/** Makes `holder`'s /Resources a direct dictionary owned by `holder` (a shallow copy). */
+function localResources(doc: Doc, holder: Obj, current: Obj): Obj {
+	const copy = doc.newDictionary();
+	const src = current.isNull() ? null : current.resolve();
+	if (src?.isDictionary()) src.forEach((v, k) => copy.put(k as string, v));
+	holder.put('Resources', copy);
+	return holder.get('Resources');
+}
+
+function walkStream(ctx: PassCtx, ref: Obj, res: Obj, usage: Usage, state: GState[]) {
+	const num = ref.asIndirect();
+	let work = ctx.streams.get(num);
+	if (!work) {
+		work = { obj: ref, bytes: ref.readStream().asUint8Array().slice(), edits: new Map() };
+		ctx.streams.set(num, work);
+	}
+	const w = work;
+	const lexer = new Lexer(w.bytes, ctx.pageNo);
+	const top = () => state[state.length - 1];
+	let path: Rect | null = null;
+	let clipPending = false;
+	const point = (x: number, y: number) => {
+		const [px, py] = applyMatrix(multiply(top().ctm, ctx.pageTf), x, y);
+		path = path ? union(path, [px, py, px, py]) : [px, py, px, py];
+	};
+	const edit = (start: number, end: number, text: string) => w.edits.set(start, { start, end, text });
+	const nums = (op: Op, n: number) => {
+		const out: number[] = [];
+		if (op.args.length < n) throw new ContentError(ctx.pageNo, `missing operands for ${op.op}`);
+		for (let i = op.args.length - n; i < op.args.length; i++) {
+			const a = op.args[i];
+			if (a.k !== 'num') throw new ContentError(ctx.pageNo, `bad operands for ${op.op}`);
+			out.push(a.v);
+		}
+		return out;
+	};
+	const nameArg = (op: Op, i: number) => {
+		const a = op.args[i];
+		return a && a.k === 'name' ? a.v : null;
+	};
+	const paint = (fill: boolean, stroke: boolean) => {
+		for (const p of [fill ? top().fillPat : null, stroke ? top().strokePat : null]) {
+			if (p && !p.used) {
+				p.used = true;
+				p.usage.Pattern.add(p.name);
+			}
+		}
+	};
+	const lookup = (kind: ResourceKind, name: string): Obj | null => {
+		const dict = res.get(kind);
+		if (dict.isNull()) return null;
+		const v = dict.resolve().get(name);
+		return v.isNull() ? null : v;
+	};
+
+	for (let op = lexer.next(); op; op = lexer.next()) {
+		switch (op.op) {
+			case 'q':
+				state.push({ ...top() });
+				break;
+			case 'Q':
+				if (state.length > 1) state.pop();
+				break;
+			case 'cm': {
+				const [a, b, c, d, e, f] = nums(op, 6);
+				top().ctm = multiply([a, b, c, d, e, f], top().ctm);
+				break;
+			}
+			case 'm':
+			case 'l': {
+				const [x, y] = nums(op, 2);
+				point(x, y);
+				break;
+			}
+			case 'c': {
+				const v = nums(op, 6);
+				for (let i = 0; i < 6; i += 2) point(v[i], v[i + 1]);
+				break;
+			}
+			case 'v':
+			case 'y': {
+				const v = nums(op, 4);
+				point(v[0], v[1]);
+				point(v[2], v[3]);
+				break;
+			}
+			case 're': {
+				const [x, y, wd, ht] = nums(op, 4);
+				point(x, y);
+				point(x + wd, y + ht);
+				point(x + wd, y);
+				point(x, y + ht);
+				break;
+			}
+			case 'W':
+			case 'W*':
+				clipPending = true;
+				break;
+			case 'S':
+			case 's':
+			case 'f':
+			case 'F':
+			case 'f*':
+			case 'B':
+			case 'B*':
+			case 'b':
+			case 'b*':
+			case 'n': {
+				const p = path as Rect | null;
+				if (op.op !== 'n' && p && ctx.boxes.some((b) => touches(p, b, 0))) edit(op.s, op.e, 'n');
+				else if (op.op !== 'n') paint(!/^[Ss]$/.test(op.op), /^([Ss]|[Bb]\*?)$/.test(op.op));
+				if (clipPending && p) {
+					const c = top().clip;
+					top().clip = c ? (intersect(c, p) ?? [p[0], p[1], p[0], p[1]]) : p;
+				}
+				path = null;
+				clipPending = false;
+				break;
+			}
+			case 'sh': {
+				const name = nameArg(op, 0);
+				const area = top().clip;
+				if (!area || ctx.boxes.some((b) => touches(area, b, 0))) edit(op.args[0]?.s ?? op.s, op.e, '');
+				else if (name) usage.Shading.add(name);
+				break;
+			}
+			case 'Do': {
+				const name = nameArg(op, 0);
+				if (!name) break;
+				usage.XObject.add(name);
+				const x = lookup('XObject', name);
+				if (!x || !x.isIndirect()) break;
+				const xo = x.resolve();
+				const sub = xo.get('Subtype');
+				if (!sub.isName() || sub.asName() !== 'Form') {
+					paint(true, false);
+					break;
+				}
+				// An image mask, or a form, may paint with the current colours.
+				paint(true, true);
+				const fnum = x.asIndirect();
+				if (ctx.active.has(fnum)) break;
+				if (ctx.active.size > 30) throw new ContentError(ctx.pageNo, 'forms nested too deeply');
+				const ctm = multiply(readMatrix(xo.get('Matrix')), top().ctm);
+				let clip = top().clip;
+				const bbox = readRect(xo.get('BBox'));
+				if (bbox) {
+					const r = transformRect(multiply(ctm, ctx.pageTf), bbox);
+					clip = clip ? (intersect(clip, r) ?? [r[0], r[1], r[0], r[1]]) : r;
+				}
+				if (fnum < ctx.preCount) {
+					// MuPDF copies every form of a redacted page; an original one here must not need edits.
+					if (formNeedsEdits(ctx, x, { ...top(), ctm, clip }, res, usage)) throw new ContentError(ctx.pageNo, 'a shared form needs edits');
+					break;
+				}
+				ctx.active.add(fnum);
+				const own = xo.get('Resources');
+				let fres = res;
+				let fusage = usage;
+				if (!own.isNull()) {
+					fres = localResources(ctx.doc, xo, own);
+					fusage = newUsage();
+					ctx.resources.push({ dict: fres, usage: fusage });
+				}
+				walkStream(ctx, x, fres, fusage, [{ ...top(), ctm, clip }]);
+				ctx.active.delete(fnum);
+				break;
+			}
+			case 'gs': {
+				const name = nameArg(op, 0);
+				if (!name) break;
+				usage.ExtGState.add(name);
+				const gs = lookup('ExtGState', name);
+				if (gs && gs.resolve().isDictionary()) ctx.extGStates.push(gs.resolve());
+				break;
+			}
+			case 'Tf': {
+				const name = nameArg(op, 0);
+				if (name) usage.Font.add(name);
+				break;
+			}
+			case 'cs':
+			case 'CS': {
+				const name = nameArg(op, 0);
+				if (name && !DEVICE_SPACES.has(name)) usage.ColorSpace.add(name);
+				if (op.op === 'cs') top().fillPat = null;
+				else top().strokePat = null;
+				break;
+			}
+			case 'g':
+			case 'rg':
+			case 'k':
+			case 'sc':
+				top().fillPat = null;
+				break;
+			case 'G':
+			case 'RG':
+			case 'K':
+			case 'SC':
+				top().strokePat = null;
+				break;
+			case 'scn':
+			case 'SCN': {
+				const name = nameArg(op, op.args.length - 1);
+				const stroke = op.op === 'SCN';
+				let use: PatternUse | null = null;
+				if (name) {
+					use = { name, usage, work: w, s: op.args[0].s, e: op.e, stroke, used: false };
+					ctx.patterns.push(use);
+				}
+				if (stroke) top().strokePat = use;
+				else top().fillPat = use;
+				break;
+			}
+			case 'Tj':
+			case 'TJ':
+			case "'":
+			case '"':
+				paint(true, true);
+				break;
+			case 'BDC':
+			case 'DP': {
+				const props = op.args[1];
+				if (props?.k === 'dict') {
+					const kept = props.v.filter((en) => KEEP_STRING_KEYS.has(en.key) || !hasText(en.val));
+					if (kept.length !== props.v.length) {
+						edit(props.s, props.e, `<<${kept.map((en) => latin1(w.bytes, en.ks, en.e)).join(' ')}>>`);
+					}
+				} else if (props?.k === 'name') {
+					usage.Properties.add(props.v);
+				}
+				break;
+			}
+			case 'BI': {
+				paint(true, false);
+				const dict = op.args[0];
+				if (dict?.k !== 'dict') break;
+				for (const en of dict.v) {
+					if ((en.key === 'CS' || en.key === 'ColorSpace') && en.val.k === 'name' && !DEVICE_SPACES.has(en.val.v)) {
+						usage.ColorSpace.add(en.val.v);
+					}
+				}
+				break;
+			}
+			default:
+				break;
+		}
+	}
+}
+
+/**
+ * Read-only walk of a form MuPDF did not copy: true when anything in it would need an
+ * edit. A form without its own resources uses the caller's, so its names count there.
+ */
+function formNeedsEdits(ctx: PassCtx, ref: Obj, state: GState, parentRes: Obj, parentUsage: Usage): boolean {
+	const shadow: PassCtx = { ...ctx, streams: new Map(), resources: [], extGStates: [], patterns: [], active: new Set(ctx.active) };
+	shadow.active.add(ref.asIndirect());
+	const own = ref.resolve().get('Resources');
+	const res = own.isNull() ? parentRes : own.resolve();
+	walkStream(shadow, ref, res, own.isNull() ? parentUsage : newUsage(), [state]);
+	ctx.extGStates.push(...shadow.extGStates);
+	return [...shadow.streams.values()].some((w) => w.edits.size > 0) || shadow.patterns.some((p) => !p.usage.Pattern.has(p.name));
+}
+
+function pruneResources(doc: Doc, res: Obj, usage: Usage) {
+	for (const kind of RESOURCE_KINDS) {
+		const sub = res.get(kind);
+		if (sub.isNull()) continue;
+		const dict = sub.resolve();
+		if (!dict.isDictionary()) continue;
+		const kept = doc.newDictionary();
+		let count = 0;
+		for (const name of usage[kind]) {
+			const v = dict.get(name);
+			if (v.isNull()) continue;
+			kept.put(name, kind === 'Properties' ? strippedProperties(doc, v) : v);
+			count++;
+		}
+		if (count) res.put(kind, kept);
+		else res.delete(kind);
+	}
+}
+
+/** A named marked-content property list without string values (layers are kept as they are). */
+function strippedProperties(doc: Doc, v: Obj): Obj {
+	const d = v.resolve();
+	if (!d.isDictionary()) return v;
+	const type = d.get('Type');
+	if (type.isName() && (type.asName() === 'OCG' || type.asName() === 'OCMD')) return v;
+	let leaks = false;
+	d.forEach((val, k) => {
+		if (!KEEP_STRING_KEYS.has(k as string) && objHasString(val, 0)) leaks = true;
+	});
+	if (!leaks) return v;
+	const copy = doc.newDictionary();
+	d.forEach((val, k) => {
+		if (KEEP_STRING_KEYS.has(k as string) || !objHasString(val, 0)) copy.put(k as string, val);
+	});
+	return copy;
+}
+
+function objHasString(o: Obj, depth: number): boolean {
+	if (depth > 6) return false;
+	const v = o.isIndirect() ? o.resolve() : o;
+	if (v.isString()) return true;
+	if (!(v.isArray() || v.isDictionary())) return false;
+	let found = false;
+	v.forEach((val) => {
+		if (!found && objHasString(val, depth + 1)) found = true;
+	});
+	return found;
+}
+
+/** Static scan: does this form (a soft-mask group) draw text or images, directly or in nested forms? */
+function containsTextOrImages(ref: Obj, seen: Set<number>, depth: number): boolean {
+	if (depth > 20) return true;
+	if (ref.isIndirect()) {
+		if (seen.has(ref.asIndirect())) return false;
+		seen.add(ref.asIndirect());
+	}
+	if (!ref.isStream()) return false;
+	try {
+		const data = ref.readStream().asUint8Array().slice();
+		const res = ref.resolve().get('Resources');
+		const lexer = new Lexer(data, 0);
+		for (let op = lexer.next(); op; op = lexer.next()) {
+			if (op.op === 'Tj' || op.op === 'TJ' || op.op === "'" || op.op === '"' || op.op === 'BI') return true;
+			if (op.op !== 'Do') continue;
+			const a = op.args[0];
+			if (a?.k !== 'name' || res.isNull()) return true;
+			const xs = res.resolve().get('XObject');
+			const xo = xs.isNull() ? null : xs.resolve().get(a.v);
+			if (!xo || xo.isNull()) continue;
+			const sub = xo.resolve().get('Subtype');
+			if (!sub.isName() || sub.asName() !== 'Form') return true;
+			if (containsTextOrImages(xo, seen, depth + 1)) return true;
+		}
+	} catch {
+		// Unreadable (e.g. a binary inline image): assume the worst.
+		return true;
+	}
+	return false;
+}
+
+// ---------------------------------------------------------------------------
+// Annotations, black boxes
+
+function removeAnnotations(doc: Doc, pageObj: Obj, pageTf: Matrix, boxes: Rect[]) {
+	const annots = pageObj.get('Annots');
+	if (annots.isNull()) return;
+	const arr = annots.resolve();
+	if (!arr.isArray()) return;
+	const entries: Obj[] = [];
+	for (let i = 0; i < arr.length; i++) entries.push(arr.get(i));
+	const removed = new Set<number>();
+	const keyOf = (o: Obj) => (o.isIndirect() ? o.asIndirect() : -1);
+	// Without a usable /Rect we cannot tell where it is, so it goes.
+	const under = (d: Obj) => {
+		const rect = readRect(d.get('Rect'));
+		return !rect || boxes.some((b) => touches(transformRect(pageTf, rect), b, 0));
+	};
+	// A popup's /Parent or a reply's /IRT may point at a copy of the annotation that is not
+	// the object in /Annots (qpdf copies them when assembling), so targets are judged by
+	// identity and by where they are.
+	// (A widget's /Parent is its field, not an annotation: only annotations are judged by place.)
+	const isRemoved = (o: Obj) => {
+		if (o.isNull()) return false;
+		if (o.isIndirect() && removed.has(o.asIndirect())) return true;
+		const d = o.resolve();
+		return d.isDictionary() && !d.get('Subtype').isNull() && under(d);
+	};
+	const drop: boolean[] = entries.map((e) => {
+		const hit = under(e.resolve());
+		if (hit && keyOf(e) >= 0) removed.add(keyOf(e));
+		return hit;
+	});
+	// Popups of removed annotations and replies to them, until nothing changes.
+	for (let changed = true; changed; ) {
+		changed = false;
+		entries.forEach((e, i) => {
+			if (drop[i]) return;
+			const d = e.resolve();
+			if (isRemoved(d.get('Parent')) || isRemoved(d.get('IRT'))) {
+				drop[i] = true;
+				if (keyOf(e) >= 0) removed.add(keyOf(e));
+				changed = true;
+			}
+		});
+	}
+	if (!drop.some(Boolean)) return;
+	const kept = doc.newArray();
+	entries.forEach((e, i) => {
+		if (!drop[i]) kept.push(e);
+	});
+	if (kept.length) pageObj.put('Annots', kept);
+	else pageObj.delete('Annots');
+	removeFields(doc, removed);
+}
+
+/** Takes removed widgets out of the AcroForm field tree (and parents left without kids). */
+function removeFields(doc: Doc, removed: Set<number>) {
+	if (removed.size === 0) return;
+	const form = doc.getTrailer().get('Root').get('AcroForm');
+	if (form.isNull()) return;
+	const f = form.resolve();
+	const isGone = (node: Obj) => node.isIndirect() && removed.has(node.asIndirect());
+	const prune = (arr: Obj, depth: number): Obj => {
+		const out = doc.newArray();
+		for (let i = 0; i < arr.length; i++) {
+			const node = arr.get(i);
+			if (isGone(node)) continue;
+			const kids = node.resolve().get('Kids');
+			if (depth < 30 && !kids.isNull() && kids.resolve().isArray()) {
+				const left = prune(kids.resolve(), depth + 1);
+				if (left.length === 0) {
+					if (node.isIndirect()) removed.add(node.asIndirect());
+					continue;
+				}
+				node.resolve().put('Kids', left);
+			}
+			out.push(node);
+		}
+		return out;
+	};
+	const fields = f.get('Fields');
+	if (!fields.isNull() && fields.resolve().isArray()) f.put('Fields', prune(fields.resolve(), 0));
+	const co = f.get('CO');
+	if (!co.isNull() && co.resolve().isArray()) {
+		const out = doc.newArray();
+		const arr = co.resolve();
+		for (let i = 0; i < arr.length; i++) if (!isGone(arr.get(i))) out.push(arr.get(i));
+		f.put('CO', out);
+	}
+}
+
+function paintBlack(doc: Doc, pageObj: Obj, pageTf: Matrix, boxes: Rect[]) {
+	const inv = invert(pageTf);
+	const rects = boxes
+		.map((b) => {
+			const u = transformRect(inv, b);
+			return `${n4(u[0])} ${n4(u[1])} ${n4(u[2] - u[0])} ${n4(u[3] - u[1])} re f`;
+		})
+		.join('\n');
+	const head = doc.addStream('q\n', doc.newDictionary());
+	const tail = doc.addStream(`\nQ\nq 0 g\n${rects}\nQ\n`, doc.newDictionary());
+	const contents = pageObj.get('Contents');
+	const arr = doc.newArray();
+	arr.push(head);
+	if (contents.isArray()) {
+		const a = contents.resolve();
+		for (let i = 0; i < a.length; i++) arr.push(a.get(i));
+	} else if (!contents.isNull()) arr.push(contents);
+	arr.push(tail);
+	pageObj.put('Contents', arr);
+}
+
+// ---------------------------------------------------------------------------
+// The check
+
+interface CheckOptions {
+	allowed: string[][];
+	password?: string;
+	/** Stage check: nothing of ours is on the page yet except the black boxes. */
+	strict: boolean;
+}
+
+async function checkRedactions(deps: EngineDeps, bytes: Uint8Array, jobs: RedactJob[], opts: CheckOptions): Promise<VerifyCheck[]> {
+	const m = await deps.mupdf();
+	const problems: string[] = [];
+	let doc: Doc | null = null;
+	try {
+		doc = openDoc(m, bytes, opts.password);
+		if (hasOptionalContent(doc)) {
+			const plain = withoutOptionalContent(m, doc);
+			destroy(doc);
+			doc = plain;
+		}
+		for (const [ji, job] of jobs.entries()) {
+			const pageNo = job.pageIndex + 1;
+			if (job.pageIndex >= doc.countPages()) {
+				problems.push(`Page ${pageNo} is missing, so its redactions cannot be checked.`);
+				continue;
+			}
+			const page = doc.loadPage(job.pageIndex);
+			const b = page.getBounds() as Rect;
+			if (Math.abs(b[2] - b[0] - job.expected.width) > SIZE_TOLERANCE || Math.abs(b[3] - b[1] - job.expected.height) > SIZE_TOLERANCE) {
+				problems.push(`Page ${pageNo} is not the planned size, so its redactions cannot be checked.`);
+				continue;
+			}
+			const boxes = job.boxes.map((s) => fractionRect(b, s));
+			const overlays = opts.strict ? [] : (job.overlays ?? []).map((s) => pad(fractionRect(b, s), 1));
+			problems.push(...checkPageMupdf(m, page, pageNo, boxes, opts.strict ? [] : (opts.allowed[ji] ?? []), overlays, opts.strict));
+		}
+	} catch (e) {
+		problems.push(`MuPDF could not check the redactions (${e instanceof Error ? e.message : String(e)}).`);
+	} finally {
+		if (doc) destroy(doc);
+	}
+	try {
+		problems.push(...(await checkPdfjs(await deps.pdfjs(), bytes, jobs, opts.strict ? [] : opts.allowed, opts.password)));
+	} catch (e) {
+		problems.push(`PDF.js could not check the redactions (${e instanceof Error ? e.message : String(e)}).`);
+	}
+	if (problems.length) return problems.map((detail) => ({ name: 'redaction', ok: false, detail }));
+	const areas = jobs.reduce((n, j) => n + j.boxes.length, 0);
+	return [
+		{
+			name: 'redaction',
+			ok: true,
+			detail: `${areas} ${areas === 1 ? 'area' : 'areas'} redacted on ${jobs.length} ${jobs.length === 1 ? 'page' : 'pages'}; no text, pictures, drawings or annotations remain under them.`
+		}
+	];
+}
+
+function checkPageMupdf(
+	m: Mupdf,
+	page: MU.PDFPage,
+	pageNo: number,
+	boxes: Rect[],
+	allowedText: string[],
+	overlays: Rect[],
+	strict: boolean
+): string[] {
+	const problems: string[] = [];
+	const allowedRegions: Rect[] = [...overlays];
+
+	// Text (MuPDF structured text), with our own stamp text allowed.
+	let textHits = 0;
+	for (const opts of ['preserve-whitespace', 'preserve-whitespace,accurate-bboxes']) {
+		const st = page.toStructuredText(opts);
+		const lines: { c: string; r: Rect }[][] = [];
+		let line: { c: string; r: Rect }[] = [];
+		st.walk({
+			beginLine() {
+				line = [];
+			},
+			onChar(c, _o, _f, _s, quad) {
+				line.push({ c, r: quadRect(quad as number[]) });
+			},
+			endLine() {
+				lines.push(line);
+			}
+		});
+		destroy(st);
+		for (const chars of lines) {
+			const ok = allowedMask(
+				chars.map((x) => x.c),
+				allowedText
+			);
+			chars.forEach((ch, i) => {
+				if (ok[i]) {
+					allowedRegions.push(pad(ch.r, 1.5));
+					return;
+				}
+				if (ch.c.trim() === '') return;
+				if (boxes.some((b) => touches(ch.r, b, 0.01))) textHits++;
+			});
+		}
+	}
+	if (textHits) problems.push(`Page ${pageNo}: MuPDF still reads text under a redaction box.`);
+
+	// Everything the interpreter draws (contents and annotations).
+	const inAllowed = (r: Rect) => allowedRegions.some((a) => inside(r, a));
+	const found = { glyphs: 0, paths: 0, shades: 0, images: 0 };
+	runDevice(m, page, {
+		glyph: (g) => {
+			if (g.space) return;
+			if (boxes.some((b) => touches(g.core, b, 0.01)) && !inAllowed(g.core)) found.glyphs++;
+		},
+		path: (r, info) => {
+			if (!boxes.some((b) => touches(r, b, 0.01))) return;
+			if (info.blackRect && boxes.some((b) => inside(r, pad(b, 0.01)))) return;
+			if (!strict && inAllowed(r)) return;
+			found.paths++;
+		},
+		shade: (area) => {
+			if (boxes.some((b) => touches(area, b, 0.01))) found.shades++;
+		},
+		tile: (area) => {
+			if (boxes.some((b) => touches(area, b, 0.01))) found.shades++;
+		},
+		image: (image, ctm, bounds) => {
+			if (!boxes.some((b) => touches(bounds, b, 0.01))) return;
+			if (!strict && inAllowed(bounds)) return;
+			if (!imageBlankUnder(image, ctm, boxes, strict)) found.images++;
+		}
+	});
+	if (found.glyphs) problems.push(`Page ${pageNo}: text is still drawn under a redaction box.`);
+	if (found.paths) problems.push(`Page ${pageNo}: drawings are still present under a redaction box.`);
+	if (found.shades) problems.push(`Page ${pageNo}: a colour gradient or pattern is still drawn under a redaction box.`);
+	if (found.images) problems.push(`Page ${pageNo}: picture data under a redaction box was not removed.`);
+
+	// Annotations, links and form fields.
+	const tf = page.getTransform() as Matrix;
+	const annots = page.getObject().get('Annots');
+	if (!annots.isNull()) {
+		const arr = annots.resolve();
+		let hits = 0;
+		for (let i = 0; arr.isArray() && i < arr.length; i++) {
+			const rect = readRect(arr.get(i).resolve().get('Rect'));
+			if (!rect || boxes.some((b) => touches(transformRect(tf, rect), b, 0.01))) hits++;
+		}
+		if (hits) {
+			problems.push(
+				`Page ${pageNo}: ${hits === 1 ? 'an annotation, link or form field still overlaps' : `${hits} annotations, links or form fields still overlap`} a redaction box.`
+			);
+		}
+	}
+
+	// The boxes render black.
+	const share = blackShare(m, page, boxes, strict ? [] : allowedRegions);
+	if (strict ? share < 1 : share < 0.995) {
+		problems.push(`Page ${pageNo}: a redaction box is not solid black (${r2(share * 100)}% black).`);
+	}
+	return problems;
+}
+
+/** Share of rendered pixels inside the boxes (inset 1 px, outside `skip`) that are black. */
+function blackShare(m: Mupdf, page: MU.PDFPage, boxes: Rect[], skip: Rect[]): number {
+	const bounds = page.getBounds() as Rect;
+	const area = (bounds[2] - bounds[0]) * (bounds[3] - bounds[1]);
+	const scale = Math.max(0.25, Math.min(2, Math.sqrt(8e6 / Math.max(area, 1))));
+	const pix = page.toPixmap(m.Matrix.scale(scale, scale), m.ColorSpace.DeviceRGB, false, true);
+	try {
+		const w = pix.getWidth();
+		const h = pix.getHeight();
+		const stride = pix.getStride();
+		const n = pix.getNumberOfComponents() + pix.getAlpha();
+		const data = pix.getPixels();
+		const ox = pix.getX();
+		const oy = pix.getY();
+		let checked = 0;
+		let light = 0;
+		for (const b of boxes) {
+			const x0 = Math.max(0, Math.ceil(b[0] * scale - ox) + 1);
+			const y0 = Math.max(0, Math.ceil(b[1] * scale - oy) + 1);
+			const x1 = Math.min(w, Math.floor(b[2] * scale - ox) - 1);
+			const y1 = Math.min(h, Math.floor(b[3] * scale - oy) - 1);
+			for (let y = y0; y < y1; y++) {
+				for (let x = x0; x < x1; x++) {
+					if (skip.length) {
+						const cx = (x + ox + 0.5) / scale;
+						const cy = (y + oy + 0.5) / scale;
+						if (skip.some((a) => cx >= a[0] && cx <= a[2] && cy >= a[1] && cy <= a[3])) continue;
+					}
+					const o = y * stride + x * n;
+					checked++;
+					if (data[o] > 40 || data[o + 1] > 40 || data[o + 2] > 40) light++;
+				}
+			}
+		}
+		return checked ? 1 - light / checked : 1;
+	} finally {
+		destroy(pix);
+	}
+}
+
+/** For each character of a line: is it part of an occurrence of an allowed string? */
+function allowedMask(chars: string[], allowed: string[]): boolean[] {
+	const ok = chars.map(() => false);
+	if (!allowed.length) return ok;
+	const text = chars.join('');
+	const starts: number[] = [];
+	let pos = 0;
+	for (const c of chars) {
+		starts.push(pos);
+		pos += c.length;
+	}
+	for (const a of allowed) {
+		const needle = a.trim();
+		if (!needle) continue;
+		for (let at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + 1)) {
+			const end = at + needle.length;
+			starts.forEach((s, i) => {
+				if (s >= at && s < end) ok[i] = true;
+			});
+		}
+	}
+	return ok;
+}
+
+/**
+ * Stored pixels (and soft-mask values) of an image under the boxes are uniform: the
+ * data holds no picture there. A pixel counts by its middle half (a pixel only grazed
+ * by a box is mostly visible outside it anyway). On the final file a size reduction
+ * may have resampled and re-encoded the image, so only pixels at least 8 deep inside
+ * the area are compared, with a looser tolerance.
+ */
+function imageBlankUnder(image: MU.Image, ctm: Matrix, boxes: Rect[], strict: boolean): boolean {
+	const check = (img: MU.Image): boolean => {
+		const pix = img.toPixmap();
+		try {
+			const w = pix.getWidth();
+			const h = pix.getHeight();
+			const stride = pix.getStride();
+			const n = w > 0 ? Math.max(1, Math.round(stride / w)) : 1;
+			const data = pix.getPixels();
+			const inv = invert(ctm);
+			const tol = strict ? 4 : 32;
+			const inset = strict ? 0 : 8;
+			for (const b of boxes) {
+				const u = transformRect(inv, b);
+				const xa = Math.max(0, Math.floor(u[0] * w) - 1);
+				const xb = Math.min(w, Math.ceil(u[2] * w) + 1);
+				const ya = Math.max(0, Math.floor(u[1] * h) - 1);
+				const yb = Math.min(h, Math.ceil(u[3] * h) + 1);
+				let cells: [number, number][] = [];
+				for (let y = ya; y < yb; y++) {
+					for (let x = xa; x < xb; x++) {
+						const cell = transformRect(ctm, [(x + 0.25) / w, (y + 0.25) / h, (x + 0.75) / w, (y + 0.75) / h]);
+						if (touches(cell, b, 0)) cells.push([x, y]);
+					}
+				}
+				if (inset) {
+					const set = new Set(cells.map(([x, y]) => y * w + x));
+					cells = cells.filter(([x, y]) => {
+						for (const dy of [-inset, 0, inset]) for (const dx of [-inset, 0, inset]) if (!set.has((y + dy) * w + (x + dx))) return false;
+						return true;
+					});
+				}
+				let ref: number[] | null = null;
+				for (const [x, y] of cells) {
+					const o = y * stride + x * n;
+					if (!ref) {
+						ref = Array.from(data.subarray(o, o + n));
+						continue;
+					}
+					for (let k = 0; k < n; k++) if (Math.abs(data[o + k] - ref[k]) > tol) return false;
+				}
+			}
+			return true;
+		} finally {
+			destroy(pix);
+		}
+	};
+	if (!check(image)) return false;
+	const mask = image.getMask();
+	return mask ? check(mask) : true;
+}
+
+async function checkPdfjs(lib: PdfjsLib, bytes: Uint8Array, jobs: RedactJob[], allowed: string[][], password?: string): Promise<string[]> {
+	const problems: string[] = [];
+	const task = lib.getDocument({
+		data: bytes.slice(),
+		password,
+		useWasm: false,
+		useWorkerFetch: false,
+		useSystemFonts: false,
+		disableFontFace: true,
+		enableXfa: false,
+		stopAtErrors: true,
+		verbosity: 0
+	});
+	try {
+		const doc = await task.promise;
+		for (const [ji, job] of jobs.entries()) {
+			const page = await doc.getPage(job.pageIndex + 1);
+			const vp = page.getViewport({ scale: 1 });
+			const tc = await page.getTextContent();
+			const ok = (allowed[ji] ?? []).map(normalizeSpace).filter(Boolean);
+			const eps = 0.25 / Math.max(vp.width, vp.height);
+			let hits = 0;
+			for (const it of tc.items) {
+				if (!('str' in it)) continue;
+				const str = normalizeSpace(it.str);
+				if (!str || ok.some((a) => a.includes(str))) continue;
+				const t = it.transform as number[];
+				const dir = unit(t[0], t[1]);
+				const up = unit(t[2], t[3]);
+				const height = it.height || Math.hypot(t[2], t[3]);
+				const pts: [number, number][] = [];
+				for (const along of [0, it.width]) {
+					for (const across of [0, 0.75 * height]) {
+						pts.push(applyMatrix(vp.transform as Matrix, t[4] + dir[0] * along + up[0] * across, t[5] + dir[1] * along + up[1] * across));
+					}
+				}
+				const r: Rect = [
+					Math.min(...pts.map((p) => p[0])) / vp.width,
+					Math.min(...pts.map((p) => p[1])) / vp.height,
+					Math.max(...pts.map((p) => p[0])) / vp.width,
+					Math.max(...pts.map((p) => p[1])) / vp.height
+				];
+				if (job.boxes.some((s) => touches(r, [s.x, s.y, s.x + s.w, s.y + s.h], eps))) hits++;
+			}
+			if (hits) problems.push(`Page ${job.pageIndex + 1}: PDF.js still reads text under a redaction box.`);
+			page.cleanup();
+		}
+	} finally {
+		await task.destroy().catch(() => undefined);
+	}
+	return problems;
+}
+
+// ---------------------------------------------------------------------------
+// MuPDF device pass
+
+interface GlyphInfo {
+	/** Advance × [-0.25, 1] em: for growing boxes. */
+	em: Rect;
+	/** Middle 80% of the advance × [0, 0.6] em: for the check. */
+	core: Rect;
+	space: boolean;
+}
+interface DeviceHandlers {
+	glyph?: (g: GlyphInfo) => void;
+	path?: (bounds: Rect, info: { blackRect: boolean }) => void;
+	shade?: (area: Rect) => void;
+	tile?: (area: Rect) => void;
+	image?: (image: MU.Image, ctm: Matrix, bounds: Rect) => void;
+}
+
+const INFINITE: Rect = [-1e9, -1e9, 1e9, 1e9];
+const SPACES = new Set([9, 10, 13, 32, 0xa0]);
+
+function runDevice(m: Mupdf, page: MU.PDFPage, h: DeviceHandlers) {
+	const clips: Rect[] = [INFINITE];
+	const clip = () => clips[clips.length - 1];
+	const pushClip = (r: Rect) => clips.push(intersect(clip(), r) ?? [r[0], r[1], r[0], r[1]]);
+	const zero = new m.StrokeState({ lineCap: 'Butt', lineJoin: 'Miter', lineWidth: 0, miterLimit: 10 });
+	const glyphs = (text: MU.Text, ctm: Matrix) => {
+		const on = h.glyph;
+		if (!on) return;
+		text.walk({
+			showGlyph(font, trm, glyph, unicode, wmode) {
+				const adv = font.advanceGlyph(glyph, wmode) || 0.5;
+				const full = multiply(trm as Matrix, ctm);
+				const em: Rect = wmode ? [-0.5, -adv, 0.5, 0] : [0, -0.25, adv, 1];
+				const core: Rect = wmode ? [-0.3, -adv * 0.9, 0.3, -adv * 0.1] : [adv * 0.1, 0, adv * 0.9, 0.6];
+				on({ em: transformRect(full, em), core: transformRect(full, core), space: SPACES.has(unicode) });
+			}
+		});
+	};
+	const imageBounds = (ctm: Matrix) => transformRect(ctm, [0, 0, 1, 1]);
+	const isBlack = (cs: MU.ColorSpace, color: number[]) => {
+		const name = cs?.getName?.() ?? '';
+		if (/CMYK/i.test(name)) return color.length === 4 && color[0] === 0 && color[1] === 0 && color[2] === 0 && color[3] === 1;
+		return color.length > 0 && color.every((c) => c === 0);
+	};
+	const dev = new m.Device({
+		fillPath(path, _eo, ctm, cs, color, alpha) {
+			if (!h.path) return;
+			const b = pathBounds(path, ctm as Matrix);
+			if (b) h.path(b, { blackRect: alpha === 1 && isBlack(cs, color) && isAxisRect(path, ctm as Matrix) });
+		},
+		strokePath(path, _s, ctm) {
+			if (!h.path) return;
+			const b = pathBounds(path, ctm as Matrix);
+			if (b) h.path(b, { blackRect: false });
+		},
+		clipPath(path, _eo, ctm) {
+			pushClip(pathBounds(path, ctm as Matrix) ?? [0, 0, 0, 0]);
+		},
+		clipStrokePath(path, s, ctm) {
+			pushClip(path.getBounds(s, ctm) as Rect);
+		},
+		fillText(text, ctm) {
+			glyphs(text, ctm as Matrix);
+		},
+		strokeText(text, _s, ctm) {
+			glyphs(text, ctm as Matrix);
+		},
+		clipText(text, ctm) {
+			glyphs(text, ctm as Matrix);
+			pushClip(text.getBounds(zero, ctm) as Rect);
+		},
+		clipStrokeText(text, s, ctm) {
+			glyphs(text, ctm as Matrix);
+			pushClip(text.getBounds(s, ctm) as Rect);
+		},
+		ignoreText(text, ctm) {
+			glyphs(text, ctm as Matrix);
+		},
+		fillShade() {
+			h.shade?.(clip());
+		},
+		fillImage(image, ctm) {
+			h.image?.(image, ctm as Matrix, imageBounds(ctm as Matrix));
+		},
+		fillImageMask(image, ctm) {
+			h.image?.(image, ctm as Matrix, imageBounds(ctm as Matrix));
+		},
+		clipImageMask(image, ctm) {
+			h.image?.(image, ctm as Matrix, imageBounds(ctm as Matrix));
+			pushClip(imageBounds(ctm as Matrix));
+		},
+		popClip() {
+			if (clips.length > 1) clips.pop();
+		},
+		endMask() {
+			// The mask now acts as a clip until its popClip.
+			clips.push(clip());
+		},
+		beginTile(area, _view, _xs, _ys, ctm) {
+			const r = transformRect(ctm as Matrix, area as Rect);
+			h.tile?.(intersect(clip(), r) ?? [r[0], r[1], r[0], r[1]]);
+			return 0;
+		}
+	});
+	try {
+		page.run(dev, m.Matrix.identity);
+		dev.close();
+	} finally {
+		destroy(dev);
+		destroy(zero);
+	}
+}
+
+/** Bounding box of a path's points and control points (its geometry, no stroke width). */
+function pathBounds(path: MU.Path, ctm: Matrix): Rect | null {
+	let r: Rect | null = null;
+	const add = (x: number, y: number) => {
+		const [px, py] = applyMatrix(ctm, x, y);
+		r = r ? union(r, [px, py, px, py]) : [px, py, px, py];
+	};
+	path.walk({
+		moveTo: add,
+		lineTo: add,
+		curveTo(x1, y1, x2, y2, x3, y3) {
+			add(x1, y1);
+			add(x2, y2);
+			add(x3, y3);
+		}
+	});
+	return r;
+}
+
+function isAxisRect(path: MU.Path, ctm: Matrix): boolean {
+	const pts: [number, number][] = [];
+	let curves = false;
+	let moves = 0;
+	path.walk({
+		moveTo(x, y) {
+			moves++;
+			pts.push(applyMatrix(ctm, x, y));
+		},
+		lineTo(x, y) {
+			pts.push(applyMatrix(ctm, x, y));
+		},
+		curveTo() {
+			curves = true;
+		}
+	});
+	if (curves || moves !== 1 || pts.length < 4 || pts.length > 5) return false;
+	const xs = new Set(pts.map((p) => Math.round(p[0] * 100)));
+	const ys = new Set(pts.map((p) => Math.round(p[1] * 100)));
+	return xs.size <= 2 && ys.size <= 2;
+}
+
+// ---------------------------------------------------------------------------
+// Content-stream tokenizer (enough for MuPDF's own output and plain content)
+
+interface Entry {
+	key: string;
+	/** Start of the key, end of the value: the entry's bytes. */
+	ks: number;
+	e: number;
+	val: Val;
+}
+type Val =
+	| { k: 'num'; v: number; s: number; e: number }
+	| { k: 'name'; v: string; s: number; e: number }
+	| { k: 'str'; s: number; e: number }
+	| { k: 'arr'; v: Val[]; s: number; e: number }
+	| { k: 'dict'; v: Entry[]; s: number; e: number }
+	| { k: 'kw'; v: string; s: number; e: number };
+interface Op {
+	op: string;
+	args: Val[];
+	/** Span of the operator keyword (for BI: the whole inline image). */
+	s: number;
+	e: number;
+}
+
+const WS = new Uint8Array(256);
+for (const c of [0, 9, 10, 12, 13, 32]) WS[c] = 1;
+const DELIM = new Uint8Array(256);
+for (const c of '()<>[]{}/%') DELIM[c.charCodeAt(0)] = 1;
+
+class Lexer {
+	private i = 0;
+	constructor(
+		private readonly d: Uint8Array,
+		private readonly pageNo: number
+	) {}
+
+	private fail(what: string): never {
+		throw new ContentError(this.pageNo, what);
+	}
+
+	private skip() {
+		const d = this.d;
+		while (this.i < d.length) {
+			const c = d[this.i];
+			if (WS[c]) this.i++;
+			else if (c === 0x25) while (this.i < d.length && d[this.i] !== 10 && d[this.i] !== 13) this.i++;
+			else break;
+		}
+	}
+
+	/** Next operator with its operands, or null at the end. */
+	next(): Op | null {
+		const args: Val[] = [];
+		for (;;) {
+			this.skip();
+			if (this.i >= this.d.length) {
+				if (args.length) this.fail('operands without operator');
+				return null;
+			}
+			const v = this.value(0);
+			if (v.k !== 'kw' || v.v === 'true' || v.v === 'false' || v.v === 'null') {
+				args.push(v);
+				if (args.length > 64) this.fail('too many operands');
+				continue;
+			}
+			if (v.v === 'BI') return this.inlineImage(v.s);
+			return { op: v.v, args, s: v.s, e: v.e };
+		}
+	}
+
+	private value(depth: number): Val {
+		if (depth > 64) this.fail('nesting too deep');
+		const d = this.d;
+		const s = this.i;
+		const c = d[s];
+		if (c === 0x28) {
+			let nest = 0;
+			while (this.i < d.length) {
+				const ch = d[this.i++];
+				if (ch === 0x5c) this.i++;
+				else if (ch === 0x28) nest++;
+				else if (ch === 0x29 && --nest === 0) return { k: 'str', s, e: this.i };
+			}
+			this.fail('unterminated string');
+		}
+		if (c === 0x3c) {
+			if (d[s + 1] === 0x3c) {
+				this.i += 2;
+				const entries: Entry[] = [];
+				for (;;) {
+					this.skip();
+					if (this.i >= d.length) this.fail('unterminated dictionary');
+					if (d[this.i] === 0x3e && d[this.i + 1] === 0x3e) {
+						this.i += 2;
+						return { k: 'dict', v: entries, s, e: this.i };
+					}
+					const key = this.value(depth + 1);
+					if (key.k !== 'name') this.fail('dictionary key');
+					this.skip();
+					const val = this.value(depth + 1);
+					entries.push({ key: key.v, ks: key.s, e: val.e, val });
+				}
+			}
+			const end = d.indexOf(0x3e, s);
+			if (end < 0) this.fail('unterminated hex string');
+			this.i = end + 1;
+			return { k: 'str', s, e: this.i };
+		}
+		if (c === 0x5b) {
+			this.i++;
+			const items: Val[] = [];
+			for (;;) {
+				this.skip();
+				if (this.i >= d.length) this.fail('unterminated array');
+				if (d[this.i] === 0x5d) {
+					this.i++;
+					return { k: 'arr', v: items, s, e: this.i };
+				}
+				items.push(this.value(depth + 1));
+			}
+		}
+		if (c === 0x2f) {
+			this.i++;
+			while (this.i < d.length && !WS[d[this.i]] && !DELIM[d[this.i]]) this.i++;
+			const raw = latin1(d, s + 1, this.i).replace(/#([0-9a-fA-F]{2})/g, (_m, hx: string) => String.fromCharCode(parseInt(hx, 16)));
+			return { k: 'name', v: raw, s, e: this.i };
+		}
+		if (DELIM[c]) this.fail(`unexpected ${String.fromCharCode(c)}`);
+		while (this.i < d.length && !WS[d[this.i]] && !DELIM[d[this.i]]) this.i++;
+		const word = latin1(d, s, this.i);
+		if (/^[+-]?(\d+\.?\d*|\.\d+)$/.test(word)) return { k: 'num', v: Number(word), s, e: this.i };
+		return { k: 'kw', v: word, s, e: this.i };
+	}
+
+	/** BI <key value>* ID <data> EI. Data must be ASCIIHex or ASCII85 (MuPDF always writes ASCIIHex). */
+	private inlineImage(start: number): Op {
+		const d = this.d;
+		const entries: Entry[] = [];
+		for (;;) {
+			this.skip();
+			if (this.i >= d.length) this.fail('unterminated inline image');
+			const key = this.value(1);
+			if (key.k === 'kw' && key.v === 'ID') break;
+			if (key.k !== 'name') this.fail('inline image key');
+			this.skip();
+			const val = this.value(1);
+			entries.push({ key: key.v, ks: key.s, e: val.e, val });
+		}
+		const filter = entries.find((en) => en.key === 'F' || en.key === 'Filter')?.val;
+		const first = filter?.k === 'name' ? filter.v : filter?.k === 'arr' && filter.v[0]?.k === 'name' ? filter.v[0].v : null;
+		this.i++; // the single whitespace after ID
+		let end = 0;
+		if (first === 'AHx' || first === 'ASCIIHexDecode') {
+			end = d.indexOf(0x3e, this.i) + 1;
+		} else if (first === 'A85' || first === 'ASCII85Decode') {
+			for (let at = d.indexOf(0x7e, this.i); at >= 0; at = d.indexOf(0x7e, at + 1)) {
+				if (d[at + 1] === 0x3e) {
+					end = at + 2;
+					break;
+				}
+			}
+		} else this.fail('binary inline image');
+		if (end <= 0) this.fail('unterminated inline image data');
+		this.i = end;
+		this.skip();
+		if (d[this.i] !== 0x45 || d[this.i + 1] !== 0x49) this.fail('inline image without EI');
+		this.i += 2;
+		return { op: 'BI', args: [{ k: 'dict', v: entries, s: start, e: end }], s: start, e: this.i };
+	}
+}
+
+function hasText(v: Val): boolean {
+	if (v.k === 'str') return true;
+	if (v.k === 'arr') return v.v.some(hasText);
+	if (v.k === 'dict') return v.v.some((en) => hasText(en.val));
+	return false;
+}
+
+function applyEdits(bytes: Uint8Array, edits: Edit[]): Uint8Array {
+	edits.sort((a, b) => a.start - b.start);
+	const parts: Uint8Array[] = [];
+	let at = 0;
+	for (const ed of edits) {
+		if (ed.start < at) continue;
+		parts.push(bytes.subarray(at, ed.start), latin1Bytes(` ${ed.text} `));
+		at = ed.end;
+	}
+	parts.push(bytes.subarray(at));
+	const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+	let o = 0;
+	for (const p of parts) {
+		out.set(p, o);
+		o += p.length;
+	}
+	return out;
+}
+
+// ---------------------------------------------------------------------------
+// MuPDF helpers
+
+function openDoc(m: Mupdf, bytes: Uint8Array, password?: string): Doc {
+	const doc = new m.PDFDocument(bytes);
+	if (doc.needsPassword() && (password === undefined || doc.authenticatePassword(password) === 0)) {
+		destroy(doc);
+		throw new Error('the file did not open with its password');
+	}
+	return doc;
+}
+
+function hasOptionalContent(doc: Doc): boolean {
+	return !doc.getTrailer().get('Root').get('OCProperties').isNull();
+}
+
+/** A decrypted copy of the document without /OCProperties, so every layer is visible. */
+function withoutOptionalContent(m: Mupdf, doc: Doc): Doc {
+	const copy = new m.PDFDocument(doc.saveToBuffer('encrypt=none').asUint8Array().slice());
+	try {
+		copy.getTrailer().get('Root').delete('OCProperties');
+		return new m.PDFDocument(copy.saveToBuffer('').asUint8Array().slice());
+	} finally {
+		destroy(copy);
+	}
+}
+
+function readMatrix(o: Obj): Matrix {
+	const a = o.isNull() ? o : o.resolve();
+	if (a.isArray() && a.length === 6) {
+		const v: number[] = [];
+		for (let i = 0; i < 6; i++) v.push(a.get(i).asNumber());
+		if (v.every(Number.isFinite)) return v as Matrix;
+	}
+	return [1, 0, 0, 1, 0, 0];
+}
+
+function readRect(o: Obj): Rect | null {
+	if (o.isNull()) return null;
+	const a = o.resolve();
+	if (!a.isArray() || a.length !== 4) return null;
+	const v: number[] = [];
+	for (let i = 0; i < 4; i++) {
+		const x = a.get(i);
+		if (!x.isNumber()) return null;
+		v.push(x.asNumber());
+	}
+	if (!v.every(Number.isFinite)) return null;
+	return [Math.min(v[0], v[2]), Math.min(v[1], v[3]), Math.max(v[0], v[2]), Math.max(v[1], v[3])];
+}
+
+function destroy(o: unknown) {
+	try {
+		(o as { destroy?: () => void })?.destroy?.();
+	} catch {
+		// already gone
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Geometry
+
+/** True when the rectangles overlap by more than eps (a zero-size rect strictly inside counts). */
+function touches(r: Rect, b: Rect, eps: number): boolean {
+	return r[0] < b[2] - eps && r[2] > b[0] + eps && r[1] < b[3] - eps && r[3] > b[1] + eps;
+}
+function inside(r: Rect, b: Rect): boolean {
+	return r[0] >= b[0] && r[1] >= b[1] && r[2] <= b[2] && r[3] <= b[3];
+}
+function union(a: Rect, b: Rect): Rect {
+	return [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])];
+}
+function intersect(a: Rect, b: Rect): Rect | null {
+	const r: Rect = [Math.max(a[0], b[0]), Math.max(a[1], b[1]), Math.min(a[2], b[2]), Math.min(a[3], b[3])];
+	return r[0] <= r[2] && r[1] <= r[3] ? r : null;
+}
+function pad(r: Rect, d: number): Rect {
+	return [r[0] - d, r[1] - d, r[2] + d, r[3] + d];
+}
+function transformRect(t: Matrix, r: Rect): Rect {
+	const pts = [applyMatrix(t, r[0], r[1]), applyMatrix(t, r[2], r[1]), applyMatrix(t, r[0], r[3]), applyMatrix(t, r[2], r[3])];
+	return [
+		Math.min(...pts.map((p) => p[0])),
+		Math.min(...pts.map((p) => p[1])),
+		Math.max(...pts.map((p) => p[0])),
+		Math.max(...pts.map((p) => p[1]))
+	];
+}
+function quadRect(q: number[]): Rect {
+	const xs = [q[0], q[2], q[4], q[6]];
+	const ys = [q[1], q[3], q[5], q[7]];
+	return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+}
+function invert(t: Matrix): Matrix {
+	const det = t[0] * t[3] - t[1] * t[2];
+	if (!det) return [1, 0, 0, 1, 0, 0];
+	return [t[3] / det, -t[1] / det, -t[2] / det, t[0] / det, (t[2] * t[5] - t[3] * t[4]) / det, (t[1] * t[4] - t[0] * t[5]) / det];
+}
+function unit(x: number, y: number): [number, number] {
+	const l = Math.hypot(x, y) || 1;
+	return [x / l, y / l];
+}
+function normalizeSpace(s: string) {
+	return s.replace(/\s+/g, ' ').trim();
+}
+function latin1(d: Uint8Array, s: number, e: number): string {
+	let out = '';
+	for (let i = s; i < e; i++) out += String.fromCharCode(d[i]);
+	return out;
+}
+function latin1Bytes(s: string): Uint8Array {
+	const out = new Uint8Array(s.length);
+	for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i) & 255;
+	return out;
+}
+function n4(v: number) {
+	return String(Math.round(v * 10000) / 10000);
+}
+function r2(v: number) {
+	return String(Math.round(v * 100) / 100);
 }

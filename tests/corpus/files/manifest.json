@@ -253,7 +253,7 @@
 	"enc-aes-256-unicode.pdf": {
 		"pages": 2,
 		"label": "enc",
-		"password": "pässwörd"
+		"password": "p\u00e4ssw\u00f6rd"
 	},
 	"truncated.pdf": {
 		"expect": "unreadable"
@@ -305,5 +305,364 @@
 	"shrink-text.pdf": {
 		"pages": 3,
 		"label": "text"
+	},
+	"redact-basic.pdf": {
+		"label": null,
+		"pages": 3,
+		"size": [
+			612,
+			792
+		],
+		"boxes": {
+			"line": {
+				"rect": [
+					149.696,
+					697,
+					261.03999999999996,
+					712
+				],
+				"hides": [
+					"SECRET-LINE-ONE"
+				]
+			},
+			"form": {
+				"rect": [
+					76,
+					637,
+					197.988,
+					652
+				],
+				"hides": [
+					"SECRET-FORM-TWO"
+				]
+			},
+			"texts": {
+				"rect": [
+					70,
+					476,
+					260,
+					575
+				],
+				"hides": [
+					"SECRET-HEX-THREE",
+					"SECRET-ACTUAL-FOUR",
+					"SECRET-UTFSIXTEEN-FIVE",
+					"SECRET-NAMED-ACTUAL",
+					"XXXX",
+					"YYYY",
+					"ZZZZ"
+				]
+			},
+			"image": {
+				"rect": [
+					298,
+					378,
+					412,
+					482
+				],
+				"hides": [
+					"SECRET-OCR-SIX"
+				],
+				"image": [
+					300,
+					380,
+					500,
+					480
+				]
+			},
+			"inline": {
+				"rect": [
+					66,
+					374,
+					138,
+					446
+				],
+				"hides": [],
+				"image": [
+					72,
+					380,
+					132,
+					440
+				]
+			},
+			"lineart": {
+				"rect": [
+					200,
+					328,
+					300,
+					352
+				],
+				"hides": []
+			},
+			"annots": {
+				"rect": [
+					400,
+					590,
+					460,
+					660
+				],
+				"hides": [
+					"SECRET-ANNOT-SEVEN",
+					"SECRET-AUTHOR-SEVENB",
+					"SECRET-REPLY-SEVENC",
+					"SECRET-LINK-EIGHT"
+				]
+			},
+			"field": {
+				"rect": [
+					66,
+					226,
+					256,
+					254
+				],
+				"hides": [
+					"SECRET-FIELD-NINE"
+				]
+			}
+		},
+		"keep": [
+			"KEEP-ALPHA",
+			"KEEP-BRAVO",
+			"KEEP-CHARLIE",
+			"KEEP-DELTA",
+			"KEEP-GOLF"
+		],
+		"metadataSecrets": [
+			"SECRET-TITLE-TEN",
+			"SECRET-AUTHOR-TEN",
+			"SECRET-XMP-ELEVEN"
+		],
+		"pageSecrets": [
+			"SECRET-THUMB-FOURTEEN",
+			"SECRET-STRUCT-ALT-FIFTEEN"
+		],
+		"inlineHex": "D2503CD2643CD2783CD28C3C",
+		"p3": {
+			"secret": "SECRET-PTHREE-TWELVE",
+			"keep": [
+				"KEEP-ECHO",
+				"KEEP-CHARLIE"
+			]
+		},
+		"note": "p2 shares p1 content stream and resources; p3 shares the Form XObject and image"
+	},
+	"redact-geom.pdf": {
+		"label": null,
+		"pages": 7,
+		"geom": [
+			{
+				"media": [
+					0,
+					0,
+					400,
+					600
+				],
+				"rotate": 0,
+				"secret": "SECRET-GEO-1",
+				"keep": "KEEP-GEO-1",
+				"secretRect": [
+					29,
+					357,
+					121.012,
+					372
+				],
+				"keepRect": [
+					29,
+					177,
+					104.356,
+					192
+				]
+			},
+			{
+				"media": [
+					0,
+					0,
+					400,
+					600
+				],
+				"rotate": 90,
+				"secret": "SECRET-GEO-2",
+				"keep": "KEEP-GEO-2",
+				"secretRect": [
+					29,
+					357,
+					121.012,
+					372
+				],
+				"keepRect": [
+					29,
+					177,
+					104.356,
+					192
+				]
+			},
+			{
+				"media": [
+					0,
+					0,
+					400,
+					600
+				],
+				"rotate": 180,
+				"secret": "SECRET-GEO-3",
+				"keep": "KEEP-GEO-3",
+				"secretRect": [
+					29,
+					357,
+					121.012,
+					372
+				],
+				"keepRect": [
+					29,
+					177,
+					104.356,
+					192
+				]
+			},
+			{
+				"media": [
+					0,
+					0,
+					400,
+					600
+				],
+				"rotate": 270,
+				"secret": "SECRET-GEO-4",
+				"keep": "KEEP-GEO-4",
+				"secretRect": [
+					29,
+					357,
+					121.012,
+					372
+				],
+				"keepRect": [
+					29,
+					177,
+					104.356,
+					192
+				]
+			},
+			{
+				"media": [
+					0,
+					0,
+					612,
+					792
+				],
+				"crop": [
+					100,
+					150,
+					500,
+					700
+				],
+				"rotate": 0,
+				"secret": "SECRET-GEO-5",
+				"keep": "KEEP-GEO-5",
+				"secretRect": [
+					129,
+					477,
+					221.012,
+					492
+				],
+				"keepRect": [
+					129,
+					312,
+					204.356,
+					327
+				]
+			},
+			{
+				"media": [
+					0,
+					0,
+					612,
+					792
+				],
+				"crop": [
+					100,
+					150,
+					500,
+					700
+				],
+				"rotate": 90,
+				"secret": "SECRET-GEO-6",
+				"keep": "KEEP-GEO-6",
+				"secretRect": [
+					129,
+					477,
+					221.012,
+					492
+				],
+				"keepRect": [
+					129,
+					312,
+					204.356,
+					327
+				]
+			},
+			{
+				"media": [
+					0,
+					0,
+					300,
+					400
+				],
+				"rotate": 0,
+				"userUnit": 2,
+				"secret": "SECRET-GEO-7",
+				"keep": "KEEP-GEO-7",
+				"secretRect": [
+					29,
+					237,
+					121.012,
+					252
+				],
+				"keepRect": [
+					29,
+					117,
+					104.356,
+					132
+				]
+			}
+		]
+	},
+	"redact-hard.pdf": {
+		"label": null,
+		"pages": 12,
+		"box": [
+			200,
+			350,
+			400,
+			450
+		],
+		"cases": [
+			"type3",
+			"pattern",
+			"shading",
+			"hidden-layer",
+			"soft-mask",
+			"clip-text",
+			"image-mask",
+			"smask-image",
+			"jpeg-image",
+			"rotated-image",
+			"outline-text",
+			"stroked-text"
+		]
+	},
+	"redact-cid.pdf": {
+		"label": null,
+		"pages": 1,
+		"secret": "SECRET-CID-THIRTEEN",
+		"keep": [
+			"KEEP-FOXTROT",
+			"KEEP-HOTEL"
+		],
+		"box": [
+			173.466,
+			695,
+			322.494,
+			716
+		]
 	}
 }

@@ -93,12 +93,6 @@ describe('export pipeline rules', () => {
 		expect(res.pageCount).toBe(1);
 	}, T);
 
-	it('refuses redaction while its stage is a stub', async () => {
-		const src = await openCorpus('multi.pdf');
-		const r = await rejects(run([ref(src, 0, 0, [{ id: 'r', kind: 'redact', box }])], [src]));
-		expect([r.code, r.message]).toEqual(['unsupported', 'Redaction is not available yet.']);
-	}, T);
-
 	it('refuses numbering settings before building anything', async () => {
 		const src = await openCorpus('multi.pdf');
 		const allSkipped = await rejects(
