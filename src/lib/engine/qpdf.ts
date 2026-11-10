@@ -200,6 +200,8 @@ let patchQueue: Promise<unknown> = Promise.resolve();
  * (and short-circuit the loader's fetch of qpdf.wasm).
  * Only the first instantiation with qpdf's import object is redirected, and the
  * originals are restored right after. Calls are serialized across all Qpdf objects.
+ * Instantiations by other engines in that window (MuPDF) are passed through untouched;
+ * without that check MuPDF could be handed qpdf's module ("function import requires a callable").
  */
 function withCachedModule<T>(module: WebAssembly.Module, location: string, create: () => Promise<T>): Promise<T> {
 	const run = async () => {
@@ -221,17 +223,26 @@ function withCachedModule<T>(module: WebAssembly.Module, location: string, creat
 					? Promise.resolve(new Response(new Uint8Array(0), { headers: { 'Content-Type': 'application/wasm' } }))
 					: origFetch(input, init)) as typeof fetch;
 		}
+		// Another engine (MuPDF) may instantiate its own WebAssembly while qpdf's factory runs;
+		// only a call whose import object supplies everything qpdf.wasm imports is ours.
+		const wanted = WebAssembly.Module.imports(module);
+		const isQpdf = (imports: unknown) =>
+			wanted.every((d) => {
+				const ns = (imports as Record<string, Record<string, unknown> | undefined> | undefined)?.[d.module];
+				return ns !== undefined && ns !== null && ns[d.name] !== undefined;
+			});
 		const useCached = async (imports: unknown) => {
 			restore();
 			const instance = (await origInstantiate.call(WebAssembly, module, imports)) as WebAssembly.Instance;
 			return { module, instance };
 		};
 		wa.instantiate = (src: unknown, imports?: unknown) => {
-			if (src instanceof WebAssembly.Module) return origInstantiate.call(WebAssembly, src, imports);
+			if (src instanceof WebAssembly.Module || !isQpdf(imports)) return origInstantiate.call(WebAssembly, src as never, imports as never);
 			return useCached(imports);
 		};
 		if (origStreaming) {
 			wa.instantiateStreaming = (src: unknown, imports?: unknown) => {
+				if (!isQpdf(imports)) return origStreaming.call(WebAssembly, src as never, imports as never);
 				// Discard the response body; the compiled module is already in hand.
 				Promise.resolve(src)
 					.then((r) => (r as Response | undefined)?.body?.cancel())

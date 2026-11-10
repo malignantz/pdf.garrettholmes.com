@@ -253,7 +253,7 @@
 	"enc-aes-256-unicode.pdf": {
 		"pages": 2,
 		"label": "enc",
-		"password": "p\u00e4ssw\u00f6rd"
+		"password": "pässwörd"
 	},
 	"truncated.pdf": {
 		"expect": "unreadable"
@@ -1036,5 +1036,27 @@
 		"pages": 2,
 		"label": "kinds",
 		"password": "form"
+	},
+	"forms-dv.pdf": {
+		"pages": 1,
+		"label": "dv",
+		"rects": {
+			"dvboth": [
+				72,
+				600,
+				372,
+				624
+			],
+			"dvonly": [
+				72,
+				540,
+				372,
+				564
+			]
+		},
+		"dv": {
+			"dvboth": "DEFAULT-SECRET-ONE",
+			"dvonly": "DEFAULT-SECRET-TWO"
+		}
 	}
 }

@@ -414,7 +414,8 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		const formsCtx: FormsContext = {
 			pages: pages.map((ref) => ({ source: byId.get(ref.sourceId)!, pageIndex: ref.pageIndex, rotation: ref.rotation })),
 			formValues,
-			flatten: options.flattenForms
+			flatten: options.flattenForms,
+			redactions: pages.map((ref) => ref.stamps.flatMap((s) => (s.kind === 'redact' ? [s.box] : [])))
 		};
 		const formsRan = formsNeeded(formsCtx);
 		if (formsRan) bytes = await applyForms(deps, bytes, formsCtx, warnings);
