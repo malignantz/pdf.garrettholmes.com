@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, tick, type Component } from 'svelte';
 	import { version } from '$app/env';
+	import { describeError } from '../ui/error-report';
 	import type { PageId } from '../core/types';
 	import { getApp } from '../app';
 	import { useDocStore } from '../doc/store.svelte';
@@ -332,7 +333,15 @@
 		console.error(err);
 		if (store.gestureActive) store.commitGesture();
 		void closeEditor();
-		const report = describeError(err);
+		// SvelteKit hands over its own error object; the real one is in `detail`.
+		const real = (err as { detail?: unknown } | null)?.detail;
+		const active = document.activeElement;
+		const report = [
+			typeof real === 'string' ? real : describeError(err),
+			`focus: ${active ? `${active.tagName} ${active.className}` : 'none'}`,
+			`at: ${new Date().toISOString()}; build ${version}`,
+			navigator.userAgent
+		].join('\n');
 		toasts.show({
 			message: `The page editor hit a problem and was closed. Your pages are still here. (${report.split('\n')[0].slice(0, 160)})`,
 			tone: 'error',
@@ -341,36 +350,6 @@
 				run: () => void navigator.clipboard?.writeText(report).catch(() => undefined)
 			}
 		});
-	}
-
-	/** Everything useful about a thrown value, whatever it is, for a bug report. */
-	function describeError(err: unknown): string {
-		const lines: string[] = [];
-		if (err instanceof Error) {
-			lines.push(`${err.name}: ${err.message}`, err.stack ?? '');
-			if (err.cause !== undefined) lines.push(`cause: ${describeError(err.cause)}`);
-		} else if (err && typeof err === 'object') {
-			const o = err as Record<string, unknown>;
-			let json = '';
-			try {
-				json = JSON.stringify(o);
-			} catch {
-				json = '(not serializable)';
-			}
-			const keys = Object.getOwnPropertyNames(o);
-			lines.push(
-				`${o.constructor?.name ?? 'object'} ${keys.length ? json.slice(0, 300) : 'with no fields'}`,
-				`name: ${String(o.name)}; message: ${String(o.message)}`,
-				String(o.stack ?? '')
-			);
-		} else lines.push(String(err));
-		const active = document.activeElement;
-		lines.push(
-			`focus: ${active ? `${active.tagName} ${active.className}` : 'none'}`,
-			`at: ${new Date().toISOString()}; build ${version}`,
-			navigator.userAgent
-		);
-		return lines.filter(Boolean).join('\n');
 	}
 
 	// ------------------------------------------------------------ grid callbacks

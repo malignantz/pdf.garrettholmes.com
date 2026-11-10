@@ -129,6 +129,25 @@ test.describe('page editor', () => {
 		expect((await stamps(page)).find((s) => s.kind === 'text')!.text).toBe('Hi');
 	});
 
+	test('text: the screen keyboard opening and closing keeps the editor open', async ({ page }) => {
+		const errors: string[] = [];
+		page.on('pageerror', (e) => errors.push(e.message));
+		await openEditor(page, 'file=multi.pdf&page=1');
+		const box = page.getByRole('textbox', { name: 'Text on the page' });
+		const vp = page.viewportSize()!;
+		await chooseTool(page, 'Text');
+		await tapPage(page, 0.3, 0.2);
+		await expect(box).toBeFocused();
+		// A keyboard changes the viewport height while the view is zoomed in on the text.
+		await page.setViewportSize({ width: vp.width, height: Math.round(vp.height * 0.55) });
+		await page.waitForTimeout(400);
+		await page.keyboard.type('Hi');
+		await page.setViewportSize(vp);
+		await page.waitForTimeout(400);
+		await expect(box).toHaveValue('Hi');
+		expect(errors).toEqual([]);
+	});
+
 	test('dragging a stamp does not redraw the page', async ({ page }, info) => {
 		test.skip(info.project.name === 'phone', 'mouse drag');
 		await openEditor(page, 'file=multi.pdf&page=1');

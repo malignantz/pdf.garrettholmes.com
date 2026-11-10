@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Full-screen view of one page for placing stamps: signature, initials, text,
 	// date and marks. Zoom/pan, page navigation, undo/redo through the store.
-	import { flushSync, onMount, tick } from 'svelte';
+	import { flushSync, onMount, tick, untrack } from 'svelte';
 	import type { Asset, PageId, PageRef, Stamp, StampBox } from '../core/types';
 	import { getApp } from '../app';
 	import { useDocStore } from '../doc/store.svelte';
@@ -94,8 +94,10 @@
 		if (vpW === 0) return;
 		const pageChanged = !fittedFor.startsWith(`${currentId}|`);
 		fittedFor = key;
-		if (pageChanged || view.zoom <= 1.0001) view = centeredView(port, base, 1);
-		else setView(view);
+		// `view` is read untracked: this effect writes it, and tracking it loops.
+		const v = untrack(() => view);
+		if (pageChanged || v.zoom <= 1.0001) view = centeredView(port, base, 1);
+		else setView(v);
 	});
 
 	const pageStyle = $derived(
