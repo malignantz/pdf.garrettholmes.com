@@ -20,6 +20,20 @@
  * ASSETS
  * PDF.js, its worker, cMaps, standard fonts and wasm decoders come from our own
  * origin; see pdfjs-loader.ts. Nothing here touches the network.
+ *
+ * FORM ANSWERS
+ * `RenderRequest.formValues` (field name -> FormValue, names as Engine.formFields)
+ * is drawn into the widgets of a page through PDF.js annotation storage; see
+ * form-values.ts for what is drawn and what is left as stored. The widgets of a
+ * page are read once (`getAnnotations`) and cached. The bitmap cache key gets the
+ * storage entries of that page only, so an answer invalidates just the pages
+ * that show its field, and a page whose answers change nothing it shows shares
+ * the plain render's entry and is drawn exactly as without answers.
+ * PDF.js keeps one AnnotationStorage per document and reads it synchronously
+ * inside `page.render()` (it copies the entries into a new map that is sent to
+ * the worker). So each render fills the storage, calls `render()` and empties it
+ * again in one synchronous block: renders with different answers never see each
+ * other's values, and the storage is empty at every `await`.
  */
 
 import type { Rotation, Renderer, RenderRequest, Source, SourceId } from '../core/types';
@@ -28,15 +42,30 @@ import { abortError, RenderQueue } from './queue';
 import { bitmapBytes, bucketWidth, computeRenderSize } from './sizing';
 import type { PdfJs } from './pdfjs-loader';
 import type { PDFDocumentProxy, PDFDocumentLoadingTask } from 'pdfjs-dist';
+import { entriesKey, fillableWidgets, storageEntries, type FillableWidget, type StorageEntry, type WidgetAnnotation } from './form-values';
 
 interface OpenDoc {
+	lib: PdfJs;
 	task: PDFDocumentLoadingTask;
 	doc: PDFDocumentProxy;
+}
+
+/** PDF.js plus the getDocument() options that route its asset loads. */
+export interface PdfJsHandle {
+	lib: PdfJs;
+	documentOptions: Record<string, unknown>;
 }
 
 export interface RendererOptions {
 	concurrency?: number;
 	cacheBytes?: number;
+	/** Tests only: another PDF.js build (Node needs the legacy one). Default: pdfjs-loader.ts. */
+	pdfjs?: () => Promise<PdfJsHandle>;
+}
+
+async function defaultPdfJs(): Promise<PdfJsHandle> {
+	const loader = await import('./pdfjs-loader');
+	return { lib: await loader.loadPdfJs(), documentOptions: loader.documentAssetOptions };
 }
 
 function isCoarse(): boolean {
@@ -76,18 +105,20 @@ export function createRenderer(options: RendererOptions = {}): Renderer {
 	const generations = new Map<SourceId, number>();
 	const gen = (id: SourceId) => generations.get(id) ?? 0;
 
-	let pdfjs: Promise<PdfJs> | undefined;
-	const lib = () => (pdfjs ??= import('./pdfjs-loader').then((m) => m.loadPdfJs()));
+	let pdfjs: Promise<PdfJsHandle> | undefined;
+	const lib = () => (pdfjs ??= (options.pdfjs ?? defaultPdfJs)());
+	/** Fillable widgets per source page, keyed like the bitmap cache (`<id>\0<page>`). */
+	const widgets = new Map<string, Promise<FillableWidget[]>>();
 
 	function openDoc(source: Source): Promise<OpenDoc> {
 		let p = docs.get(source.id);
 		if (!p) {
 			p = (async () => {
-				const [pdf, loader] = await Promise.all([lib(), import('./pdfjs-loader')]);
+				const { lib: pdf, documentOptions } = await lib();
 				// PDF.js transfers the buffer to its worker, which would detach Source.bytes.
 				const data = source.bytes.slice();
-				const task = pdf.getDocument({ data, ...loader.documentAssetOptions });
-				return { task, doc: await task.promise };
+				const task = pdf.getDocument({ data, ...documentOptions });
+				return { lib: pdf, task, doc: await task.promise };
 			})();
 			docs.set(source.id, p);
 			p.catch(() => {
@@ -98,14 +129,44 @@ export function createRenderer(options: RendererOptions = {}): Renderer {
 	}
 
 	const keyPrefix = (id: SourceId) => `${id}\u0000`;
-	const cacheKey = (id: SourceId, page: number, width: number, rot: Rotation) =>
-		`${keyPrefix(id)}${page}\u0000${width}\u0000${rot}`;
+	const cacheKey = (id: SourceId, page: number, width: number, rot: Rotation, form: string) =>
+		`${keyPrefix(id)}${page}\u0000${width}\u0000${rot}${form ? `\u0000${form}` : ''}`;
 
-	async function renderMaster(req: RenderRequest, width: number, signal: AbortSignal): Promise<ImageBitmap> {
+	function pageWidgets(source: Source, pageIndex: number): Promise<FillableWidget[]> {
+		const key = `${keyPrefix(source.id)}${pageIndex}`;
+		let p = widgets.get(key);
+		if (!p) {
+			p = (async () => {
+				const { doc } = await openDoc(source);
+				const page = await doc.getPage(pageIndex + 1);
+				return fillableWidgets((await page.getAnnotations()) as WidgetAnnotation[]);
+			})();
+			widgets.set(key, p);
+			p.catch(() => {
+				if (widgets.get(key) === p) widgets.delete(key);
+			});
+		}
+		return p;
+	}
+
+	/** Storage entries the answers give this page; [] when they change nothing it shows. */
+	async function formEntries(req: RenderRequest): Promise<StorageEntry[]> {
+		const values = req.formValues;
+		if (!req.source.hasForm || !values || Object.keys(values).length === 0) return [];
+		if (!req.source.pages[req.pageIndex]) return [];
+		return storageEntries(await pageWidgets(req.source, req.pageIndex), values);
+	}
+
+	async function renderMaster(
+		req: RenderRequest,
+		width: number,
+		entries: StorageEntry[],
+		signal: AbortSignal
+	): Promise<ImageBitmap> {
 		const { source, pageIndex, rotation } = req;
 		const size0 = source.pages[pageIndex];
 		if (!size0) throw new RangeError(`Page ${pageIndex} out of range for ${source.name}`);
-		const { doc } = await openDoc(source);
+		const { lib: pdf, doc } = await openDoc(source);
 		if (signal.aborted) throw abortError();
 		const page = await doc.getPage(pageIndex + 1);
 		let canvas: Canvas | undefined;
@@ -119,12 +180,26 @@ export function createRenderer(options: RendererOptions = {}): Renderer {
 				| OffscreenCanvasRenderingContext2D
 				| null;
 			if (!ctx) throw new Error('Could not create a 2D canvas context');
-			const task = page.render({
+			const params = {
 				canvas: canvas as HTMLCanvasElement,
 				canvasContext: ctx as CanvasRenderingContext2D,
 				viewport,
 				background: '#ffffff'
-			});
+			};
+			let task: ReturnType<typeof page.render>;
+			if (entries.length === 0) {
+				task = page.render(params);
+			} else {
+				// Fill, render, empty: one synchronous block (see FORM ANSWERS above).
+				const storage = doc.annotationStorage;
+				for (const [k] of [...storage]) storage.remove(k);
+				try {
+					for (const [id, value] of entries) storage.setValue(id, { ...value });
+					task = page.render({ ...params, annotationMode: pdf.AnnotationMode.ENABLE_STORAGE });
+				} finally {
+					for (const [k] of [...storage]) storage.remove(k);
+				}
+			}
 			const onAbort = () => task.cancel();
 			signal.addEventListener('abort', onAbort);
 			try {
@@ -151,17 +226,19 @@ export function createRenderer(options: RendererOptions = {}): Renderer {
 			if (req.signal?.aborted) throw abortError();
 			const { source, pageIndex, rotation } = req;
 			const width = bucketWidth(req.width);
-			const key = cacheKey(source.id, pageIndex, width, rotation);
+			const startGen = gen(source.id);
+			const entries = await formEntries(req);
+			if (req.signal?.aborted) throw abortError();
+			const key = cacheKey(source.id, pageIndex, width, rotation, entriesKey(entries));
 
 			const hit = cache.get(key);
 			if (hit) return createImageBitmap(hit);
 
-			const startGen = gen(source.id);
 			const master = await queue.add(async (signal) => {
 				// An earlier identical request may have finished while this one waited.
 				const again = cache.get(key);
 				if (again) return { bmp: again, fresh: false };
-				return { bmp: await renderMaster(req, width, signal), fresh: true };
+				return { bmp: await renderMaster(req, width, entries, signal), fresh: true };
 			}, req.signal);
 
 			if (!master.fresh) return createImageBitmap(master.bmp);
@@ -176,6 +253,7 @@ export function createRenderer(options: RendererOptions = {}): Renderer {
 		release(sourceId) {
 			generations.set(sourceId, gen(sourceId) + 1);
 			cache.deletePrefix(keyPrefix(sourceId));
+			for (const k of [...widgets.keys()]) if (k.startsWith(keyPrefix(sourceId))) widgets.delete(k);
 			const p = docs.get(sourceId);
 			docs.delete(sourceId);
 			p?.then((d) => d.task.destroy()).catch(() => {});
