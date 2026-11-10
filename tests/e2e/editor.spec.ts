@@ -136,6 +136,8 @@ test.describe('page editor', () => {
 		await tapPage(page, 0.3, 0.2);
 		await page.keyboard.type('Move me');
 		await page.getByRole('button', { name: 'Done editing' }).click();
+		// Let the sharper redraw that follows a zoom change finish first.
+		await page.waitForTimeout(800);
 		await page.evaluate(() => {
 			const w = window as unknown as { __redraws: number };
 			w.__redraws = 0;
