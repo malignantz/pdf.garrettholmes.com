@@ -411,10 +411,12 @@
 		size: number;
 		moved: boolean;
 		wasSelected: boolean;
+		/** Started on the move grip: a tap there never opens the text. */
+		grip: boolean;
 	}
 	let drag: Drag | null = null;
 
-	function stampDown(e: PointerEvent, s: Stamp, handle?: Handle) {
+	function stampDown(e: PointerEvent, s: Stamp, handle?: Handle, grip = false) {
 		if (e.pointerType === 'mouse' && e.button !== 0) return;
 		e.stopPropagation();
 		if (editing?.id === s.id && !handle) return; // clicks inside the text box place the caret
@@ -434,7 +436,8 @@
 			box: boxOf(s),
 			size: s.kind === 'text' ? s.size : 0,
 			moved: false,
-			wasSelected
+			wasSelected,
+			grip
 		};
 	}
 
@@ -479,7 +482,7 @@
 			const s = page?.stamps.find((x) => x.id === d.id);
 			if (s?.kind === 'text') clampText(s.id);
 			if (s) announce(`${stampName(s, assets)} ${d.kind === 'move' ? 'moved' : 'resized'}.`);
-		} else if (d.wasSelected && d.kind === 'move') {
+		} else if (d.wasSelected && d.kind === 'move' && !d.grip) {
 			const s = page?.stamps.find((x) => x.id === d.id);
 			if (s?.kind === 'text') startEditing(s.id);
 		}
@@ -541,6 +544,14 @@
 			nudging = false;
 			if (store.gestureActive) store.commitGesture();
 		}
+	}
+
+	/**
+	 * After a touch tap the browser sends a late mousedown, which would move focus
+	 * from the text box just opened to the viewport, and typing would go nowhere.
+	 */
+	function keepTextFocus(e: MouseEvent) {
+		if (editing && e.target !== textarea) e.preventDefault();
 	}
 
 	function viewportFocus() {
@@ -851,9 +862,8 @@
 		};
 	});
 
-	const HANDLES: Handle[] = ['nw', 'ne', 'sw', 'se'];
-	/** Text is often small: one handle, set off from the text so it never covers it. */
-	const TEXT_HANDLES: Handle[] = ['se'];
+	/** One resize handle, set off from the stamp so it never covers small text or marks. */
+	const RESIZE: Handle = 'se';
 	const zoomLabel = $derived(`${Math.round(view.zoom * 100)}%`);
 </script>
 
@@ -902,6 +912,7 @@
 
 	<div class="main">
 		<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+		<!-- svelte-ignore a11y_no_noninteractive_element_interactions (mousedown only guards focus) -->
 		<div
 			bind:this={vp}
 			bind:clientWidth={vpW}
@@ -915,6 +926,7 @@
 			onpointermove={vpMove}
 			onpointerup={vpUp}
 			onpointercancel={vpCancel}
+			onmousedown={keepTextFocus}
 		>
 			{#if page && source}
 				<div class="page" style={pageStyle} data-testid="editor-page">
@@ -960,17 +972,29 @@
 									></textarea>
 								{/if}
 								{#if isSel && !isEdit}
-									{#each s.kind === 'text' ? TEXT_HANDLES : HANDLES as h (h)}
-										<span
-											class="handle {h}"
-											aria-hidden="true"
-											data-handle={h}
-											onpointerdown={(e) => stampDown(e, s, h)}
-											onpointermove={stampMove}
-											onpointerup={stampUp}
-											onpointercancel={stampCancel}
-										></span>
-									{/each}
+									<!-- Touch only (see CSS): a finger covers a small stamp, so moving gets its own grip. -->
+									<span
+										class="handle move"
+										aria-hidden="true"
+										data-handle="move"
+										onpointerdown={(e) => stampDown(e, s, undefined, true)}
+										onpointermove={stampMove}
+										onpointerup={stampUp}
+										onpointercancel={stampCancel}
+									>
+										<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+											<path d="M8 1.5v13M1.5 8h13M6 3.5l2-2 2 2M6 12.5l2 2 2-2M3.5 6l-2 2 2 2M12.5 6l2 2-2 2" />
+										</svg>
+									</span>
+									<span
+										class="handle {RESIZE}"
+										aria-hidden="true"
+										data-handle={RESIZE}
+										onpointerdown={(e) => stampDown(e, s, RESIZE)}
+										onpointermove={stampMove}
+										onpointerup={stampUp}
+										onpointercancel={stampCancel}
+									></span>
 								{/if}
 							</StampShape>
 						{/each}
@@ -1208,11 +1232,6 @@
 		outline-offset: 3px;
 	}
 
-	.layer :global(.ed.text .handle.se) {
-		left: calc(100% + 4px);
-		top: calc(100% + 4px);
-	}
-
 	.layer :global(.ed.editing) {
 		cursor: text;
 		box-shadow: 0 0 0 1.5px var(--accent);
@@ -1279,28 +1298,43 @@
 		}
 	}
 
-	.handle.nw {
-		left: 0;
-		top: 0;
-		cursor: nwse-resize;
-	}
-
-	.handle.ne {
-		left: 100%;
-		top: 0;
-		cursor: nesw-resize;
-	}
-
-	.handle.sw {
-		left: 0;
-		top: 100%;
-		cursor: nesw-resize;
-	}
-
 	.handle.se {
-		left: 100%;
-		top: 100%;
+		left: calc(100% + 5px);
+		top: calc(100% + 5px);
 		cursor: nwse-resize;
+	}
+
+	.handle.move {
+		display: none;
+	}
+
+	@media (pointer: coarse) {
+		/* Touch targets stop at the stamp's edge, so a tap on the stamp is never taken by a handle. */
+		.handle.se {
+			left: calc(100% + 18px);
+			top: calc(100% + 18px);
+		}
+
+		.handle.se::before {
+			inset: -10px;
+		}
+
+		.handle.move {
+			display: grid;
+			place-items: center;
+			left: -20px;
+			top: -20px;
+			width: 26px;
+			height: 26px;
+			margin: -13px 0 0 -13px;
+			background: var(--accent);
+			border-color: var(--accent);
+			color: var(--sheet);
+		}
+
+		.handle.move::before {
+			inset: -7px;
+		}
 	}
 
 	.armed-hint {

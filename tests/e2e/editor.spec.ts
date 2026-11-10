@@ -148,6 +148,65 @@ test.describe('page editor', () => {
 		expect(errors).toEqual([]);
 	});
 
+	test('a selected stamp has one resize handle, and on touch a separate move grip', async ({ page }, info) => {
+		await openEditor(page, 'file=multi.pdf&page=1');
+		const box = page.getByRole('textbox', { name: 'Text on the page' });
+		const vp = page.viewportSize()!;
+		await chooseTool(page, 'Text');
+		await tapPage(page, 0.3, 0.2);
+		await page.keyboard.type('Hi');
+		await page.mouse.click(vp.width / 2, vp.height * 0.75);
+		await expect(box).toHaveCount(0);
+		const text = (await stamps(page)).find((s) => s.kind === 'text')!;
+		const el = page.locator(`[data-stamp="${text.id}"]`);
+		await expect(el.locator('[data-handle]:visible')).toHaveCount(info.project.name === 'phone' ? 2 : 1);
+		if (info.project.name !== 'phone') return;
+
+		// Neither handle sits on the text.
+		const tb = (await el.locator('.txt').boundingBox())!;
+		for (const name of ['move', 'se']) {
+			const hb = (await el.locator(`[data-handle="${name}"]`).boundingBox())!;
+			const apart = hb.x + hb.width <= tb.x || hb.x >= tb.x + tb.width || hb.y + hb.height <= tb.y || hb.y >= tb.y + tb.height;
+			expect(apart, `${name} handle clear of the text`).toBe(true);
+		}
+
+		// The grip moves the text; a tap on it does not open the text.
+		const gb = (await el.locator('[data-handle="move"]').boundingBox())!;
+		const gx = gb.x + gb.width / 2;
+		const gy = gb.y + gb.height / 2;
+		await page.mouse.click(gx, gy);
+		await expect(box).toHaveCount(0);
+		const b = await pageBox(page);
+		await page.mouse.move(gx, gy);
+		await page.mouse.down();
+		await page.mouse.move(gx + 20, gy + 15, { steps: 4 });
+		await page.mouse.move(gx + 40, gy + 30, { steps: 4 });
+		await page.mouse.up();
+		const moved = (await stamps(page)).find((s) => s.id === text.id)!;
+		expect(moved.x! - text.x!).toBeCloseTo(40 / b.width, 2);
+		expect(moved.y! - text.y!).toBeCloseTo(30 / b.height, 2);
+		expect(moved.size).toBeCloseTo(text.size!, 6);
+
+		// With the handles out of the way, a tap on the selected text opens it.
+		await el.locator('.txt').tap();
+		await expect(box).toBeFocused();
+	});
+
+	test('text: a finger tap opens a box that takes the typing', async ({ page }, info) => {
+		test.skip(info.project.name !== 'phone', 'touch');
+		await openEditor(page, 'file=multi.pdf&page=1');
+		const box = page.getByRole('textbox', { name: 'Text on the page' });
+		await chooseTool(page, 'Text');
+		const b = await pageBox(page);
+		await page.touchscreen.tap(b.x + 0.3 * b.width, b.y + 0.3 * b.height);
+		// The late mousedown after a touch must not take focus from the box.
+		await page.waitForTimeout(400);
+		await expect(box).toBeFocused();
+		await page.keyboard.type('Hi');
+		await page.getByRole('button', { name: 'Done editing' }).tap();
+		expect((await stamps(page)).find((s) => s.kind === 'text')!.text).toBe('Hi');
+	});
+
 	test('dragging a stamp does not redraw the page', async ({ page }, info) => {
 		test.skip(info.project.name === 'phone', 'mouse drag');
 		await openEditor(page, 'file=multi.pdf&page=1');
