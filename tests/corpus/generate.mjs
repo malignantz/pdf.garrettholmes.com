@@ -474,6 +474,8 @@ write(
 	{ pixels: [240, 80], alpha: true }
 );
 
+await (await import('./generate-forms.mjs')).default({ write, qpdf });
+
 fs.writeFileSync(path.join(outDir, 'manifest.json'), JSON.stringify(manifest, null, '\t') + '\n');
 const total = fs.readdirSync(outDir).reduce((n, f) => n + fs.statSync(path.join(outDir, f)).size, 0);
 console.log(`Wrote ${Object.keys(manifest).length} files, ${(total / 1024).toFixed(1)} KiB, to ${outDir}`);

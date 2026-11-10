@@ -38,10 +38,13 @@ describe('MuPDF loader', () => {
 });
 
 describe('formFields', () => {
-	it('is [] for a source without a form, and openPdf leaves hasForm unset while detection is a stub', async () => {
+	it('is [] for a source without a form; form.pdf reports its fields (details in forms.test.ts)', async () => {
+		const plain = await openCorpus('multi.pdf');
+		expect(plain.hasForm).toBeUndefined();
+		expect(await engine().formFields(plain)).toEqual([]);
 		const src = await openCorpus('form.pdf');
-		expect(src.hasForm).toBeUndefined();
-		expect(await engine().formFields(src)).toEqual([]);
+		expect(src.hasForm).toBe(true);
+		expect((await engine().formFields(src)).map((f) => f.name)).toEqual(['name', 'agree', 'notes']);
 	}, T);
 });
 
@@ -81,9 +84,9 @@ describe('export pipeline rules', () => {
 		expect(res.checks.every((c) => c.ok)).toBe(true);
 	}, T);
 
-	it('refuses answers for a used source while forms are a stub', async () => {
+	it('refuses answers for a field the source does not have', async () => {
 		const src = await openCorpus('form.pdf');
-		const e = await rejects(run([ref(src, 0)], [src], {}, { formValues: { [src.id]: { name: 'Grace' } } }));
+		const e = await rejects(run([ref(src, 0)], [src], {}, { formValues: { [src.id]: { nosuch: 'Grace' } } }));
 		expect(e.code).toBe('unsupported');
 	}, T);
 
