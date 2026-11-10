@@ -189,6 +189,7 @@ export interface VerifyCheck {
 		| 'numbering'
 		/** After shrinking images, every page still looks like it did before. */
 		| 'visual'
+		/** Reports the final size. ok even when the target was not reached; ExportResult.shrink.reached says which. */
 		| 'target-size';
 	ok: boolean;
 	detail: string;
