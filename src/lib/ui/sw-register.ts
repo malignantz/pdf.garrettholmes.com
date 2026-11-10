@@ -27,11 +27,20 @@ export async function registerServiceWorker(idle: () => boolean = () => false) {
 
 	const prompt = (worker: ServiceWorker) => {
 		if (prompted) return;
-		prompted = true;
 		if (idle()) {
-			worker.postMessage({ type: 'SKIP_WAITING' });
+			// The worker only takes over if this is the only tab; if not, ask as usual.
+			worker.postMessage({ type: 'SKIP_WAITING_IF_ALONE' });
+			setTimeout(() => {
+				if (!reloading && worker.state === 'installed') ask(worker);
+			}, 3000);
 			return;
 		}
+		ask(worker);
+	};
+
+	const ask = (worker: ServiceWorker) => {
+		if (prompted) return;
+		prompted = true;
 		toasts.show({
 			message: 'A new version is available.',
 			timeout: 0,

@@ -60,6 +60,15 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('message', (event) => {
 	if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
+	// Sent by a tab with no document open. Another tab may hold one, and taking
+	// over would reload it, so only do it when that tab is the only one.
+	if (event.data?.type === 'SKIP_WAITING_IF_ALONE') {
+		event.waitUntil(
+			self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((all) => {
+				if (all.length <= 1) return self.skipWaiting();
+			})
+		);
+	}
 });
 
 self.addEventListener('fetch', (event) => {
