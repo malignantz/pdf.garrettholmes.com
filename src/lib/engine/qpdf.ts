@@ -112,7 +112,7 @@ export class Qpdf {
 		const [module, factory] = await Promise.all([this.#getModule(), this.#getFactory()]);
 		const out: number[] = [];
 		const err: number[] = [];
-		const qpdf = await withCachedModule(module, () =>
+		const qpdf = await withCachedModule(module, this.#loader.location, () =>
 			factory({
 				locateFile: () => this.#loader.location,
 				noInitialRun: true,
@@ -196,19 +196,31 @@ function decode(bytes: number[]): string {
 let patchQueue: Promise<unknown> = Promise.resolve();
 
 /**
- * While `create` runs, make WebAssembly.instantiate(Streaming) use our compiled module.
+ * While `create` runs, make WebAssembly.instantiate(Streaming) use our compiled module
+ * (and short-circuit the loader's fetch of qpdf.wasm).
  * Only the first instantiation with qpdf's import object is redirected, and the
  * originals are restored right after. Calls are serialized across all Qpdf objects.
  */
-function withCachedModule<T>(module: WebAssembly.Module, create: () => Promise<T>): Promise<T> {
+function withCachedModule<T>(module: WebAssembly.Module, location: string, create: () => Promise<T>): Promise<T> {
 	const run = async () => {
 		const wa = WebAssembly as unknown as WA;
 		const origInstantiate = wa.instantiate;
 		const origStreaming = wa.instantiateStreaming;
+		const g = globalThis as { fetch?: typeof fetch };
+		const origFetch = g.fetch;
 		const restore = () => {
 			wa.instantiate = origInstantiate;
 			if (origStreaming) wa.instantiateStreaming = origStreaming;
+			if (origFetch) g.fetch = origFetch;
 		};
+		// The browser loader fetches qpdf.wasm before instantiating; answer that request
+		// with an empty body instead of re-reading 1.3 MB we would discard anyway.
+		if (origFetch && typeof Response !== 'undefined') {
+			g.fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
+				String(input) === location
+					? Promise.resolve(new Response(new Uint8Array(0), { headers: { 'Content-Type': 'application/wasm' } }))
+					: origFetch(input, init)) as typeof fetch;
+		}
 		const useCached = async (imports: unknown) => {
 			restore();
 			const instance = (await origInstantiate.call(WebAssembly, module, imports)) as WebAssembly.Instance;

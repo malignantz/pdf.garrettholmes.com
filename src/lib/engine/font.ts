@@ -30,7 +30,7 @@ export class StampFont {
 	}
 
 	fontkit(): Promise<Fontkit> {
-		this.#fontkit ??= import('@pdf-lib/fontkit').then((m) => {
+		this.#fontkit ??= import('@cantoo/fontkit').then((m) => {
 			const mod = m as unknown as { default?: Fontkit } & Fontkit;
 			return mod.default ?? mod;
 		});

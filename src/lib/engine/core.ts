@@ -373,7 +373,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		const finalArgs: string[] = ['/in/doc.pdf'];
 		const finalInputs: Record<string, Uint8Array> = { '/in/doc.pdf': stamped };
 		if (options.compress) {
-			finalArgs.push('--object-streams=generate', '--compress-streams=y', '--recompress-flate', '--compression-level=9');
+			finalArgs.push('--object-streams=generate', '--compress-streams=y', '--recompress-flate');
 		}
 		if (options.stripMetadata) {
 			const update = await metadataRemoval(stamped);

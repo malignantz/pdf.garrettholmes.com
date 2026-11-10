@@ -70,7 +70,7 @@ export const defaultOptions = { filename: 'out.pdf', compress: false, stripMetad
 /** Text of each page, joined per page, via PDF.js. */
 export async function pageTexts(bytes: Uint8Array, password?: string): Promise<string[]> {
 	const lib = await loadPdfjs();
-	const task = lib.getDocument({ data: bytes.slice(), password, isEvalSupported: false, verbosity: 0, useWasm: false });
+	const task = lib.getDocument({ data: bytes.slice(), password, verbosity: 0, useWasm: false });
 	const doc = await task.promise;
 	try {
 		const out: string[] = [];
@@ -92,7 +92,7 @@ export async function pageTexts(bytes: Uint8Array, password?: string): Promise<s
 
 export async function pageSizes(bytes: Uint8Array, password?: string) {
 	const lib = await loadPdfjs();
-	const task = lib.getDocument({ data: bytes.slice(), password, isEvalSupported: false, verbosity: 0, useWasm: false });
+	const task = lib.getDocument({ data: bytes.slice(), password, verbosity: 0, useWasm: false });
 	const doc = await task.promise;
 	try {
 		const out: { width: number; height: number; rotate: number; view: number[] }[] = [];

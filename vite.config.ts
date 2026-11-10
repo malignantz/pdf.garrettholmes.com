@@ -3,6 +3,8 @@ import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
+	// The engine worker code-splits (qpdf, pdf-lib, PDF.js load on demand), which needs ES workers.
+	worker: { format: 'es' },
 	plugins: [
 		sveltekit({
 			compilerOptions: {

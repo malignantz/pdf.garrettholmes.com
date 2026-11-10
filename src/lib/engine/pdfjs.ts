@@ -33,7 +33,6 @@ export async function inspectWithPdfjs(lib: PdfjsLib, bytes: Uint8Array, passwor
 	const task = lib.getDocument({
 		data: bytes.slice(),
 		password,
-		isEvalSupported: false,
 		useWasm: false,
 		useWorkerFetch: false,
 		useSystemFonts: false,
