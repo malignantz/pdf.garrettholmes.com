@@ -1,0 +1,295 @@
+{
+	"multi.pdf": {
+		"pages": 6,
+		"label": "multi",
+		"size": [
+			612,
+			792
+		]
+	},
+	"sizes.pdf": {
+		"pages": 6,
+		"label": "sizes",
+		"sizes": [
+			[
+				612,
+				792
+			],
+			[
+				595.28,
+				841.89
+			],
+			[
+				612,
+				1008
+			],
+			[
+				595.28,
+				419.53
+			],
+			[
+				100,
+				60
+			],
+			[
+				1224,
+				792
+			]
+		]
+	},
+	"rotated.pdf": {
+		"pages": 6,
+		"label": "rotated",
+		"rotate": [
+			0,
+			90,
+			180,
+			270,
+			-90,
+			450
+		],
+		"mediaBox": [
+			400,
+			600
+		]
+	},
+	"inherited.pdf": {
+		"pages": 3,
+		"label": "inherited",
+		"note": "MediaBox/Rotate 90/Resources inherited; page 3 overrides Rotate 0"
+	},
+	"cropbox.pdf": {
+		"pages": 6,
+		"label": "cropbox",
+		"crops": [
+			{
+				"media": [
+					0,
+					0,
+					612,
+					792
+				],
+				"crop": [
+					36,
+					72,
+					456,
+					672
+				],
+				"rotate": 0
+			},
+			{
+				"media": [
+					100,
+					200,
+					712,
+					992
+				],
+				"crop": [
+					150,
+					250,
+					500,
+					700
+				],
+				"rotate": 0
+			},
+			{
+				"media": [
+					0,
+					0,
+					612,
+					792
+				],
+				"crop": [
+					36,
+					72,
+					456,
+					672
+				],
+				"rotate": 90
+			},
+			{
+				"media": [
+					0,
+					0,
+					400,
+					400
+				],
+				"crop": [
+					-50,
+					-50,
+					700,
+					900
+				],
+				"rotate": 0
+			},
+			{
+				"media": [
+					100,
+					200,
+					712,
+					992
+				],
+				"crop": [
+					150,
+					250,
+					500,
+					700
+				],
+				"rotate": 270
+			},
+			{
+				"media": [
+					0,
+					0,
+					612,
+					792
+				],
+				"crop": [
+					456,
+					672,
+					36,
+					72
+				],
+				"rotate": 180
+			}
+		]
+	},
+	"unbalanced.pdf": {
+		"pages": 4,
+		"label": "unbalanced"
+	},
+	"userunit.pdf": {
+		"pages": 1,
+		"label": "userunit",
+		"userUnit": 2,
+		"mediaBox": [
+			300,
+			200
+		]
+	},
+	"form.pdf": {
+		"pages": 2,
+		"label": "form",
+		"fields": [
+			"name",
+			"agree",
+			"notes"
+		]
+	},
+	"metadata.pdf": {
+		"pages": 2,
+		"label": "metadata"
+	},
+	"damaged-xref.pdf": {
+		"pages": 3,
+		"label": "damaged",
+		"expect": "repaired with notes"
+	},
+	"damaged-streams.pdf": {
+		"pages": 2,
+		"label": "streams",
+		"expect": "repaired with notes"
+	},
+	"linearized.pdf": {
+		"pages": 6,
+		"label": "multi"
+	},
+	"objstm.pdf": {
+		"pages": 6,
+		"label": "sizes",
+		"sizes": [
+			[
+				612,
+				792
+			],
+			[
+				595.28,
+				841.89
+			],
+			[
+				612,
+				1008
+			],
+			[
+				595.28,
+				419.53
+			],
+			[
+				100,
+				60
+			],
+			[
+				1224,
+				792
+			]
+		]
+	},
+	"enc-rc4-40.pdf": {
+		"pages": 2,
+		"label": "enc",
+		"password": "user"
+	},
+	"enc-rc4-128.pdf": {
+		"pages": 2,
+		"label": "enc",
+		"password": "user"
+	},
+	"enc-aes-128.pdf": {
+		"pages": 2,
+		"label": "enc",
+		"password": "user"
+	},
+	"enc-aes-256.pdf": {
+		"pages": 2,
+		"label": "enc",
+		"password": "user",
+		"ownerPassword": "owner"
+	},
+	"enc-aes-256-owner-only.pdf": {
+		"pages": 2,
+		"label": "enc",
+		"password": null
+	},
+	"enc-aes-256-unicode.pdf": {
+		"pages": 2,
+		"label": "enc",
+		"password": "pässwörd"
+	},
+	"truncated.pdf": {
+		"expect": "unreadable"
+	},
+	"garbage.pdf": {
+		"expect": "unreadable"
+	},
+	"header-garbage.pdf": {
+		"expect": "unreadable"
+	},
+	"photo-exif6.jpg": {
+		"pixels": [
+			400,
+			240
+		],
+		"orientation": 6
+	},
+	"photo-plain.jpg": {
+		"pixels": [
+			400,
+			240
+		],
+		"orientation": 1
+	},
+	"alpha.png": {
+		"pixels": [
+			200,
+			100
+		],
+		"alpha": true
+	},
+	"signature.png": {
+		"pixels": [
+			240,
+			80
+		],
+		"alpha": true
+	}
+}

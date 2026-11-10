@@ -24,6 +24,8 @@ export const cspDirectives = {
 } as const;
 
 export default defineConfig({
+	// The engine worker code-splits (qpdf, pdf-lib, PDF.js load on demand), which needs ES workers.
+	worker: { format: 'es' },
 	plugins: [
 		sveltekit({
 			compilerOptions: {
