@@ -4,5 +4,5 @@
 		"strict": true
 	},
 	"include": ["src", "tests", "vite.config.ts", "vitest.config.ts", "playwright.config.ts"],
-	"exclude": ["src/service-worker"]
+	"exclude": ["src/service-worker", "tests/corpus/generate.mjs"]
 }
