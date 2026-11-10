@@ -4,7 +4,8 @@
  * so everything here is unit-tested in tests/workspace/.
  */
 
-import type { PageId, PageRef, Source, VerifyCheck } from '../core/types';
+import type { ExportOptions, ExportResult, PageId, PageNumbering, PageRef, Source, VerifyCheck } from '../core/types';
+import { numberingLabels } from '../engine/numbering';
 
 // ---------------------------------------------------------------- drop slots
 
@@ -338,8 +339,185 @@ export function plainCheck(
 		case 'target-size':
 			// ok also when the target was out of reach: the smallest verified file is still delivered.
 			if (!c.ok) return 'The file size could not be checked.';
-			return /could not be reached/i.test(c.detail)
-				? 'It could not be made as small as you asked; this is the smallest version.'
+			return /target was/i.test(c.detail) || /could not be reached/i.test(c.detail)
+				? 'This is the smallest the file can get without damaging text.'
 				: 'It fits the size you asked for.';
 	}
+}
+
+
+// ---------------------------------------------------------------- export options
+
+/** 1 MB, the same unit formatBytes uses, so the size shown agrees with the size chosen. */
+export const MB = 1024 * 1024;
+
+export const FIT_CHOICES = ['25', '10', '5', '2', 'other'] as const;
+export type FitChoice = (typeof FIT_CHOICES)[number];
+
+/** "2", "0.5", "1,5" -> megabytes; null unless a number from 0.1 to 500. */
+export function parseMegabytes(input: string): number | null {
+	const t = input.trim().replace(',', '.');
+	if (!/^(\d+\.?\d*|\.\d+)$/.test(t)) return null;
+	const n = Number(t);
+	if (!Number.isFinite(n) || n < 0.1 || n > 500) return null;
+	return n;
+}
+
+/** The size target in bytes for the chosen preset or the typed number; null when it is not valid. */
+export function targetBytesFor(choice: FitChoice, other: string): number | null {
+	const mb = choice === 'other' ? parseMegabytes(other) : Number(choice);
+	return mb === null ? null : Math.round(mb * MB);
+}
+
+/** "10 MB", "0.5 MB": a size without a needless ".0". */
+export function formatMB(bytes: number): string {
+	const mb = Math.round((bytes / MB) * 10) / 10;
+	return `${Number.isInteger(mb) ? mb : mb.toFixed(1)} MB`;
+}
+
+export const NUMBER_STYLES: readonly { value: PageNumbering['style']; label: string }[] = [
+	{ value: 'n', label: '1' },
+	{ value: 'n-of-total', label: '1 of 12' },
+	{ value: 'page-n', label: 'Page 1' },
+	{ value: 'page-n-of-total', label: 'Page 1 of 12' },
+	{ value: 'bates', label: 'Bates number' }
+];
+
+export const NUMBER_POSITIONS: readonly { value: PageNumbering['position']; label: string }[] = [
+	{ value: 'top-left', label: 'Top left' },
+	{ value: 'top-center', label: 'Top center' },
+	{ value: 'top-right', label: 'Top right' },
+	{ value: 'bottom-left', label: 'Bottom left' },
+	{ value: 'bottom-center', label: 'Bottom center' },
+	{ value: 'bottom-right', label: 'Bottom right' }
+];
+
+export const NUMBER_SIZES: readonly { value: string; label: string; pt: number }[] = [
+	{ value: 'small', label: 'Small', pt: 8 },
+	{ value: 'medium', label: 'Medium', pt: 10 },
+	{ value: 'large', label: 'Large', pt: 12 }
+];
+
+/** What the export dialog holds. Text fields stay strings until they are checked. */
+export interface ExportForm {
+	filename: string;
+	compress: boolean;
+	stripMetadata: boolean;
+	password?: string;
+	fit: boolean;
+	fitChoice: FitChoice;
+	fitOther: string;
+	number: boolean;
+	style: PageNumbering['style'];
+	position: PageNumbering['position'];
+	start: string;
+	skip: string;
+	size: string;
+	prefix: string;
+	digits: string;
+	lockForms: boolean;
+}
+
+export const DEFAULT_FORM: Omit<ExportForm, 'filename'> = {
+	compress: true,
+	stripMetadata: false,
+	fit: false,
+	fitChoice: '10',
+	fitOther: '',
+	number: false,
+	style: 'page-n-of-total',
+	position: 'bottom-center',
+	start: '1',
+	skip: '0',
+	size: 'medium',
+	prefix: '',
+	digits: '6',
+	lockForms: false
+};
+
+/** Number of redaction boxes on the pages of a plan. */
+export function redactionCount(pages: readonly Pick<PageRef, 'stamps'>[]): number {
+	let n = 0;
+	for (const p of pages) for (const s of p.stamps) if (s.kind === 'redact') n++;
+	return n;
+}
+
+function whole(input: string): number | null {
+	return /^\d{1,9}$/.test(input.trim()) ? Number(input.trim()) : null;
+}
+
+/** Settings -> PageNumbering, or the plain sentence saying what to fix. */
+export function buildNumbering(f: ExportForm, pageCount: number): { numbering: PageNumbering } | { problem: string } {
+	const start = whole(f.start);
+	if (start === null) return { problem: 'The first page number must be a whole number of 0 or more.' };
+	const skip = whole(f.skip);
+	if (skip === null) return { problem: 'The number of pages to leave unnumbered must be a whole number of 0 or more.' };
+	if (skip >= pageCount) {
+		return { problem: `Every page would be skipped. Skip fewer than ${plural(pageCount, 'page')}.` };
+	}
+	const size = NUMBER_SIZES.find((x) => x.value === f.size)?.pt ?? 10;
+	const numbering: PageNumbering = { style: f.style, position: f.position, start, skip, size };
+	if (f.style === 'bates') {
+		const digits = whole(f.digits);
+		if (digits === null) return { problem: 'Bates numbers must have between 3 and 10 digits.' };
+		numbering.bates = { prefix: f.prefix, digits };
+	}
+	try {
+		numberingLabels(numbering, pageCount);
+	} catch (e) {
+		return { problem: (e as Error).message };
+	}
+	return { numbering };
+}
+
+/** `First: "Page 1 of 12" · Last: "Page 12 of 12"`, plus a line about skipped pages. */
+export function numberingPreview(numbering: PageNumbering, pageCount: number): string {
+	const labels = numberingLabels(numbering, pageCount).filter((l): l is string => l !== null);
+	if (labels.length === 0) return '';
+	const line = labels.length === 1 ? `Only page: "${labels[0]}"` : `First: "${labels[0]}" · Last: "${labels[labels.length - 1]}"`;
+	if (numbering.skip === 0) return line;
+	const skipped = numbering.skip === 1 ? 'The first page gets no number.' : `The first ${numbering.skip} pages get no number.`;
+	return `${line}. ${skipped}`;
+}
+
+export type OptionsResult = { ok: true; options: ExportOptions } | { ok: false; problem: string };
+
+/**
+ * Dialog settings -> ExportOptions. Redaction forces metadata removal and locked forms on;
+ * a size target implies compression. Returns the problem instead when a setting is invalid.
+ */
+export function buildExportOptions(
+	f: ExportForm,
+	ctx: { pageCount: number; redactions: number; hasForm: boolean }
+): OptionsResult {
+	const redacting = ctx.redactions > 0;
+	const options: ExportOptions = {
+		filename: f.filename,
+		compress: f.compress || f.fit,
+		stripMetadata: f.stripMetadata || redacting,
+		password: f.password || undefined
+	};
+	if (f.fit) {
+		const bytes = targetBytesFor(f.fitChoice, f.fitOther);
+		if (bytes === null) return { ok: false, problem: 'Enter a size from 0.1 to 500 MB.' };
+		options.targetBytes = bytes;
+	}
+	if (f.number) {
+		const r = buildNumbering(f, ctx.pageCount);
+		if ('problem' in r) return { ok: false, problem: r.problem };
+		options.numbering = r.numbering;
+	}
+	if ((ctx.hasForm && f.lockForms) || redacting) options.flattenForms = true;
+	return { ok: true, options };
+}
+
+/** The lines under the file size on the result view. */
+export function shrinkSummary(r: ExportResult): { size: string; changed: string | null } | null {
+	const s = r.shrink;
+	if (!s) return null;
+	const size = s.reached
+		? `Fits under ${formatMB(s.targetBytes)}: ${formatBytes(r.bytes.length)}.`
+		: `Smallest possible is ${formatBytes(r.bytes.length)}. You asked for ${formatMB(s.targetBytes)}.`;
+	const changed = s.imagesChanged > 0 && s.dpi > 0 ? `Photos and scans were reduced to about ${s.dpi} dpi.` : null;
+	return { size, changed };
 }

@@ -8,8 +8,31 @@
 	import Field from '../ui/Field.svelte';
 	import Icon from '../ui/Icon.svelte';
 	import Progress from '../ui/Progress.svelte';
+	import Select from '../ui/Select.svelte';
 	import Toggle from '../ui/Toggle.svelte';
-	import { defaultFilename, formatBytes, normalizeFilename, passwordProblem, plainCheck, plural } from './logic';
+	import OptionPicker from './OptionPicker.svelte';
+	import {
+		DEFAULT_FORM,
+		FIT_CHOICES,
+		NUMBER_POSITIONS,
+		NUMBER_SIZES,
+		NUMBER_STYLES,
+		buildExportOptions,
+		buildNumbering,
+		defaultFilename,
+		formatBytes,
+		formatMB,
+		normalizeFilename,
+		numberingPreview,
+		parseMegabytes,
+		passwordProblem,
+		plainCheck,
+		plural,
+		redactionCount,
+		shrinkSummary,
+		targetBytesFor,
+		type ExportForm
+	} from './logic';
 
 	interface Props {
 		open: boolean;
@@ -27,14 +50,14 @@
 
 	type Phase =
 		| { kind: 'form' }
-		| { kind: 'working' }
+		| { kind: 'working'; fitting: string | null }
 		| { kind: 'done'; result: ExportResult; filename: string; inputBytes: number; url: string }
 		| { kind: 'failed'; error: EngineErrorShape };
 
 	let phase = $state<Phase>({ kind: 'form' });
 	let filename = $state('');
-	let compress = $state(true);
-	let stripMetadata = $state(false);
+	// Options stay as set when the dialog is reopened; only the file name and password start fresh.
+	const f = $state<Omit<ExportForm, 'filename'>>({ ...DEFAULT_FORM });
 	let usePassword = $state(false);
 	let password = $state('');
 	let confirm = $state('');
@@ -57,7 +80,9 @@
 			count: pages.length,
 			inputBytes: sources.reduce((n, x) => n + x.originalSize, 0),
 			names,
-			encryptedInput: sources.some((x) => x.wasEncrypted)
+			encryptedInput: sources.some((x) => x.wasEncrypted),
+			hasForm: sources.some((x) => x.hasForm),
+			redactions: redactionCount(pages)
 		};
 	});
 
@@ -82,7 +107,43 @@
 	const confirmError = $derived(
 		usePassword && touched && !pwError && confirm !== password ? 'The two passwords do not match.' : null
 	);
-	const canExport = $derived(plan.count > 0 && (!usePassword || (!passwordProblem(password) && confirm === password)));
+	const redacting = $derived(plan.redactions > 0);
+	const fitOk = $derived(!f.fit || targetBytesFor(f.fitChoice, f.fitOther) !== null);
+	const fitError = $derived(f.fit && f.fitChoice === 'other' && !fitOk ? 'Enter a size from 0.1 to 500 MB.' : undefined);
+
+	// Characters the stamp font cannot draw in the Bates prefix, checked by the engine.
+	let badChars = $state('');
+	let checkSeq = 0;
+	$effect(() => {
+		const prefix = f.number && f.style === 'bates' ? f.prefix : '';
+		const seq = ++checkSeq;
+		if (!prefix) {
+			badChars = '';
+			return;
+		}
+		engine
+			.unsupportedChars(prefix)
+			.catch(() => '')
+			.then((bad) => {
+				if (seq === checkSeq) badChars = bad;
+			});
+	});
+
+	const numResult = $derived(f.number ? buildNumbering({ ...f, filename: '' }, plan.count) : null);
+	const numProblem = $derived.by(() => {
+		if (!numResult) return null;
+		if ('problem' in numResult) return numResult.problem;
+		if (badChars) return `The prefix has characters that cannot be printed: ${[...badChars].join(' ')}. Remove them.`;
+		return null;
+	});
+	const numPreview = $derived(numResult && 'numbering' in numResult ? numberingPreview(numResult.numbering, plan.count) : '');
+
+	const canExport = $derived(
+		plan.count > 0 &&
+			fitOk &&
+			!numProblem &&
+			(!usePassword || (!passwordProblem(password) && confirm === password))
+	);
 
 	function revoke() {
 		if (phase.kind === 'done') URL.revokeObjectURL(phase.url);
@@ -94,15 +155,17 @@
 		if (!canExport || phase.kind === 'working') return;
 		const name = normalizeFilename(filename);
 		filename = name;
-		const options = {
-			filename: name,
-			compress,
-			stripMetadata,
-			password: usePassword ? password : undefined
-		};
-		const exportPlan = store.toExportPlan(options, mode === 'extract' ? ids : undefined);
+		const built = buildExportOptions(
+			{ ...f, filename: name, password: usePassword ? password : undefined },
+			{ pageCount: plan.count, redactions: plan.redactions, hasForm: plan.hasForm }
+		);
+		if (!built.ok) return;
+		const exportPlan = store.toExportPlan(built.options, mode === 'extract' ? ids : undefined);
 		const inputBytes = plan.inputBytes;
-		phase = { kind: 'working' };
+		phase = {
+			kind: 'working',
+			fitting: built.options.targetBytes ? `Fitting under ${formatMB(built.options.targetBytes)}. Large scans can take a minute.` : null
+		};
 		try {
 			const s = store.state;
 			const result = await engine.exportPlan(exportPlan, [...s.sources], [...s.assets]);
@@ -234,9 +297,95 @@
 		<form id="export-form" class="form" onsubmit={run} novalidate>
 			<Field label="File name" bind:value={filename} autocomplete="off" spellcheck="false" />
 
+			{#if redacting}
+				<p class="notice" role="note">
+					<Icon name="lock" size={18} />
+					<span>
+						{plural(plan.redactions, 'area')} will be redacted. What is under {plan.redactions === 1 ? 'it is' : 'them is'} removed from the file.
+					</span>
+				</p>
+			{/if}
+
 			<div class="toggles">
-				<Toggle bind:checked={compress} label="Compress" hint="Lossless: images and text stay exactly as they are." />
-				<Toggle bind:checked={stripMetadata} label="Remove metadata" hint="Author, title, dates and editing software." />
+				<Toggle
+					checked={f.compress || f.fit}
+					onchange={(v) => (f.compress = v)}
+					disabled={f.fit}
+					label="Compress"
+					hint="Lossless: images and text stay exactly as they are."
+				/>
+
+				<Toggle
+					bind:checked={f.fit}
+					label="Fit under a size"
+					hint="Lowers the quality of photos and scans until the file fits. Text stays sharp."
+				/>
+				{#if f.fit}
+					<div class="section">
+						<OptionPicker
+							label="Largest size"
+							bind:value={f.fitChoice}
+							options={FIT_CHOICES.map((c) => ({ value: c, label: c === 'other' ? 'Other' : `${c} MB` }))}
+						/>
+						{#if f.fitChoice === 'other'}
+							<Field
+								label="Size in MB"
+								bind:value={f.fitOther}
+								inputmode="decimal"
+								autocomplete="off"
+								placeholder="0.1 to 500"
+								error={fitError}
+							/>
+						{/if}
+					</div>
+				{/if}
+
+				<Toggle
+					checked={f.number}
+					onchange={(v) => (f.number = v)}
+					label="Number the pages"
+				/>
+				{#if f.number}
+					<div class="section">
+						<Select label="Style" bind:value={f.style} options={NUMBER_STYLES} />
+						<OptionPicker label="Position" layout="corners" bind:value={f.position} options={NUMBER_POSITIONS} />
+						{#if f.style === 'bates'}
+							<div class="pair">
+								<Field label="Prefix" bind:value={f.prefix} maxlength={20} autocomplete="off" spellcheck="false" />
+								<Field label="Digits" bind:value={f.digits} inputmode="numeric" autocomplete="off" />
+							</div>
+						{/if}
+						<div class="pair">
+							<Field label="Start at" bind:value={f.start} inputmode="numeric" autocomplete="off" />
+							<Field label="Skip first pages" bind:value={f.skip} inputmode="numeric" autocomplete="off" />
+						</div>
+						<OptionPicker label="Size" bind:value={f.size} options={NUMBER_SIZES} />
+						{#if numProblem}
+							<p class="problem" role="alert">{numProblem}</p>
+						{:else if numPreview}
+							<p class="preview num caption">{numPreview}</p>
+						{/if}
+					</div>
+				{/if}
+
+				{#if plan.hasForm || redacting}
+					{#if plan.hasForm}
+						<Toggle
+							checked={f.lockForms || redacting}
+							onchange={(v) => (f.lockForms = v)}
+							disabled={redacting}
+							label="Lock form answers"
+							hint={redacting ? 'Always on when redacting.' : 'Turns the form into plain page content so answers cannot be changed.'}
+						/>
+					{/if}
+				{/if}
+				<Toggle
+					checked={f.stripMetadata || redacting}
+					onchange={(v) => (f.stripMetadata = v)}
+					disabled={redacting}
+					label="Remove metadata"
+					hint={redacting ? 'Always on when redacting.' : 'Author, title, dates and editing software.'}
+				/>
 				<Toggle bind:checked={usePassword} label="Add a password" hint="Needed to open the file. AES-256." />
 			</div>
 
@@ -276,7 +425,7 @@
 	{:else if phase.kind === 'working'}
 		<div class="working" role="status">
 			<Progress label="Building and checking your file" />
-			<p>Building and checking {plural(plan.count, 'page')}…</p>
+			<p>{phase.fitting ?? `Building and checking ${plural(plan.count, 'page')}…`}</p>
 			<p class="caption">Every export is re-opened and checked before you can save it.</p>
 		</div>
 	{:else if phase.kind === 'done'}
@@ -287,6 +436,13 @@
 				{phase.filename}<br />
 				<span class="caption io">{formatBytes(phase.inputBytes)} in → {formatBytes(r.bytes.length)} out</span>
 			</p>
+			{#if shrinkSummary(r)}
+				{@const sh = shrinkSummary(r)!}
+				<div class="shrink">
+					<p>{sh.size}</p>
+					{#if sh.changed}<p class="caption">{sh.changed}</p>{/if}
+				</div>
+			{/if}
 			{@render checkList(r.checks, r.pageCount)}
 			{#if r.warnings.length}
 				<ul class="warnings">
@@ -309,7 +465,7 @@
 	{#snippet actions()}
 		{#if phase.kind === 'form'}
 			<Button variant="quiet" onclick={() => (open = false)}>Cancel</Button>
-			<Button variant="primary" icon="download" type="submit" form="export-form" disabled={plan.count === 0}>Export</Button>
+			<Button variant="primary" icon="download" type="submit" form="export-form" disabled={plan.count === 0 || !fitOk || !!numProblem}>Export</Button>
 		{:else if phase.kind === 'working'}
 			<Button variant="primary" loading>Checking…</Button>
 		{:else if phase.kind === 'done'}
@@ -338,6 +494,53 @@
 		gap: var(--s-3);
 		padding: var(--s-3) 0;
 		border-block: 1px solid var(--line);
+	}
+
+	.section {
+		display: grid;
+		gap: var(--s-3);
+		padding: var(--s-3);
+		border-radius: var(--radius-control);
+		background: var(--hover);
+	}
+
+	.pair {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: var(--s-3);
+	}
+
+	.problem {
+		color: var(--danger);
+		font-size: var(--text-caption);
+		font-weight: 550;
+	}
+
+	.preview {
+		color: var(--ink-soft);
+	}
+
+	.notice {
+		display: flex;
+		gap: var(--s-2);
+		padding: var(--s-3);
+		border-radius: var(--radius-control);
+		border: 1px solid var(--line-strong);
+		font-size: var(--text-control);
+	}
+
+	.notice :global(.icon) {
+		flex: none;
+		margin-top: 2px;
+	}
+
+	.shrink {
+		display: grid;
+		gap: var(--s-1);
+	}
+
+	.shrink > p:first-child {
+		font-weight: 550;
 	}
 
 	.password {
