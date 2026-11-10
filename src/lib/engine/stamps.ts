@@ -22,6 +22,7 @@ import {
 	normalizeStampText,
 	stampBoxMatrix,
 	stampDisplayRect,
+	stampPdfRect,
 	uprightFrame,
 	visibleBox,
 	type Box,
@@ -29,7 +30,7 @@ import {
 } from './geometry';
 import type { Rotation } from '../core/types';
 import { parsePng } from './images';
-import type { NumberingJob } from './numbering';
+import { numberLayout, type NumberingJob } from './numbering';
 
 export interface StampJob {
 	/** 0-based page index in the assembled file. */
@@ -61,12 +62,6 @@ export async function applyStamps(
 	assets: Asset[],
 	numbering?: NumberingJob
 ): Promise<Uint8Array> {
-	// Phase 2 stubs, owned by the stamps + numbering stream. Redaction boxes are not
-	// drawn here: the redact stage (redact.ts) has already applied them.
-	if (numbering) throw new EngineError('unsupported', 'Page numbers are not available yet.');
-	if (jobs.some((j) => j.stamps.some((s) => s.kind === 'highlight'))) {
-		throw new EngineError('unsupported', 'Highlights are not available yet.');
-	}
 	const { lib } = deps;
 	const { PDFDocument, PDFName, PDFArray, PDFDict, PDFRef, PDFRawStream, PDFContentStream, ParseSpeeds } = lib;
 	const ops = lib;
@@ -79,8 +74,20 @@ export async function applyStamps(
 	const ctx = doc.context;
 	const pages = doc.getPages();
 
+	// Pages that get stamps and/or a page number. Numbers need no StampJob.
+	const work: StampJob[] = [];
+	const jobByPage = new Map(jobs.map((j) => [j.pageIndex, j]));
+	const pageCount = pages.length;
+	for (let i = 0; i < pageCount; i++) {
+		const job = jobByPage.get(i);
+		const label = numbering?.labels[i] ?? null;
+		if (job) work.push(job);
+		else if (label !== null) work.push({ pageIndex: i, stamps: [], expected: numbering!.expected[i] });
+	}
+	for (const j of jobs) if (!pages[j.pageIndex]) work.push(j); // reported below
+
 	const seen = new Set<string>();
-	for (const job of jobs) {
+	for (const job of work) {
 		const ref = pages[job.pageIndex]?.ref;
 		if (!ref) throw new EngineError('internal', 'A stamped page is missing from the assembled file.');
 		if (seen.has(ref.toString())) {
@@ -103,11 +110,12 @@ export async function applyStamps(
 		}
 		return font;
 	};
+	const multiplyRef = ctx.register(ctx.obj({ Type: 'ExtGState', CA: 1, ca: 1, BM: 'Multiply' }));
 	const gsRef = ctx.register(
 		ctx.obj({ Type: 'ExtGState', CA: 1, ca: 1, BM: 'Normal', SMask: 'None', LW: 1, LC: 0, LJ: 0, D: [[], 0] })
 	);
 
-	for (const job of jobs) {
+	for (const job of work) {
 		const page = pages[job.pageIndex];
 		const leaf = page.node;
 		const geom = readGeometry(lib, leaf);
@@ -177,12 +185,18 @@ export async function applyStamps(
 		};
 		const gsName = name(extg, 'PgsGS');
 		extg.set(PDFName.of(gsName), gsRef);
+		const mulName = name(extg, 'PgsMul');
+		extg.set(PDFName.of(mulName), multiplyRef);
 		leaf.set(PDFName.of('Resources'), resources);
 
 		const body: PdfLib.PDFOperator[] = [];
 		const imageNames = new Map<string, string>();
 		let fontName: string | null = null;
 
+		// Highlights first, so anything else on the page stays on top of them.
+		for (const stamp of job.stamps) {
+			if (stamp.kind === 'highlight') body.push(...highlightOps(ops, geom, stamp, mulName));
+		}
 		for (const stamp of job.stamps) {
 			if (stamp.kind === 'redact' || stamp.kind === 'highlight') {
 				continue;
@@ -214,6 +228,17 @@ export async function applyStamps(
 				}
 				body.push(...textOps(ops, geom, stamp, f, fontName));
 			}
+		}
+
+		const label = numbering?.labels[job.pageIndex] ?? null;
+		if (label !== null && numbering) {
+			const f = await getFont();
+			if (!fontName) {
+				fonts ??= sub('Font');
+				fontName = name(fonts, 'PgsF');
+				fonts.set(PDFName.of(fontName), f.ref);
+			}
+			body.push(...numberOps(ops, geom, numbering.numbering, label, f, fontName));
 		}
 
 		const pre = ctx.register(PDFContentStream.of(ctx.obj({}), Array.from({ length: pushes }, () => ops.pushGraphicsState()), false));
@@ -350,4 +375,60 @@ function textOps(
 	});
 	out.push(ops.endText(), ops.popGraphicsState());
 	return out;
+}
+
+const HIGHLIGHT_RGB = {
+	yellow: [1, 0.922, 0.231],
+	green: [0.647, 0.953, 0.42],
+	pink: [1, 0.612, 0.796]
+} as const satisfies Record<Extract<Stamp, { kind: 'highlight' }>['color'], readonly [number, number, number]>;
+
+/** Filled rectangle over the box, Multiply blend: dark content underneath stays as it was. */
+function highlightOps(ops: typeof PdfLib, geom: PageGeometry, stamp: Extract<Stamp, { kind: 'highlight' }>, mulName: string) {
+	const r = stampPdfRect(geom.box, geom.rotation, stamp.box);
+	const [cr, cg, cb] = HIGHLIGHT_RGB[stamp.color];
+	return [
+		ops.pushGraphicsState(),
+		ops.setGraphicsState(mulName),
+		ops.setFillingRgbColor(cr, cg, cb),
+		ops.moveTo(r4(r.x0), r4(r.y0)),
+		ops.lineTo(r4(r.x1), r4(r.y0)),
+		ops.lineTo(r4(r.x1), r4(r.y1)),
+		ops.lineTo(r4(r.x0), r4(r.y1)),
+		ops.closePath(),
+		ops.fill(),
+		ops.popGraphicsState()
+	];
+}
+
+function numberOps(
+	ops: typeof PdfLib,
+	geom: PageGeometry,
+	numbering: NumberingJob['numbering'],
+	label: string,
+	font: PdfLib.PDFFont,
+	fontName: string
+) {
+	const u = geom.userUnit;
+	const shown = displayedUserSize(geom.box, geom.rotation);
+	const textW = font.widthOfTextAtSize(label, numbering.size);
+	const lay = numberLayout(shown.width * u, shown.height * u, numbering.position, numbering.size, textW);
+	// Display point of the baseline start, in user units, from the displayed top-left.
+	const frame = uprightFrame(geom.box, geom.rotation, lay.x / u, lay.baseline / u);
+	return [
+		ops.pushGraphicsState(),
+		cm(ops, frame),
+		ops.setFillingRgbColor(0, 0, 0),
+		ops.beginText(),
+		ops.setFontAndSize(fontName, r4(numbering.size / u)),
+		ops.setCharacterSpacing(0),
+		ops.setWordSpacing(0),
+		ops.setCharacterSqueeze(100),
+		ops.setTextRise(0),
+		ops.setTextRenderingMode(ops.TextRenderingMode.Fill),
+		ops.setTextMatrix(1, 0, 0, 1, 0, 0),
+		ops.showText(font.encodeText(label)),
+		ops.endText(),
+		ops.popGraphicsState()
+	];
 }

@@ -469,7 +469,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		const checks = await verify(final, expected, password, options.stripMetadata);
 		if (formsRan) checks.push(...(await verifyForms(deps, final, formsCtx, password)));
 		if (redactJobs.length) checks.push(...(await verifyRedactions(deps, final, redactJobs, allowedText, password)));
-		if (numbering) checks.push(...(await verifyNumbering(deps, final, numbering.labels, password)));
+		if (numbering) checks.push(...(await verifyNumbering(deps, final, numbering.labels, password, numbering.numbering)));
 		checks.push(...stageChecks);
 		if (!checks.every((c) => c.ok)) {
 			throw new EngineError('verification-failed', 'The exported file did not pass its checks, so it was not saved.', checks);

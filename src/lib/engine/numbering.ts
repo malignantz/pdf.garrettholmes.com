@@ -117,15 +117,143 @@ export function validateNumbering(numbering: PageNumbering): void {
 	}
 }
 
+/** Cap height of the stamp font (Noto Sans), in em. The top margin is measured to the cap line. */
+export const NUMBER_CAP_EM = 0.714;
+
+export interface NumberLayout {
+	/** Left edge of the text, in points from the displayed left edge. */
+	x: number;
+	/** Baseline, in points from the displayed top edge. */
+	baseline: number;
+}
+
 /**
- * Reads every label back from its page of the final file ('numbering' check).
- * Stub until the numbering stream lands: no check yet.
+ * Where a label goes on a page as displayed, in points (UserUnit applied). The label
+ * sits 0.5 in (36 pt) from the nearest edges; on small pages the margin shrinks to a
+ * quarter of the shorter side. The text is kept inside the page horizontally.
+ */
+export function numberLayout(
+	pageW: number,
+	pageH: number,
+	position: PageNumbering['position'],
+	size: number,
+	textW: number
+): NumberLayout {
+	const m = Math.min(36, pageW / 4, pageH / 4);
+	let x: number;
+	if (position.endsWith('left')) x = m;
+	else if (position.endsWith('right')) x = pageW - m - textW;
+	else x = (pageW - textW) / 2;
+	x = Math.min(Math.max(x, 0), Math.max(0, pageW - textW));
+	const baseline = position.startsWith('top') ? m + NUMBER_CAP_EM * size : pageH - m;
+	return { x, baseline };
+}
+
+const squash = (s: string) => s.replace(/\s+/g, '');
+
+function describeLabels(labels: (string | null)[]): string {
+	const used = labels.filter((l): l is string => l !== null);
+	const first = used[0];
+	const last = used[used.length - 1];
+	if (used.length === 1) return `Number ${first} is on its page.`;
+	if (used.every((l) => /^\d+$/.test(l))) return `Numbers ${first} to ${last} are on their pages.`;
+	if (used.every((l) => !/\s/.test(l))) return `Bates ${first} to ${last} are on their pages.`;
+	return `Numbers "${first}" to "${last}" are on their pages.`;
+}
+
+/**
+ * Reads every label back from its page of the final file ('numbering' check): the
+ * label must be the text of one run in the margin where it was drawn, upright as the
+ * page is displayed. Uses PDF.js, an independent parser.
  */
 export async function verifyNumbering(
-	_deps: EngineDeps,
-	_finalBytes: Uint8Array,
-	_labels: (string | null)[],
-	_password?: string
+	deps: EngineDeps,
+	finalBytes: Uint8Array,
+	labels: (string | null)[],
+	password?: string,
+	numbering?: Pick<PageNumbering, 'position' | 'size'>
 ): Promise<VerifyCheck[]> {
-	return [];
+	if (labels.every((l) => l === null)) return [];
+	const fail = (detail: string): VerifyCheck[] => [{ name: 'numbering', ok: false, detail }];
+	const lib = await deps.pdfjs();
+	const task = lib.getDocument({
+		data: finalBytes.slice(),
+		password,
+		useWasm: false,
+		useWorkerFetch: false,
+		useSystemFonts: false,
+		disableFontFace: true,
+		enableXfa: false,
+		verbosity: 0
+	});
+	const missing: number[] = [];
+	try {
+		const doc = await task.promise;
+		if (doc.numPages !== labels.length) {
+			return fail(`The file has ${doc.numPages} pages but ${labels.length} were expected, so the numbers cannot be checked.`);
+		}
+		for (let i = 0; i < labels.length; i++) {
+			const label = labels[i];
+			if (label === null) continue;
+			const page = await doc.getPage(i + 1);
+			if (!(await labelIsThere(page, label, numbering))) missing.push(i + 1);
+			page.cleanup();
+		}
+	} catch {
+		return fail('The page numbers could not be read back from the file.');
+	} finally {
+		await task.destroy().catch(() => undefined);
+	}
+	if (missing.length) {
+		const shown = missing.slice(0, 5).join(', ') + (missing.length > 5 ? ` and ${missing.length - 5} more` : '');
+		return fail(`The page number was not found in the right place on page ${shown}.`);
+	}
+	return [{ name: 'numbering', ok: true, detail: describeLabels(labels) }];
+}
+
+interface Run {
+	text: string;
+	x0: number;
+	x1: number;
+}
+
+async function labelIsThere(
+	page: import('pdfjs-dist/legacy/build/pdf.mjs').PDFPageProxy,
+	label: string,
+	numbering?: Pick<PageNumbering, 'position' | 'size'>
+): Promise<boolean> {
+	const vp = page.getViewport({ scale: 1 });
+	const tc = await page.getTextContent();
+	const want = squash(label);
+	// Items as upright runs in display space: start and end of the baseline, in points.
+	const items: { str: string; x0: number; x1: number; y: number; ok: boolean; size: number }[] = [];
+	for (const it of tc.items) {
+		if (!('str' in it) || !it.str || squash(it.str) === '') continue;
+		const [a, b, , d, e, f] = it.transform as number[];
+		const h = Math.hypot(a, b);
+		if (h === 0) continue;
+		const [x0, y0] = vp.convertToViewportPoint(e, f) as [number, number];
+		const [x1, y1] = vp.convertToViewportPoint(e + (it.width * a) / h, f + (it.width * b) / h) as [number, number];
+		items.push({ str: it.str, x0, x1, y: y0, ok: Math.abs(y1 - y0) < 0.5 && x1 > x0, size: Math.abs(d) });
+	}
+	if (!numbering) return items.some((it) => it.ok && squash(it.str) === want);
+	const W = vp.width;
+	const H = vp.height;
+	const pool = items.filter((it) => it.ok).sort((p, q) => p.x0 - q.x0);
+	const tol = 2;
+	// Group items that share a baseline into runs.
+	const runs: (Run & { y: number })[] = [];
+	for (const it of pool) {
+		const run = runs.find((r) => Math.abs(r.y - it.y) <= 1 && it.x0 - r.x1 <= numbering.size);
+		if (run) {
+			run.text += squash(it.str);
+			run.x1 = Math.max(run.x1, it.x1);
+		} else runs.push({ text: squash(it.str), x0: it.x0, x1: it.x1, y: it.y });
+	}
+	for (const r of runs) {
+		if (r.text !== want) continue;
+		const lay = numberLayout(W, H, numbering.position, numbering.size, r.x1 - r.x0);
+		if (Math.abs(r.x0 - lay.x) <= tol && Math.abs(r.y - lay.baseline) <= tol) return true;
+	}
+	return false;
 }
