@@ -1,0 +1,28 @@
+/**
+ * App-wide singletons. The workspace and the page editor both use these, so
+ * there is exactly one document store, one engine worker and one renderer.
+ */
+import { createDocStore, type DocStore } from './doc/store';
+import { createEngine, type EngineClient } from './engine/client';
+import { createRenderer } from './render/renderer';
+import type { Renderer } from './core/types';
+
+export interface App {
+	store: DocStore;
+	engine: EngineClient;
+	renderer: Renderer;
+}
+
+let app: App | undefined;
+
+export function getApp(): App {
+	if (!app) {
+		const renderer = createRenderer();
+		app = {
+			renderer,
+			engine: createEngine(),
+			store: createDocStore({ onSourceReleased: (id) => renderer.release(id) })
+		};
+	}
+	return app;
+}
