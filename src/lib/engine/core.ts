@@ -211,7 +211,13 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 						throw new EngineError('unreadable', 'This file has a page without a usable size.');
 					}
 				}
-				if (wasEncrypted) notes.push('Opened with its password. Exports have no password unless you set one.');
+				if (wasEncrypted) {
+					notes.push(
+						pw.length
+							? 'Opened with its password. Exports have no password unless you set one.'
+							: 'This file was encrypted without an open password; the encryption and its restrictions were removed. Exports have no password unless you set one.'
+					);
+				}
 				if (info.hasSignatures) {
 					notes.push('This file has a digital signature. Exported pages will not carry a valid signature.');
 				}
