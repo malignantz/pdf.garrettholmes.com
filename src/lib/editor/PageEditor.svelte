@@ -439,7 +439,13 @@
 		if (!s) return;
 		let next: StampBox;
 		if (drag.kind === 'move') next = moveBox(drag.box, f.x - drag.start.x, f.y - drag.start.y);
-		else next = resizeBox(drag.box, drag.handle!, f, true);
+		else {
+			// Move the dragged corner by the pointer's travel, so grabbing a handle never jumps.
+			const h = drag.handle!;
+			const cx = h === 'nw' || h === 'sw' ? drag.box.x : drag.box.x + drag.box.w;
+			const cy = h === 'nw' || h === 'ne' ? drag.box.y : drag.box.y + drag.box.h;
+			next = resizeBox(drag.box, h, { x: cx + f.x - drag.start.x, y: cy + f.y - drag.start.y }, true);
+		}
 		if (s.kind === 'text') {
 			if (drag.kind === 'move') store.updateStamp(page.id, s.id, { x: next.x, y: next.y });
 			else {
@@ -821,6 +827,8 @@
 	});
 
 	const HANDLES: Handle[] = ['nw', 'ne', 'sw', 'se'];
+	/** Text is often small: one handle, set off from the text so it never covers it. */
+	const TEXT_HANDLES: Handle[] = ['se'];
 	const zoomLabel = $derived(`${Math.round(view.zoom * 100)}%`);
 </script>
 
@@ -927,7 +935,7 @@
 									></textarea>
 								{/if}
 								{#if isSel && !isEdit}
-									{#each HANDLES as h (h)}
+									{#each s.kind === 'text' ? TEXT_HANDLES : HANDLES as h (h)}
 										<span
 											class="handle {h}"
 											aria-hidden="true"
@@ -1167,6 +1175,17 @@
 		box-shadow:
 			0 0 0 1.5px var(--accent),
 			0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
+	}
+
+	.layer :global(.ed.text.selected:not(.editing)) {
+		box-shadow: none;
+		outline: 1.5px solid var(--accent);
+		outline-offset: 3px;
+	}
+
+	.layer :global(.ed.text .handle.se) {
+		left: calc(100% + 4px);
+		top: calc(100% + 4px);
 	}
 
 	.layer :global(.ed.editing) {

@@ -13,7 +13,7 @@ export interface SavedInk {
 	created: number;
 }
 
-const DB = 'pdf-workspace';
+const DB = 'pdf-editor-saved-ink';
 const STORE = 'saved-ink';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
