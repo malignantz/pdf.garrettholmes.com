@@ -46,6 +46,19 @@ for (const scheme of ['light', 'dark'] as const) {
 		await page.screenshot({ path: `${dir}/${tag}-3-signature-pad.png` });
 		await page.getByRole('button', { name: 'Cancel' }).click();
 
+		// Type tab with a name in the three styles (light only).
+		if (scheme === 'light') {
+			await chooseTool(page, 'Signature');
+			const dlg = page.getByRole('dialog', { name: 'Add signature' });
+			await dlg.getByRole('radio', { name: 'Type' }).click();
+			await dlg.getByRole('textbox', { name: 'Your name' }).fill('Jane Q. Example');
+			await dlg.getByRole('radio', { name: /^Flowing style/ }).click();
+			await page.evaluate(() => document.fonts.ready);
+			await page.waitForTimeout(300);
+			await page.screenshot({ path: `${dir}/${tag}-5-type-tab.png` });
+			await dlg.getByRole('button', { name: 'Cancel' }).click();
+		}
+
 		// Saved signatures list after a reload.
 		await page.reload();
 		await openEditor(page, 'file=multi.pdf&page=3');

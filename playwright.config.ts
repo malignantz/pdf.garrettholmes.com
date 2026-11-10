@@ -31,7 +31,8 @@ export default defineConfig({
 	webServer: {
 		// The real build, served with its real _headers (CSP included).
 		// CI builds in an earlier step and sets E2E_SKIP_BUILD.
-		command: `${process.env.E2E_SKIP_BUILD ? '' : 'npm run build && '}node scripts/serve-build.mjs ${port}`,
+		// VITE_DEV_HARNESS=1 adds the /dev-editor test harness; production builds leave it out.
+		command: `${process.env.E2E_SKIP_BUILD ? '' : 'VITE_DEV_HARNESS=1 npm run build && '}node scripts/serve-build.mjs ${port}`,
 		url: `http://127.0.0.1:${port}/`,
 		reuseExistingServer: !process.env.CI,
 		timeout: 180_000,

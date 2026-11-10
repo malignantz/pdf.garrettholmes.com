@@ -405,3 +405,61 @@ test('pinch-zoom with two fingers and swipe between pages (emulated touch)', asy
 	await touch('touchEnd', []);
 	await expect(page.getByText('3 of 6')).toBeVisible();
 });
+
+test('type a signature: pick a style, place it, export it', async ({ page }) => {
+	await openEditor(page, 'file=multi.pdf&page=1');
+	await chooseTool(page, 'Signature');
+	const dlg = page.getByRole('dialog', { name: 'Add signature' });
+	await dlg.getByRole('radio', { name: 'Type' }).click();
+	await dlg.getByRole('textbox', { name: 'Your name' }).fill('Renée Łukasz');
+	const styles = dlg.getByRole('radiogroup', { name: 'Handwriting style' });
+	await expect(styles.getByRole('radio')).toHaveCount(3);
+	// The fonts came from our own origin, as woff2.
+	await styles.getByRole('radio', { name: /^Flowing style/ }).click();
+	await expect(styles.getByRole('radio', { name: /^Flowing style/ })).toHaveAttribute('aria-checked', 'true');
+	await dlg.getByRole('switch', { name: /Save on this device/ }).click();
+	await dlg.getByRole('button', { name: 'Use signature' }).click();
+	await expect(dlg).toBeHidden();
+	await tapPage(page, 0.5, 0.6);
+	const list = await stamps(page);
+	expect(list).toHaveLength(1);
+	expect(list[0].kind).toBe('image');
+	const asset = await page.evaluate(() => {
+		const st = (window as unknown as { __editor: { store: { state: { assets: { width: number; height: number }[] } } } }).__editor.store.state;
+		return st.assets[0];
+	});
+	// Rendered large and cropped tight: wide and short.
+	expect(asset.width).toBeGreaterThan(600);
+	expect(asset.width / asset.height).toBeGreaterThan(3);
+
+	const out = await page.evaluate(() =>
+		(window as unknown as { __editor: { exportPage: (i: number, w: number) => Promise<{ checks: { ok: boolean }[] }> } }).__editor.exportPage(0, 400)
+	);
+	expect(out.checks.every((c) => c.ok)).toBe(true);
+});
+
+test('type: characters a style lacks are named instead of drawn', async ({ page }) => {
+	await openEditor(page, 'file=multi.pdf&page=1');
+	await chooseTool(page, 'Initials');
+	const dlg = page.getByRole('dialog', { name: 'Add initials' });
+	await dlg.getByRole('radio', { name: 'Type' }).click();
+	await dlg.getByRole('textbox', { name: 'Your initials' }).fill('Ж.Д');
+	const styles = dlg.getByRole('radiogroup', { name: 'Handwriting style' });
+	await expect(styles.getByRole('radio').first()).toHaveAccessibleName(/cannot write Ж Д/);
+	await expect(dlg.getByRole('alert')).toContainText('cannot write Ж Д');
+	await expect(dlg.getByRole('button', { name: 'Use initials' })).toBeDisabled();
+	await dlg.getByRole('textbox', { name: 'Your initials' }).fill('JD');
+	await expect(dlg.getByRole('button', { name: 'Use initials' })).toBeEnabled();
+});
+
+test('ink colour is remembered', async ({ page }) => {
+	await openEditor(page, 'file=multi.pdf&page=1');
+	await chooseTool(page, 'Signature');
+	const dlg = page.getByRole('dialog', { name: 'Add signature' });
+	await dlg.getByRole('radio', { name: 'Blue' }).click();
+	await dlg.getByRole('button', { name: 'Cancel' }).click();
+	await page.reload();
+	await openEditor(page, 'file=multi.pdf&page=1');
+	await chooseTool(page, 'Signature');
+	await expect(dlg.getByRole('radio', { name: 'Blue' })).toHaveAttribute('aria-checked', 'true');
+});

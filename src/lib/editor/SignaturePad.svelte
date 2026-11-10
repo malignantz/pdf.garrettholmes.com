@@ -1,6 +1,6 @@
 <script lang="ts">
-	// Create or pick a signature / initials. Draw with a pen, or upload a photo of
-	// one (with optional paper-background removal). Output: tightly cropped
+	// Create or pick a signature / initials. Draw with a pen, type it in a bundled
+	// handwriting font, or upload a photo of one (with optional paper-background removal). Output: tightly cropped
 	// transparent PNG as an Asset. Saved ones live in IndexedDB on this device only.
 	import Dialog from '../ui/Dialog.svelte';
 	import Button from '../ui/Button.svelte';
@@ -12,6 +12,7 @@
 	import { imageDataPng, photoPixels, processPhoto, strokesToPng } from './png';
 	import { deleteInk, listSaved, saveInk, type SavedInk } from './saved';
 	import { inkRgb } from './stamp-view';
+	import { HAND_FONTS, canvasMeasure, loadHandFonts, missingChars, renderTyped } from './handwriting';
 
 	interface Props {
 		open: boolean;
@@ -26,8 +27,26 @@
 	const noun = $derived(kind === 'signature' ? 'signature' : 'initials');
 	const Noun = $derived(kind === 'signature' ? 'Signature' : 'Initials');
 
-	let mode = $state<'draw' | 'upload'>('draw');
-	let ink = $state<'black' | 'blue'>('black');
+	let mode = $state<'draw' | 'type' | 'upload'>('draw');
+
+	// Last ink colour, remembered on this device (a convenience; fine if storage is blocked).
+	const INK_KEY = 'pdf-editor-ink';
+	function readInk(): 'black' | 'blue' {
+		try {
+			return localStorage.getItem(INK_KEY) === 'blue' ? 'blue' : 'black';
+		} catch {
+			return 'black';
+		}
+	}
+	let ink = $state<'black' | 'blue'>(readInk());
+	function setInk(c: 'black' | 'blue') {
+		ink = c;
+		try {
+			localStorage.setItem(INK_KEY, c);
+		} catch {
+			// Storage blocked: the choice lasts for this visit only.
+		}
+	}
 	let save = $state(true);
 	let busy = $state(false);
 	let error = $state('');
@@ -150,6 +169,30 @@
 		strokes = [];
 	}
 
+	// ---------------------------------------------------------------- type
+	let typed = $state('');
+	let fontId = $state(HAND_FONTS[0].id);
+	let fontsReady = $state(false);
+	let fontsFailed = $state(false);
+
+	$effect(() => {
+		if (!open || mode !== 'type' || fontsReady) return;
+		loadHandFonts().then(
+			() => (fontsReady = true),
+			() => (fontsFailed = true)
+		);
+	});
+
+	/** Characters each style cannot write, for the current text. */
+	const missing = $derived.by(() => {
+		const out: Record<string, string> = {};
+		if (!fontsReady) return out;
+		for (const f of HAND_FONTS) out[f.id] = missingChars(typed, canvasMeasure(f.family));
+		return out;
+	});
+	const typedBad = $derived(missing[fontId] ?? '');
+	const typedFamily = $derived(HAND_FONTS.find((f) => f.id === fontId)!.family);
+
 	// ---------------------------------------------------------------- upload
 	let fileInput: HTMLInputElement | undefined = $state();
 	let photo = $state.raw<ImageData | null>(null);
@@ -194,7 +237,13 @@
 	});
 
 	// ---------------------------------------------------------------- use
-	const canUse = $derived(mode === 'draw' ? strokes.length > 0 : !!processed);
+	const canUse = $derived(
+		mode === 'draw'
+			? strokes.length > 0
+			: mode === 'type'
+				? fontsReady && typed.trim() !== '' && typedBad === ''
+				: !!processed
+	);
 
 	async function use() {
 		if (!canUse || busy) return;
@@ -202,9 +251,15 @@
 		error = '';
 		try {
 			const px = strokes.map((s) => s.map((p) => ({ x: p.x * REF_W, y: p.y * REF_W })));
-			const result = mode === 'draw' ? await strokesToPng(px, PEN * REF_W, inkCss, 3) : await imageDataPng(processed!);
+			let result;
+			if (mode === 'draw') result = await strokesToPng(px, PEN * REF_W, inkCss, 3);
+			else if (mode === 'type') {
+				await loadHandFonts();
+				const img = renderTyped(typed.trim(), typedFamily, inkCss);
+				result = img ? await imageDataPng(img) : null;
+			} else result = await imageDataPng(processed!);
 			if (!result) {
-				error = `Nothing to use yet. ${mode === 'draw' ? 'Draw your ' + noun + ' first.' : 'Choose another photo.'}`;
+				error = `Nothing to use yet. ${mode === 'upload' ? 'Choose another photo.' : `Add your ${noun} first.`}`;
 				return;
 			}
 			const asset: Asset = { id: crypto.randomUUID(), kind, png: result.png, width: result.width, height: result.height };
@@ -244,14 +299,15 @@
 
 	<div class="tabs" role="radiogroup" aria-label="How to add it">
 		<button type="button" role="radio" aria-checked={mode === 'draw'} onclick={() => (mode = 'draw')}>Draw</button>
+		<button type="button" role="radio" aria-checked={mode === 'type'} onclick={() => (mode = 'type')}>Type</button>
 		<button type="button" role="radio" aria-checked={mode === 'upload'} onclick={() => (mode = 'upload')}>Upload a photo</button>
 	</div>
 
 	<div class="inks" role="radiogroup" aria-label="Ink colour">
-		<button type="button" role="radio" aria-checked={ink === 'black'} onclick={() => (ink = 'black')}>
+		<button type="button" role="radio" aria-checked={ink === 'black'} onclick={() => setInk('black')}>
 			<span class="swatch" style="background: rgb({inkRgb('black').join(' ')})"></span>Black
 		</button>
-		<button type="button" role="radio" aria-checked={ink === 'blue'} onclick={() => (ink = 'blue')}>
+		<button type="button" role="radio" aria-checked={ink === 'blue'} onclick={() => setInk('blue')}>
 			<span class="swatch" style="background: rgb({inkRgb('blue').join(' ')})"></span>Blue
 		</button>
 	</div>
@@ -274,6 +330,51 @@
 			<Button variant="quiet" icon="undo" disabled={strokes.length === 0} onclick={undoStroke}>Undo stroke</Button>
 			<Button variant="quiet" icon="close" disabled={strokes.length === 0} onclick={clearPad}>Clear</Button>
 		</div>
+	{:else if mode === 'type'}
+		<div class="type">
+			<label class="name-field">
+				<span>{kind === 'signature' ? 'Your name' : 'Your initials'}</span>
+				<input
+					type="text"
+					bind:value={typed}
+					autocomplete={kind === 'signature' ? 'name' : 'off'}
+					autocapitalize="words"
+					spellcheck="false"
+					maxlength={kind === 'signature' ? 60 : 8}
+				/>
+			</label>
+			{#if fontsFailed}
+				<p class="error" role="alert">The handwriting styles could not be loaded. Draw your {noun} instead.</p>
+			{:else if !fontsReady}
+				<p class="note">Loading handwriting styles…</p>
+			{:else}
+				<div class="styles" role="radiogroup" aria-label="Handwriting style">
+					{#each HAND_FONTS as f (f.id)}
+						{@const bad = missing[f.id] ?? ''}
+						<button
+							type="button"
+							role="radio"
+							class="style"
+							aria-checked={fontId === f.id}
+							aria-label={`${f.label} style${bad ? `, cannot write ${[...bad].join(' ')}` : ''}`}
+							data-font={f.id}
+							onclick={() => (fontId = f.id)}
+						>
+							{#if bad}
+								<span class="style-missing">This style has no {[...bad].join(' ')}</span>
+							{:else}
+								{@const sample = typed.trim() || (kind === 'signature' ? 'Your name' : 'AB')}
+								<span class="style-sample" style="font-family: '{f.family}'; color: {inkCss}; --len: {Math.max(5, [...sample].length)}">{sample}</span>
+							{/if}
+							<span class="style-label">{f.label}</span>
+						</button>
+					{/each}
+				</div>
+				{#if typedBad}
+					<p class="error" role="alert">The {HAND_FONTS.find((f) => f.id === fontId)!.label.toLowerCase()} style cannot write {[...typedBad].join(' ')}. Pick another style or draw your {noun}.</p>
+				{/if}
+			{/if}
+		</div>
 	{:else}
 		<input bind:this={fileInput} type="file" accept="image/png,image/jpeg,image/webp" class="visually-hidden" tabindex="-1" onchange={onFile} />
 		<div class="upload">
@@ -293,7 +394,7 @@
 	{/if}
 
 	<div class="save">
-		<Toggle bind:checked={save} label="Save on this device" hint="Kept only in this browser so you can reuse it. Delete it here any time." />
+		<Toggle bind:checked={save} label="Save on this device" hint="Kept only in this browser. Delete it here any time." />
 		{#if !storageOk}<p class="error" role="alert">This browser did not allow saving. It is used for this document only.</p>{/if}
 	</div>
 	{#if error}<p class="error" role="alert">{error}</p>{/if}
@@ -489,6 +590,77 @@
 
 	.save {
 		margin-top: var(--s-4);
+	}
+
+	.type {
+		display: grid;
+		gap: var(--s-3);
+	}
+
+	.name-field {
+		display: grid;
+		gap: var(--s-1);
+		font-size: var(--text-control);
+		font-weight: 550;
+	}
+
+	.name-field input {
+		min-height: var(--control-h);
+		padding: 0 var(--s-3);
+		border: 1px solid var(--line-strong);
+		border-radius: var(--radius-control);
+		background: var(--surface);
+		color: var(--ink);
+		font: inherit;
+		font-weight: 400;
+		font-size: 16px; /* no zoom-on-focus in iOS Safari */
+	}
+
+	.styles {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+		gap: var(--s-2);
+	}
+
+	.style {
+		position: relative;
+		container-type: inline-size;
+		display: grid;
+		place-items: center;
+		min-height: 92px;
+		padding: var(--s-3) var(--s-3) var(--s-5);
+		background: var(--sheet);
+		border: 1px solid var(--line);
+		border-radius: var(--radius-control);
+		overflow: hidden;
+	}
+
+	.style[aria-checked='true'] {
+		border-color: var(--accent);
+		box-shadow: 0 0 0 1px var(--accent);
+	}
+
+	.style-sample {
+		/* Shrink long names to fit the card instead of cutting them off. */
+		font-size: min(34px, calc(100cqi * 2.2 / var(--len)));
+		line-height: 1.3;
+		white-space: nowrap;
+		max-width: 100%;
+		overflow: hidden;
+		text-overflow: clip;
+	}
+
+	.style-missing {
+		color: #7c2811;
+		font-size: var(--text-caption);
+	}
+
+	.style-label {
+		position: absolute;
+		left: var(--s-2);
+		bottom: var(--s-1);
+		font-size: 11px;
+		color: #5b5342;
 	}
 
 	.error {

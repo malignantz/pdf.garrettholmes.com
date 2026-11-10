@@ -143,6 +143,14 @@
 		padding: var(--s-4) var(--s-5) var(--s-5);
 		overflow: auto;
 		overscroll-behavior: contain;
+		min-height: 0;
+		/* Scroll shadows: a soft edge appears above the buttons (or below the title)
+		   only while there is more content that way, so a cut-off line reads as "scroll". */
+		background:
+			linear-gradient(var(--surface), var(--surface)) top / 100% 14px no-repeat local,
+			linear-gradient(var(--surface), var(--surface)) bottom / 100% 14px no-repeat local,
+			radial-gradient(farthest-side at 50% 0, rgb(0 0 0 / 0.16), transparent) top / 100% 12px no-repeat scroll,
+			radial-gradient(farthest-side at 50% 100%, rgb(0 0 0 / 0.16), transparent) bottom / 100% 12px no-repeat scroll;
 	}
 
 	.actions {

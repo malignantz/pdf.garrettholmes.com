@@ -15,3 +15,14 @@ compatible with this project's AGPL-3.0-or-later.
 | [@cantoo/fontkit](https://github.com/cantoo-scribe/fontkit) | 2.0.12 | MIT | Font subsetting for text stamps, glyph coverage |
 | fontkit dependencies: restructure, brotli, dfa, fflate | see package-lock.json | MIT | Bundled with fontkit |
 | [Noto Sans](https://github.com/notofonts/latin-greek-cyrillic) Regular (`src/lib/engine/fonts/NotoSans-Regular.ttf`, from `@expo-google-fonts/noto-sans` 0.4.2) | Noto LGC | SIL Open Font License 1.1 (`src/lib/engine/fonts/OFL.txt`) | Text stamps (embedded as a subset) |
+
+## Handwriting fonts for typed signatures (`src/lib/editor/fonts/`)
+
+Loaded only when the signature pad's Type tab opens. Latin and Latin Extended subsets,
+WOFF2, from the [Fontsource](https://fontsource.org) npm packages (version 5.3.0).
+
+| Font | Files | License |
+|---|---|---|
+| [Great Vibes](https://github.com/googlefonts/great-vibes) | `great-vibes-latin{,-ext}-400-normal.woff2` | SIL Open Font License 1.1 (`great-vibes-OFL.txt`) |
+| [Dancing Script](https://github.com/googlefonts/DancingScript) | `dancing-script-latin{,-ext}-400-normal.woff2` | SIL Open Font License 1.1 (`dancing-script-OFL.txt`) |
+| [Caveat](https://github.com/googlefonts/caveat) | `caveat-latin{,-ext}-400-normal.woff2` | SIL Open Font License 1.1 (`caveat-OFL.txt`) |
