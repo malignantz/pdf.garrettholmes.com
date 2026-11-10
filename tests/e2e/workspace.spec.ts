@@ -285,6 +285,38 @@ test.describe('desktop', () => {
 		await waitForPages(page, 15);
 	});
 
+	test('dropping files on a populated grid adds them; dragging near the edge scrolls', async ({ page }) => {
+		await page.goto('/');
+		await addFiles(page, 'multi.pdf', 'multi.pdf', 'multi.pdf');
+		await waitForPages(page, 18);
+
+		const bytes = [...readFileSync(corpus('sizes.pdf'))];
+		const dt = await page.evaluateHandle((b) => {
+			const d = new DataTransfer();
+			d.items.add(new File([new Uint8Array(b)], 'dropped.pdf', { type: 'application/pdf' }));
+			return d;
+		}, bytes);
+		await page.dispatchEvent('main', 'dragenter', { dataTransfer: dt });
+		await expect(page.getByText('Drop to add them at the end')).toBeVisible();
+		await page.dispatchEvent('main', 'drop', { dataTransfer: dt });
+		await waitForPages(page, 24);
+		await expect(page.getByText('Drop to add them at the end')).toBeHidden();
+
+		// Hold a dragged page near the bottom edge: the grid scrolls by itself.
+		await page.evaluate(() => scrollTo(0, 0));
+		const a = (await options(page).nth(0).boundingBox())!;
+		const vh = page.viewportSize()!.height;
+		await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+		await page.mouse.down();
+		await page.mouse.move(a.x + a.width / 2 + 10, a.y + a.height / 2 + 10, { steps: 2 });
+		await page.mouse.move(a.x + a.width / 2, vh - 10, { steps: 6 });
+		await expect.poll(() => page.evaluate(() => scrollY), { timeout: 5000 }).toBeGreaterThan(200);
+		await page.keyboard.press('Escape');
+		await page.mouse.up();
+		expect((await order(page))[0]).toBe('m1');
+		await expect(page.getByRole('button', { name: /^Undo: Add/ })).toBeVisible();
+	});
+
 	test('keyboard: focus, select, shortcut sheet, editor opens and closes', async ({ page }) => {
 		await page.goto('/');
 		await addFiles(page, 'multi.pdf');
