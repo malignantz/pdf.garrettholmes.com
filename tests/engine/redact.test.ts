@@ -435,7 +435,7 @@ describe('redaction: hard constructs', () => {
 
 describe('redaction: stamps over a box, encryption', () => {
 	const sig: Asset = { id: 'sig', kind: 'signature', png: corpus('signature.png'), width: 240, height: 80 };
-	it('allows our own text, signature and highlight over a box on the final file', async () => {
+	it('allows our own text, signature, highlight and page number over a box on the final file', async () => {
 		const src = await openCorpus('redact-basic.pdf');
 		const b = frac(basic.boxes.texts.rect);
 		const stamps: Stamp[] = [
@@ -444,19 +444,20 @@ describe('redaction: stamps over a box, encryption', () => {
 			{ id: 'i', kind: 'image', assetId: 'sig', box: { x: b.x + 0.05, y: b.y + 0.05, w: 0.15, h: 0.05 } },
 			{ id: 'h', kind: 'highlight', color: 'yellow', box: b }
 		];
-		const res = await engine().exportPlan(
-			{ pages: [ref(src, 0, 0, stamps)], options: { ...defaultOptions, numbering: { style: 'page-n', position: 'top-left', start: 1, skip: 0, size: 10 } } },
+		// A box over the top-left corner, where the page number lands (0.5 in from the edges).
+		const corner: StampBox = { x: 0, y: 0, w: 0.25, h: 0.1 };
+		stamps.push(redact(corner));
+		const plan = await engine().exportPlan(
+			{ pages: [ref(src, 0, 0, stamps), ref(src, 1)], options: { ...defaultOptions, numbering: { style: 'page-n', position: 'top-left', start: 1, skip: 0, size: 10 } } },
 			[src],
 			[sig]
-		).catch((e: EngineError) => {
-			// Highlights and numbering are other streams; until they land the plan is refused before redaction.
-			if (e.code === 'unsupported' && /Highlights|Page numbers/.test(e.message)) return null;
-			throw e;
-		});
-		const plan = res ?? (await engine().exportPlan({ pages: [ref(src, 0, 0, stamps.filter((s) => s.kind !== 'highlight'))], options: defaultOptions }, [src], [sig]));
-		expect(plan.checks.filter((c) => c.name === 'redaction').every((c) => c.ok)).toBe(true);
-		const [text] = await pageTexts(plan.bytes);
+		);
+		for (const c of plan.checks) expect(c.ok, `${c.name}: ${c.detail}`).toBe(true);
+		expect(plan.checks.some((c) => c.name === 'numbering')).toBe(true);
+		const [text, text2] = await pageTexts(plan.bytes);
 		expect(text).toContain('WITHHELD');
+		expect(text).toContain('Page 1');
+		expect(text2).toContain('Page 2');
 		expect(text).not.toMatch(/SECRET-HEX|SECRET-ACTUAL|SECRET-UTF/);
 	}, T);
 
@@ -665,4 +666,148 @@ describe('redaction: random boxes (property)', () => {
 		}
 		expect(verified).toBeGreaterThan(12);
 	}, 300_000);
+});
+
+// ---------------------------------------------------------------------------
+
+/** Bounds (page space) of every filled or stroked path MuPDF draws on a page. */
+async function paintedPaths(bytes: Uint8Array, pageIndex: number): Promise<number[][]> {
+	const m = await mupdf();
+	const doc = new m.PDFDocument(bytes);
+	const out: number[][] = [];
+	const zero = new m.StrokeState({ lineCap: 'Butt', lineJoin: 'Miter', lineWidth: 0, miterLimit: 10 });
+	const dev = new m.Device({
+		fillPath(path, _eo, ctm) {
+			out.push(path.getBounds(zero, ctm));
+		},
+		strokePath(path, _s, ctm) {
+			out.push(path.getBounds(zero, ctm));
+		}
+	});
+	doc.loadPage(pageIndex).run(dev, m.Matrix.identity);
+	dev.close();
+	return out;
+}
+
+describe('redaction: which drawings stay (redact-table.pdf)', () => {
+	const meta = manifest['redact-table.pdf'] as unknown as {
+		boxes: Record<string, { rect: UserRect; hides: string[] }>;
+		drawings: Record<string, { rect: UserRect; keep: boolean }>;
+		keep: string[];
+	};
+	it('keeps grid lines, long underlines, rules and backgrounds that run through a box; removes the rest', async () => {
+		const src = await openCorpus('redact-table.pdf');
+		const res = await exportPages([ref(src, 0, 0, Object.values(meta.boxes).map((b) => redact(frac(b.rect))))], [src]);
+		expect(res.checks.filter((c) => c.name === 'redaction').every((c) => c.ok)).toBe(true);
+		const [pdfjs] = await pageTexts(res.bytes);
+		const [mu] = await mupdfTexts(res.bytes);
+		for (const s of Object.values(meta.boxes).flatMap((b) => b.hides)) {
+			expect(pdfjs).not.toContain(s);
+			expect(mu).not.toContain(s);
+		}
+		for (const k of meta.keep) expect(mu).toContain(k);
+		const paths = await paintedPaths(res.bytes, 0);
+		for (const [name, d] of Object.entries(meta.drawings)) {
+			// User space (y up) → page space (y down); a hairline gets MuPDF's 0.5 pt of slack.
+			const want = [d.rect[0], 792 - d.rect[3], d.rect[2], 792 - d.rect[1]];
+			const found = paths.some((p) => p.every((v, i) => Math.abs(v - want[i]) <= 1));
+			expect(found, `${name} ${d.keep ? 'kept' : 'removed'}`).toBe(d.keep);
+		}
+		// The grid is visible outside the boxes: the vertical line at x = 222 above row 3's box.
+		const r = await render(res.bytes, 0, 2);
+		expect(r.black({ x: 221.5 / 612, y: (792 - 668) / 792, w: 1 / 612, h: 20 / 792 })).toBeGreaterThan(0.5);
+		for (const b of Object.values(meta.boxes)) expect(r.black(frac(b.rect))).toBe(1);
+		const raw = (await expanded(res.bytes)).toString('latin1');
+		expect(raw).not.toMatch(/SECRET-/);
+	}, T);
+
+	it('the check refuses a drawing that does not run through the box', async () => {
+		const src = await openCorpus('redact-table.pdf');
+		const plain = await exportPages([ref(src, 0)], [src]);
+		const job = (r: UserRect): RedactJob => ({ pageIndex: 0, boxes: [frac(r)], expected: { width: 612, height: 792 } });
+		// The plain file still has the bar, the diagonal, the barcode: each is caught.
+		for (const k of ['bar', 'diagonal', 'barcode', 'outline', 'shortline']) {
+			const checks = await verifyRedactions(deps(), plain.bytes, [job(meta.boxes[k].rect)], [[]]);
+			expect(checks.map((c) => c.detail).join(' '), k).toMatch(/drawings/);
+		}
+		// The grid, the rule and the shaded cell alone are not "drawings left" (only the text is).
+		for (const k of ['rule']) {
+			const checks = await verifyRedactions(deps(), plain.bytes, [job(meta.boxes[k].rect)], [[]]);
+			expect(checks.map((c) => c.detail).join(' '), k).not.toMatch(/drawings/);
+		}
+	}, T);
+});
+
+describe('redaction with the other export options', () => {
+	/** Displayed-fraction rect of the first image drawn on a page. */
+	async function firstImage(bytes: Uint8Array, pageIndex: number): Promise<StampBox> {
+		const m = await mupdf();
+		const doc = new m.PDFDocument(bytes);
+		const page = doc.loadPage(pageIndex);
+		const b = page.getBounds();
+		let r: number[] | null = null;
+		const dev = new m.Device({
+			fillImage(_img, ctm) {
+				if (r) return;
+				const xs = [ctm[4], ctm[4] + ctm[0], ctm[4] + ctm[2], ctm[4] + ctm[0] + ctm[2]];
+				const ys = [ctm[5], ctm[5] + ctm[1], ctm[5] + ctm[3], ctm[5] + ctm[1] + ctm[3]];
+				r = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+			}
+		});
+		page.run(dev, m.Matrix.identity);
+		dev.close();
+		const [x0, y0, x1, y1] = r!;
+		const W = b[2] - b[0];
+		const H = b[3] - b[1];
+		return { x: x0 / W, y: y0 / H, w: (x1 - x0) / W, h: (y1 - y0) / H };
+	}
+
+	it('compress to a target size: a scan partly under a box is re-encoded and still verifies', async () => {
+		const src = await openCorpus('shrink-photos.pdf');
+		const img = await firstImage(src.bytes, 0);
+		// Left 40% of the picture, full height plus a margin.
+		const box: StampBox = { x: img.x - 0.01, y: img.y - 0.01, w: img.w * 0.4 + 0.01, h: img.h + 0.02 };
+		const plain = await exportPages([ref(src, 0, 0, [redact(box)])], [src]);
+		const target = Math.round(plain.bytes.length * 0.5);
+		const res = await exportPages([ref(src, 0, 0, [redact(box)])], [src], { targetBytes: target });
+		for (const c of res.checks) expect(c.ok, `${c.name}: ${c.detail}`).toBe(true);
+		expect(res.shrink!.imagesChanged).toBeGreaterThan(0);
+		expect(res.bytes.length).toBeLessThan(plain.bytes.length);
+		const r = await render(res.bytes, 0, 2);
+		expect(r.black(box)).toBe(1);
+		// Stored data under the box: flat, also after re-encoding.
+		const imgs = await storedImagePixelsUnder(res.bytes, 0, box);
+		const under = imgs.filter((i) => i.inside.size > 0);
+		expect(under.length).toBeGreaterThan(0);
+		for (const i of under) expect(i.inside.size, 'distinct stored values under the box').toBe(1);
+		// The looser edge rule for re-encoded images still catches a picture under the box.
+		const job: RedactJob = { pageIndex: 0, boxes: [box], expected: src.pages[0] };
+		const unredacted = await exportPages([ref(src, 0)], [src]);
+		const caught = await verifyRedactions(deps(), unredacted.bytes, [job], [[]], undefined, true);
+		expect(caught.map((c) => c.detail).join(' ')).toMatch(/picture data/);
+	}, T);
+
+	it('redaction, a password and page numbers together', async () => {
+		const src = await openCorpus('redact-basic.pdf');
+		const pw = 'pässwörd ✓';
+		const res = await engine().exportPlan(
+			{
+				pages: [ref(src, 0, 0, allBasicBoxes()), ref(src, 2, 90)],
+				options: { ...defaultOptions, password: pw, numbering: { style: 'bates', position: 'bottom-right', start: 7, skip: 0, size: 9, bates: { prefix: 'CASE-', digits: 5 } } }
+			},
+			[src],
+			[]
+		);
+		for (const c of res.checks) expect(c.ok, `${c.name}: ${c.detail}`).toBe(true);
+		expect(res.checks.map((c) => c.name)).toEqual(expect.arrayContaining(['redaction', 'numbering', 'encryption']));
+		const texts = await pageTexts(res.bytes, pw);
+		expect(texts[0]).toContain('CASE-00007');
+		expect(texts[1]).toContain('CASE-00008');
+		expect(texts[0]).not.toMatch(/SECRET-/);
+		const raw = (await expanded(res.bytes, pw)).toString('latin1');
+		// Page 3 has no box and shares the form and the resources (with the named property) of page 1.
+		for (const s of Object.values(basic.boxes).flatMap((b) => b.hides)) {
+			if (s !== 'SECRET-FORM-TWO' && s !== 'SECRET-NAMED-ACTUAL') expect(findIn(Buffer.from(raw, 'latin1'), s), s).toBe(false);
+		}
+	}, T);
 });

@@ -446,6 +446,86 @@ async function cid() {
 	return { bytes, meta: { pages: 1, secret, keep: ['KEEP-FOXTROT', 'KEEP-HOTEL'], box: [x0 - 1, 695, x1 + 1, 716] } };
 }
 
+// ---------------------------------------------------------------------------------------
+// redact-table.pdf: drawings next to and under boxes, to test which drawings may stay
+// (plain rules, borders, backgrounds that run right through a box) and which must go.
+// Every drawing is its own painting operation; `drawings` lists them with the box that
+// covers them and whether the stage must keep it. Rects are user space, y up.
+// ---------------------------------------------------------------------------------------
+function table() {
+	const pdf = new Pdf();
+	const font = pdf.add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
+	const S = 12;
+	const text = (x, y, t) => `BT /F1 ${S} Tf 0 0 0 rg 1 0 0 1 ${x} ${y} Tm (${t}) Tj ET`;
+	const ops = [];
+	const drawings = {};
+	const boxes = {};
+	// Table: 3 columns × 3 rows, grid stroked as one path of horizontal and vertical lines.
+	const xs = [72, 222, 372, 522];
+	const ys = [610, 640, 670, 700];
+	let grid = '';
+	for (const y of ys) grid += `72 ${y} m 522 ${y} l `;
+	for (const x of xs) grid += `${x} 610 m ${x} 700 l `;
+	// Shaded middle cell of row 2 (drawn before the grid).
+	ops.push('q 0.85 g 222 640 150 30 re f Q');
+	drawings.shadedCell = { rect: [222, 640, 372, 670], keep: true };
+	ops.push(`q 0 G 1 w ${grid}S Q`);
+	drawings.grid = { rect: [72, 610, 522, 700], keep: true };
+	ops.push(text(80, 680, 'KEEP-CELL-A'), text(230, 680, 'SECRET-CELL-B'), text(380, 680, 'KEEP-CELL-C'));
+	ops.push(text(230, 650, 'SECRET-SHADED'), text(80, 650, 'KEEP-CELL-D'));
+	ops.push(text(152, 620, 'SECRET-RA'), text(226, 620, 'SECRET-RB'), text(380, 620, 'KEEP-CELL-F'));
+	boxes.cell = { rect: [226, 674, 368, 696], hides: ['SECRET-CELL-B'] };
+	boxes.shaded = { rect: [226, 644, 368, 666], hides: ['SECRET-SHADED'] };
+	// Crosses the vertical grid line at x = 222, which runs right through it.
+	boxes.row3 = { rect: [150, 615, 300, 635], hides: ['SECRET-RA', 'SECRET-RB'] };
+
+	// Underline longer than the box on both sides: stays. Underline exactly under the word: goes.
+	const longW = helvWidth('SECRET-UNDERLINED', S);
+	ops.push(text(72, 560, 'SECRET-UNDERLINED'), 'q 0 G 0.75 w 50 557 m 300 557 l S Q');
+	drawings.longUnderline = { rect: [50, 557, 300, 557], keep: true };
+	boxes.underlined = { rect: [70, 554, 72 + longW + 3, 574], hides: ['SECRET-UNDERLINED'] };
+	const shortW = helvWidth('SECRET-SHORTLINE', S);
+	ops.push(text(330, 560, 'SECRET-SHORTLINE'), `q 0 G 0.75 w 330 557 m ${330 + shortW} 557 l S Q`);
+	drawings.shortUnderline = { rect: [330, 557, 330 + shortW, 557], keep: false };
+	boxes.shortline = { rect: [326, 553, 330 + shortW + 4, 574], hides: ['SECRET-SHORTLINE'] };
+
+	// Barcode-like cluster: 30 thin filled bars inside one box: goes.
+	let bars = '';
+	for (let i = 0; i < 30; i++) bars += `${80 + i * 3} 470 ${i % 3 === 0 ? 2 : 1} 30 re `;
+	ops.push(`q 0 g ${bars}f Q`);
+	drawings.barcode = { rect: [80, 470, 169, 500], keep: false };
+	boxes.barcode = { rect: [75, 465, 175, 505], hides: [] };
+	// Diagonal line through a box: goes.
+	ops.push('q 0 0 1 RG 1 w 300 450 m 500 520 l S Q');
+	drawings.diagonal = { rect: [300, 450, 500, 520], keep: false };
+	boxes.diagonal = { rect: [380, 470, 420, 500], hides: [] };
+	// Bar of a chart ending under a box: goes.
+	ops.push('q 0.2 0.4 0.8 rg 330 380 30 60 re f Q', text(400, 400, 'KEEP-BAR-LABEL'));
+	drawings.bar = { rect: [330, 380, 360, 440], keep: false };
+	boxes.bar = { rect: [320, 420, 370, 460], hides: [] };
+	// A glyph outline ("O" drawn with curves): goes.
+	const k = 0.5523 * 15;
+	ops.push(
+		`q 0 g 135 380 m ${135 + k} 380 150 ${395 - k} 150 395 c 150 ${395 + k} ${135 + k} 410 135 410 c ${135 - k} 410 120 ${395 + k} 120 395 c 120 ${395 - k} ${135 - k} 380 135 380 c h f Q`
+	);
+	drawings.outline = { rect: [120, 380, 150, 410], keep: false };
+	boxes.outline = { rect: [110, 375, 160, 415], hides: [] };
+	// A rule drawn as a thin filled rectangle across the page: stays.
+	ops.push('q 0 g 50 300 510 1.5 re f Q', text(72, 320, 'KEEP-ABOVE-RULE'));
+	drawings.rule = { rect: [50, 300, 560, 301.5], keep: true };
+	boxes.rule = { rect: [200, 290, 260, 310], hides: [] };
+
+	const c = pdf.stream('<< >>', ops.join('\n'), { flate: true });
+	const pages = pdf.alloc();
+	const page = pdf.add(`<< /Type /Page /Parent ${pages} 0 R /MediaBox [0 0 612 792] /Contents ${c} 0 R /Resources << /Font << /F1 ${font} 0 R >> >> >>`);
+	pdf.set(pages, `<< /Type /Pages /Kids [${page} 0 R] /Count 1 >>`);
+	const catalog = pdf.add(`<< /Type /Catalog /Pages ${pages} 0 R >>`);
+	return {
+		bytes: pdf.bytes(catalog),
+		meta: { pages: 1, boxes, drawings, keep: ['KEEP-CELL-A', 'KEEP-CELL-C', 'KEEP-CELL-D', 'KEEP-CELL-F', 'KEEP-BAR-LABEL', 'KEEP-ABOVE-RULE'] }
+	};
+}
+
 /** `write(name, bytes, meta)` as in generate.mjs; `outDir` must already hold photo-plain.jpg. */
 export async function generateRedact({ write, outDir }) {
 	const b = basic();
@@ -456,6 +536,8 @@ export async function generateRedact({ write, outDir }) {
 	write('redact-hard.pdf', h.bytes, { label: null, ...h.meta });
 	const c = await cid();
 	write('redact-cid.pdf', c.bytes, { label: null, ...c.meta });
+	const t = table();
+	write('redact-table.pdf', t.bytes, { label: null, ...t.meta });
 }
 
 // Standalone run: write only these files and merge their manifest entries.

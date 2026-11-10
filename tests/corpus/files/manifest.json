@@ -253,7 +253,7 @@
 	"enc-aes-256-unicode.pdf": {
 		"pages": 2,
 		"label": "enc",
-		"password": "p\u00e4ssw\u00f6rd"
+		"password": "pässwörd"
 	},
 	"truncated.pdf": {
 		"expect": "unreadable"
@@ -663,6 +663,204 @@
 			695,
 			322.494,
 			716
+		]
+	},
+	"redact-table.pdf": {
+		"label": null,
+		"pages": 1,
+		"boxes": {
+			"cell": {
+				"rect": [
+					226,
+					674,
+					368,
+					696
+				],
+				"hides": [
+					"SECRET-CELL-B"
+				]
+			},
+			"shaded": {
+				"rect": [
+					226,
+					644,
+					368,
+					666
+				],
+				"hides": [
+					"SECRET-SHADED"
+				]
+			},
+			"row3": {
+				"rect": [
+					150,
+					615,
+					300,
+					635
+				],
+				"hides": [
+					"SECRET-RA",
+					"SECRET-RB"
+				]
+			},
+			"underlined": {
+				"rect": [
+					70,
+					554,
+					205.668,
+					574
+				],
+				"hides": [
+					"SECRET-UNDERLINED"
+				]
+			},
+			"shortline": {
+				"rect": [
+					326,
+					553,
+					455.344,
+					574
+				],
+				"hides": [
+					"SECRET-SHORTLINE"
+				]
+			},
+			"barcode": {
+				"rect": [
+					75,
+					465,
+					175,
+					505
+				],
+				"hides": []
+			},
+			"diagonal": {
+				"rect": [
+					380,
+					470,
+					420,
+					500
+				],
+				"hides": []
+			},
+			"bar": {
+				"rect": [
+					320,
+					420,
+					370,
+					460
+				],
+				"hides": []
+			},
+			"outline": {
+				"rect": [
+					110,
+					375,
+					160,
+					415
+				],
+				"hides": []
+			},
+			"rule": {
+				"rect": [
+					200,
+					290,
+					260,
+					310
+				],
+				"hides": []
+			}
+		},
+		"drawings": {
+			"shadedCell": {
+				"rect": [
+					222,
+					640,
+					372,
+					670
+				],
+				"keep": true
+			},
+			"grid": {
+				"rect": [
+					72,
+					610,
+					522,
+					700
+				],
+				"keep": true
+			},
+			"longUnderline": {
+				"rect": [
+					50,
+					557,
+					300,
+					557
+				],
+				"keep": true
+			},
+			"shortUnderline": {
+				"rect": [
+					330,
+					557,
+					451.344,
+					557
+				],
+				"keep": false
+			},
+			"barcode": {
+				"rect": [
+					80,
+					470,
+					169,
+					500
+				],
+				"keep": false
+			},
+			"diagonal": {
+				"rect": [
+					300,
+					450,
+					500,
+					520
+				],
+				"keep": false
+			},
+			"bar": {
+				"rect": [
+					330,
+					380,
+					360,
+					440
+				],
+				"keep": false
+			},
+			"outline": {
+				"rect": [
+					120,
+					380,
+					150,
+					410
+				],
+				"keep": false
+			},
+			"rule": {
+				"rect": [
+					50,
+					300,
+					560,
+					301.5
+				],
+				"keep": true
+			}
+		},
+		"keep": [
+			"KEEP-CELL-A",
+			"KEEP-CELL-C",
+			"KEEP-CELL-D",
+			"KEEP-CELL-F",
+			"KEEP-BAR-LABEL",
+			"KEEP-ABOVE-RULE"
 		]
 	}
 }

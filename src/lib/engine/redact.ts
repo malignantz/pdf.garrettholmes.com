@@ -22,8 +22,8 @@
  *     the user drew are painted black (a neighbouring glyph that was only touched
  *     disappears and leaves a gap; it is not painted over).
  *
- *  3. MuPDF `applyRedactions(black=false, IMAGE_PIXELS, LINE_ART_REMOVE_IF_TOUCHED,
- *     TEXT_REMOVE)` (after a text-only pass over the grown rectangles). MuPDF rewrites the page content into a new stream, copies every
+ *  3. MuPDF `applyRedactions(black=false, IMAGE_PIXELS, LINE_ART_NONE, TEXT_REMOVE)`
+ *     (after a text-only pass over the grown rectangles). MuPDF rewrites the page content into a new stream, copies every
  *     Form XObject the page uses (so pages sharing streams, forms or images with this
  *     page are not changed), removes text under the rectangles (including invisible
  *     OCR text, Type 3 text, text in hidden layers and in forms), blanks image pixels
@@ -34,15 +34,41 @@
  *  4. Our own pass over MuPDF's output (page stream and its new forms). It needs a
  *     tokenizer; MuPDF's output is regular (inline images always ASCIIHex) and
  *     anything else is refused:
- *     - Drawings: MuPDF's REMOVE_IF_TOUCHED misses paths with several subpaths (seen
- *       with a glyph outline drawn as one path), and REMOVE_IF_COVERED would keep a
- *       path that is only partly under the box. Path data under the box stays in the
- *       file under the black paint even when the rest is visible (text converted to
- *       outlines is exactly that), so that is not acceptable: every painted path
- *       whose geometry (control-point bounding box) touches a box is removed whole,
- *       and every `sh` shading whose clip touches a box is removed whole. Cost: a
- *       table line or background that passes under a box disappears entirely.
- *       Paths used only as clips are kept (they paint nothing).
+ *     - Drawings (MuPDF's line-art removal is off; this pass does it all). MuPDF's
+ *       REMOVE_IF_TOUCHED misses paths with several subpaths (seen with a glyph
+ *       outline drawn as one path) and REMOVE_IF_COVERED keeps a path only partly
+ *       under the box, whose data under the black paint would still be in the file
+ *       (text converted to outlines is exactly that). Rule: a painted path whose
+ *       geometry touches a box is removed whole, unless it is "kept":
+ *
+ *       KEPT DRAWINGS. A path may stay (whole, painted over by the black box) only
+ *       if what lies under every box is the straight continuation of what is
+ *       visible outside it, so it adds nothing a reader cannot already see:
+ *         (a) no curves at all, and painted with a plain colour (not a pattern);
+ *         (b) every segment that enters a box's interior is horizontal or vertical
+ *             in page space (after the CTM and the page's rotation) and runs right
+ *             through the box: both of its ends lie outside the box, beyond the
+ *             box's full width (horizontal) or full height (vertical);
+ *         (c) fills are judged with their subpaths closed (a filled rectangle by its
+ *             four edges); a lone point or zero-length segment touching a box counts
+ *             as not running through it.
+ *       What this keeps: table grid lines and borders that cross a box, underlines
+ *       and rules longer than the box on both sides, cell and page backgrounds that
+ *       contain the box, bands (rules drawn as filled rectangles, wide fills) that
+ *       cross it completely. What it removes: anything with a corner, an end or an
+ *       edge inside a box (a bar-chart bar ending under it, an underline no longer
+ *       than the redacted word, which would give away its exact width; a table line
+ *       ending inside the box), every curve and diagonal (glyph outlines, signatures,
+ *       ticks), and every small mark (barcode bars, QR modules, pixel-font strokes)
+ *       that does not cross the whole box. A dense cluster of small rectangles
+ *       inside a box therefore always goes: none of them can cross it. Bars of a
+ *       barcode that cross the box from edge to edge stay, but each is then fully
+ *       visible above and below the box, so nothing is hidden. A kept background
+ *       or rule cannot reveal text: its hidden part is a solid area or a straight
+ *       band whose edges are all visible outside the box.
+ *       Every `sh` shading whose clip touches a box is removed whole, and so is
+ *       every pattern-filled path that touches one. Paths used only as clips are
+ *       kept (they paint nothing).
  *     - Marked content: MuPDF keeps `/Span <</ActualText (…)>> BDC` even when it
  *       removed the glyphs, so the hidden text would still be in the file. Every
  *       string-valued property (ActualText, Alt, E, …; not Lang) of every marked-
@@ -86,8 +112,9 @@
  *    advance (a little inside MuPDF's quads, so both engines agree on neighbours
  *    that only touch a box edge), except allowed strings.
  *  - Device pass (MuPDF interpreter, contents and annotations): no glyph core, no
- *    painted path, no shading inside its clip, no tiling pattern touches a box,
- *    except the axis-aligned black rectangles we painted (and, on the final file,
+ *    painted path (other than a kept drawing, same rule as above), no shading
+ *    inside its clip, no tiling pattern touches a box, except the axis-aligned black
+ *    rectangles we painted (and, on the final file,
  *    our later image/mark/highlight stamps and allowed text). Every image drawn over
  *    a box has stored pixels (and soft-mask values) under the box that are uniform:
  *    the stored data carries no picture there.
@@ -108,8 +135,8 @@
  *    tokenizer cannot read;
  *  - anything the check finds (a glyph MuPDF kept, an image it did not blank, …).
  * Handled by removal, not refused: Type 3 fonts (as text), tiling patterns (the
- * painted path goes), shadings (removed whole), clipped content, outlined text
- * (removed whole), image masks and soft-masked images (blanked by MuPDF, checked).
+ * painted path goes), shadings (removed whole), clipped content, outlined text and
+ * other drawings that are not kept (removed whole), image masks and soft-masked images (blanked by MuPDF, checked).
  * Not covered: bookmarks, named destinations, document JavaScript or other pages
  * that quote the same text (search-and-redact is in the backlog).
  */
@@ -188,10 +215,12 @@ export async function verifyRedactions(
 	finalBytes: Uint8Array,
 	jobs: RedactJob[],
 	allowedText: string[][],
-	password?: string
+	password?: string,
+	/** True when compress-to-target re-encoded images after the stage (see imageBlankUnder). */
+	imagesReencoded = false
 ): Promise<VerifyCheck[]> {
 	if (jobs.length === 0) return [];
-	return checkRedactions(deps, finalBytes, jobs, { allowed: allowedText, password, strict: false });
+	return checkRedactions(deps, finalBytes, jobs, { allowed: allowedText, password, strict: false, imagesReencoded });
 }
 
 // ---------------------------------------------------------------------------
@@ -211,12 +240,7 @@ function redactDocument(m: Mupdf, doc: Doc, jobs: RedactJob[]): Uint8Array {
 			for (const r of grown) page.createAnnotation('Redact').setRect(r);
 			page.applyRedactions(false, m.PDFPage.REDACT_IMAGE_NONE, m.PDFPage.REDACT_LINE_ART_NONE, m.PDFPage.REDACT_TEXT_REMOVE);
 			for (const r of boxes) page.createAnnotation('Redact').setRect(r);
-			page.applyRedactions(
-				false,
-				m.PDFPage.REDACT_IMAGE_PIXELS,
-				m.PDFPage.REDACT_LINE_ART_REMOVE_IF_TOUCHED,
-				m.PDFPage.REDACT_TEXT_REMOVE
-			);
+			page.applyRedactions(false, m.PDFPage.REDACT_IMAGE_PIXELS, m.PDFPage.REDACT_LINE_ART_NONE, m.PDFPage.REDACT_TEXT_REMOVE);
 			const pageObj = page.getObject();
 			const pageTf = page.getTransform() as Matrix;
 			cleanContent(m, doc, pageObj, pageTf, boxes, preCount, pageNo, page.getBounds() as Rect);
@@ -422,12 +446,9 @@ function walkStream(ctx: PassCtx, ref: Obj, res: Obj, usage: Usage, state: GStat
 	const w = work;
 	const lexer = new Lexer(w.bytes, ctx.pageNo);
 	const top = () => state[state.length - 1];
-	let path: Rect | null = null;
+	let path = new PathRec();
 	let clipPending = false;
-	const point = (x: number, y: number) => {
-		const [px, py] = applyMatrix(multiply(top().ctm, ctx.pageTf), x, y);
-		path = path ? union(path, [px, py, px, py]) : [px, py, px, py];
-	};
+	const pt = (x: number, y: number): Pt => applyMatrix(multiply(top().ctm, ctx.pageTf), x, y);
 	const edit = (start: number, end: number, text: string) => w.edits.set(start, { start, end, text });
 	const nums = (op: Op, n: number) => {
 		const out: number[] = [];
@@ -471,30 +492,37 @@ function walkStream(ctx: PassCtx, ref: Obj, res: Obj, usage: Usage, state: GStat
 				top().ctm = multiply([a, b, c, d, e, f], top().ctm);
 				break;
 			}
-			case 'm':
+			case 'm': {
+				const [x, y] = nums(op, 2);
+				path.moveTo(pt(x, y));
+				break;
+			}
 			case 'l': {
 				const [x, y] = nums(op, 2);
-				point(x, y);
+				path.lineTo(pt(x, y));
 				break;
 			}
 			case 'c': {
 				const v = nums(op, 6);
-				for (let i = 0; i < 6; i += 2) point(v[i], v[i + 1]);
+				path.curveTo([pt(v[0], v[1]), pt(v[2], v[3]), pt(v[4], v[5])]);
 				break;
 			}
 			case 'v':
 			case 'y': {
 				const v = nums(op, 4);
-				point(v[0], v[1]);
-				point(v[2], v[3]);
+				path.curveTo([pt(v[0], v[1]), pt(v[2], v[3])]);
 				break;
 			}
+			case 'h':
+				path.close();
+				break;
 			case 're': {
 				const [x, y, wd, ht] = nums(op, 4);
-				point(x, y);
-				point(x + wd, y + ht);
-				point(x + wd, y);
-				point(x, y + ht);
+				path.moveTo(pt(x, y));
+				path.lineTo(pt(x + wd, y));
+				path.lineTo(pt(x + wd, y + ht));
+				path.lineTo(pt(x, y + ht));
+				path.close();
 				break;
 			}
 			case 'W':
@@ -511,14 +539,20 @@ function walkStream(ctx: PassCtx, ref: Obj, res: Obj, usage: Usage, state: GStat
 			case 'b':
 			case 'b*':
 			case 'n': {
-				const p = path as Rect | null;
-				if (op.op !== 'n' && p && ctx.boxes.some((b) => touches(p, b, 0))) edit(op.s, op.e, 'n');
-				else if (op.op !== 'n') paint(!/^[Ss]$/.test(op.op), /^([Ss]|[Bb]\*?)$/.test(op.op));
+				const p = path.bbox;
+				if (op.op !== 'n') {
+					const fill = !/^[Ss]$/.test(op.op);
+					const stroke = /^([Ss]|[Bb]\*?)$/.test(op.op);
+					const pattern = (fill && top().fillPat !== null) || (stroke && top().strokePat !== null);
+					// Removed unless it is a plain rule/border/background (see the header).
+					if (p && ctx.boxes.some((b) => touches(p, b, 0)) && (pattern || !path.keepable(ctx.boxes, fill))) edit(op.s, op.e, 'n');
+					else paint(fill, stroke);
+				}
 				if (clipPending && p) {
 					const c = top().clip;
 					top().clip = c ? (intersect(c, p) ?? [p[0], p[1], p[0], p[1]]) : p;
 				}
-				path = null;
+				path = new PathRec();
 				clipPending = false;
 				break;
 			}
@@ -867,6 +901,7 @@ interface CheckOptions {
 	password?: string;
 	/** Stage check: nothing of ours is on the page yet except the black boxes. */
 	strict: boolean;
+	imagesReencoded?: boolean;
 }
 
 async function checkRedactions(deps: EngineDeps, bytes: Uint8Array, jobs: RedactJob[], opts: CheckOptions): Promise<VerifyCheck[]> {
@@ -894,7 +929,9 @@ async function checkRedactions(deps: EngineDeps, bytes: Uint8Array, jobs: Redact
 			}
 			const boxes = job.boxes.map((s) => fractionRect(b, s));
 			const overlays = opts.strict ? [] : (job.overlays ?? []).map((s) => pad(fractionRect(b, s), 1));
-			problems.push(...checkPageMupdf(m, page, pageNo, boxes, opts.strict ? [] : (opts.allowed[ji] ?? []), overlays, opts.strict));
+			problems.push(
+				...checkPageMupdf(m, page, pageNo, boxes, opts.strict ? [] : (opts.allowed[ji] ?? []), overlays, opts.strict, opts.imagesReencoded === true)
+			);
 		}
 	} catch (e) {
 		problems.push(`MuPDF could not check the redactions (${e instanceof Error ? e.message : String(e)}).`);
@@ -924,7 +961,8 @@ function checkPageMupdf(
 	boxes: Rect[],
 	allowedText: string[],
 	overlays: Rect[],
-	strict: boolean
+	strict: boolean,
+	imagesReencoded: boolean
 ): string[] {
 	const problems: string[] = [];
 	const allowedRegions: Rect[] = [...overlays];
@@ -975,6 +1013,7 @@ function checkPageMupdf(
 		path: (r, info) => {
 			if (!boxes.some((b) => touches(r, b, 0.01))) return;
 			if (info.blackRect && boxes.some((b) => inside(r, pad(b, 0.01)))) return;
+			if (info.keep(boxes)) return;
 			if (!strict && inAllowed(r)) return;
 			found.paths++;
 		},
@@ -987,7 +1026,7 @@ function checkPageMupdf(
 		image: (image, ctm, bounds) => {
 			if (!boxes.some((b) => touches(bounds, b, 0.01))) return;
 			if (!strict && inAllowed(bounds)) return;
-			if (!imageBlankUnder(image, ctm, boxes, strict)) found.images++;
+			if (!imageBlankUnder(image, ctm, boxes, imagesReencoded ? FINAL_IMAGE_INSET : 0)) found.images++;
 		}
 	});
 	if (found.glyphs) problems.push(`Page ${pageNo}: text is still drawn under a redaction box.`);
@@ -1085,13 +1124,22 @@ function allowedMask(chars: string[], allowed: string[]): boolean[] {
 }
 
 /**
- * Stored pixels (and soft-mask values) of an image under the boxes are uniform: the
- * data holds no picture there. A pixel counts by its middle half (a pixel only grazed
- * by a box is mostly visible outside it anyway). On the final file a size reduction
- * may have resampled and re-encoded the image, so only pixels at least 8 deep inside
- * the area are compared, with a looser tolerance.
+ * Stored pixels (and soft-mask values) of an image under the boxes are uniform (all
+ * within ±2 of one value): the data holds no picture there. A pixel counts by its
+ * middle half (a pixel only grazed by a box is mostly visible outside it anyway).
+ *
+ * On the final file, compress-to-target may have resampled and JPEG-encoded the
+ * image after the stage proved its pixels under the box flat. The re-encoded data
+ * is computed only from that proven data, so no structure from before redaction can
+ * come back; but next to the box edge, resampling and 16×16 JPEG blocks (4:2:0) mix
+ * the flat area with the visible picture beside it. So when (and only when) images
+ * were re-encoded, pixels within FINAL_IMAGE_INSET of the area's edge are not
+ * compared on the final file, and everything
+ * deeper must still be flat within ±2 (an honest encoder turns a flat area into
+ * flat blocks; there is no wider "JPEG tolerance"). The proof for the band at the
+ * edge is the stage's own check of the same data before re-encoding.
  */
-function imageBlankUnder(image: MU.Image, ctm: Matrix, boxes: Rect[], strict: boolean): boolean {
+function imageBlankUnder(image: MU.Image, ctm: Matrix, boxes: Rect[], inset: number): boolean {
 	const check = (img: MU.Image): boolean => {
 		const pix = img.toPixmap();
 		try {
@@ -1101,8 +1149,7 @@ function imageBlankUnder(image: MU.Image, ctm: Matrix, boxes: Rect[], strict: bo
 			const n = w > 0 ? Math.max(1, Math.round(stride / w)) : 1;
 			const data = pix.getPixels();
 			const inv = invert(ctm);
-			const tol = strict ? 4 : 32;
-			const inset = strict ? 0 : 8;
+			const tol = 2;
 			for (const b of boxes) {
 				const u = transformRect(inv, b);
 				const xa = Math.max(0, Math.floor(u[0] * w) - 1);
@@ -1119,7 +1166,11 @@ function imageBlankUnder(image: MU.Image, ctm: Matrix, boxes: Rect[], strict: bo
 				if (inset) {
 					const set = new Set(cells.map(([x, y]) => y * w + x));
 					cells = cells.filter(([x, y]) => {
-						for (const dy of [-inset, 0, inset]) for (const dx of [-inset, 0, inset]) if (!set.has((y + dy) * w + (x + dx))) return false;
+						for (const dy of [-inset, 0, inset]) {
+							for (const dx of [-inset, 0, inset]) {
+								if (x + dx < 0 || x + dx >= w || !set.has((y + dy) * w + (x + dx))) return false;
+							}
+						}
 						return true;
 					});
 				}
@@ -1208,13 +1259,15 @@ interface GlyphInfo {
 }
 interface DeviceHandlers {
 	glyph?: (g: GlyphInfo) => void;
-	path?: (bounds: Rect, info: { blackRect: boolean }) => void;
+	path?: (bounds: Rect, info: { blackRect: boolean; keep: (boxes: Rect[]) => boolean }) => void;
 	shade?: (area: Rect) => void;
 	tile?: (area: Rect) => void;
 	image?: (image: MU.Image, ctm: Matrix, bounds: Rect) => void;
 }
 
 const INFINITE: Rect = [-1e9, -1e9, 1e9, 1e9];
+/** Image pixels next to a box edge not compared on the final file (see imageBlankUnder). */
+const FINAL_IMAGE_INSET = 16;
 const SPACES = new Set([9, 10, 13, 32, 0xa0]);
 
 function runDevice(m: Mupdf, page: MU.PDFPage, h: DeviceHandlers) {
@@ -1245,12 +1298,14 @@ function runDevice(m: Mupdf, page: MU.PDFPage, h: DeviceHandlers) {
 		fillPath(path, _eo, ctm, cs, color, alpha) {
 			if (!h.path) return;
 			const b = pathBounds(path, ctm as Matrix);
-			if (b) h.path(b, { blackRect: alpha === 1 && isBlack(cs, color) && isAxisRect(path, ctm as Matrix) });
+			const rec = recordPath(path, ctm as Matrix);
+			if (b) h.path(b, { blackRect: alpha === 1 && isBlack(cs, color) && isAxisRect(path, ctm as Matrix), keep: (boxes) => rec.keepable(boxes, true) });
 		},
 		strokePath(path, _s, ctm) {
 			if (!h.path) return;
 			const b = pathBounds(path, ctm as Matrix);
-			if (b) h.path(b, { blackRect: false });
+			const rec = recordPath(path, ctm as Matrix);
+			if (b) h.path(b, { blackRect: false, keep: (boxes) => rec.keepable(boxes, false) });
 		},
 		clipPath(path, _eo, ctm) {
 			pushClip(pathBounds(path, ctm as Matrix) ?? [0, 0, 0, 0]);
@@ -1308,6 +1363,86 @@ function runDevice(m: Mupdf, page: MU.PDFPage, h: DeviceHandlers) {
 		destroy(dev);
 		destroy(zero);
 	}
+}
+
+type Pt = [number, number];
+
+/**
+ * A path in page space, recorded segment by segment, and the rule that decides
+ * whether it may stay when it touches a box (see the header, "Kept drawings").
+ */
+class PathRec {
+	bbox: Rect | null = null;
+	private subs: { pts: Pt[]; closed: boolean }[] = [];
+	private curves = false;
+	private add(p: Pt) {
+		this.bbox = this.bbox ? union(this.bbox, [p[0], p[1], p[0], p[1]]) : [p[0], p[1], p[0], p[1]];
+	}
+	private current() {
+		return this.subs[this.subs.length - 1];
+	}
+	moveTo(p: Pt) {
+		this.add(p);
+		this.subs.push({ pts: [p], closed: false });
+	}
+	lineTo(p: Pt) {
+		this.add(p);
+		const c = this.current();
+		if (c && !c.closed) c.pts.push(p);
+		else this.subs.push({ pts: [c ? c.pts[0] : p, p], closed: false });
+	}
+	curveTo(ps: Pt[]) {
+		this.curves = true;
+		for (const p of ps) this.add(p);
+		this.lineTo(ps[ps.length - 1]);
+	}
+	close() {
+		const c = this.current();
+		if (!c) return;
+		c.closed = true;
+		// After h, drawing continues from the subpath's start in a new subpath.
+		this.subs.push({ pts: [c.pts[0]], closed: false });
+	}
+	/**
+	 * True when every piece of this path under any box is the straight continuation of
+	 * pieces outside it: no curves, and every segment that enters a box's interior is
+	 * horizontal or vertical and runs right through the box (both ends outside, across
+	 * its full width or height). Fills close their subpaths, so a filled rectangle is
+	 * judged by its four edges.
+	 */
+	keepable(boxes: Rect[], fill: boolean): boolean {
+		if (this.curves) return !boxes.some((b) => this.bbox && touches(this.bbox, b, 0));
+		const e = 0.01;
+		for (const sp of this.subs) {
+			const pts = sp.closed || fill ? [...sp.pts, sp.pts[0]] : sp.pts;
+			// A lone point (a dot with round caps) counts as a zero-length segment.
+			const segs: [Pt, Pt][] = pts.length === 1 ? [[pts[0], pts[0]]] : pts.slice(1).map((q, i) => [pts[i], q] as [Pt, Pt]);
+			for (const [a, c] of segs) {
+				const r: Rect = [Math.min(a[0], c[0]), Math.min(a[1], c[1]), Math.max(a[0], c[0]), Math.max(a[1], c[1])];
+				for (const b of boxes) {
+					if (!touches(r, b, 0)) continue;
+					const horizontal = r[3] - r[1] <= e;
+					const vertical = r[2] - r[0] <= e;
+					if (horizontal && !vertical && r[0] < b[0] - e && r[2] > b[2] + e) continue;
+					if (vertical && !horizontal && r[1] < b[1] - e && r[3] > b[3] + e) continue;
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+}
+
+/** Records a MuPDF path (with its transform) as a PathRec. */
+function recordPath(path: MU.Path, ctm: Matrix): PathRec {
+	const rec = new PathRec();
+	path.walk({
+		moveTo: (x, y) => rec.moveTo(applyMatrix(ctm, x, y)),
+		lineTo: (x, y) => rec.lineTo(applyMatrix(ctm, x, y)),
+		curveTo: (x1, y1, x2, y2, x3, y3) => rec.curveTo([applyMatrix(ctm, x1, y1), applyMatrix(ctm, x2, y2), applyMatrix(ctm, x3, y3)]),
+		closePath: () => rec.close()
+	});
+	return rec;
 }
 
 /** Bounding box of a path's points and control points (its geometry, no stroke width). */
