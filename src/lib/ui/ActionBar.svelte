@@ -55,6 +55,7 @@
 
 	.items {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
 		gap: var(--s-1);
 	}
@@ -83,6 +84,8 @@
 		display: inline-flex;
 		justify-self: start;
 		width: fit-content;
+		max-width: 100%;
+		flex-wrap: wrap;
 		padding: var(--s-1) var(--s-2);
 		border: 1px solid var(--line);
 		border-radius: var(--radius-sheet);

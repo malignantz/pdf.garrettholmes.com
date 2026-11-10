@@ -82,11 +82,11 @@
 		font-size: var(--text-control);
 	}
 
-	.ok :global(.icon) {
+	.ok > :global(.icon) {
 		color: color-mix(in srgb, var(--ok) 55%, var(--surface));
 	}
 
-	.error :global(.icon) {
+	.error > :global(.icon) {
 		color: color-mix(in srgb, var(--accent) 60%, var(--surface));
 	}
 

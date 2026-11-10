@@ -268,6 +268,10 @@
 		align-content: start;
 	}
 
+	.panel > :global(*) {
+		min-width: 0;
+	}
+
 	.theme-name {
 		font-size: var(--text-caption);
 		color: var(--ink-soft);

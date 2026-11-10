@@ -89,10 +89,12 @@
 		display: inline-flex;
 	}
 
+	/* Closed tooltips are display:none so they never widen the page's scroll area. */
 	.tip {
 		position: absolute;
 		left: 50%;
 		z-index: 50;
+		display: none;
 		width: max-content;
 		max-width: 240px;
 		padding: 5px var(--s-2);
@@ -103,13 +105,10 @@
 		font-weight: 500;
 		line-height: 1.35;
 		pointer-events: none;
-		opacity: 0;
-		visibility: hidden;
-		transform: translateX(calc(-50% + var(--shift, 0px))) translateY(var(--rise, 2px));
+		transform: translateX(calc(-50% + var(--shift, 0px)));
 		transition:
 			opacity var(--dur-fast) var(--ease),
-			transform var(--dur-fast) var(--ease),
-			visibility 0s linear var(--dur-fast);
+			translate var(--dur-fast) var(--ease);
 	}
 
 	.top {
@@ -118,15 +117,16 @@
 
 	.bottom {
 		top: calc(100% + 6px);
-		--rise: -2px;
 	}
 
 	.open {
-		opacity: 1;
-		visibility: visible;
-		--rise: 0px;
-		transition:
-			opacity var(--dur-fast) var(--ease),
-			transform var(--dur-fast) var(--ease);
+		display: block;
+	}
+
+	@starting-style {
+		.open {
+			opacity: 0;
+			translate: 0 2px;
+		}
 	}
 </style>

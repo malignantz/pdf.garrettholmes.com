@@ -93,6 +93,7 @@
 
 <style>
 	dialog {
+		margin: auto;
 		padding: 0;
 		border: 0;
 		background: transparent;
