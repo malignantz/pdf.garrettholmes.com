@@ -253,7 +253,7 @@
 	"enc-aes-256-unicode.pdf": {
 		"pages": 2,
 		"label": "enc",
-		"password": "pässwörd"
+		"password": "p\u00e4ssw\u00f6rd"
 	},
 	"truncated.pdf": {
 		"expect": "unreadable"
@@ -862,5 +862,179 @@
 			"KEEP-BAR-LABEL",
 			"KEEP-ABOVE-RULE"
 		]
+	},
+	"forms-kinds.pdf": {
+		"pages": 2,
+		"label": "kinds",
+		"listed": [
+			"name",
+			"notes",
+			"zip",
+			"code",
+			"ro",
+			"agree",
+			"opt_in",
+			"color",
+			"size",
+			"shared",
+			"person.first",
+			"person.last",
+			"country",
+			"langs"
+		],
+		"notListed": [
+			"pw",
+			"rt",
+			"file",
+			"btn",
+			"sig",
+			"hidden",
+			"noview",
+			"zero"
+		]
+	},
+	"forms-calc.pdf": {
+		"pages": 1,
+		"label": "calc",
+		"calculated": [
+			"total"
+		],
+		"formatted": [
+			"price",
+			"date"
+		]
+	},
+	"forms-geometry.pdf": {
+		"pages": 4,
+		"label": "geometry",
+		"pagesGeometry": [
+			{
+				"media": [
+					0,
+					0,
+					612,
+					792
+				],
+				"crop": [
+					50,
+					60,
+					562,
+					732
+				],
+				"rotate": 90
+			},
+			{
+				"media": [
+					0,
+					0,
+					612,
+					792
+				],
+				"crop": null,
+				"rotate": 180
+			},
+			{
+				"media": [
+					100,
+					200,
+					712,
+					992
+				],
+				"crop": [
+					150,
+					250,
+					600,
+					900
+				],
+				"rotate": 0
+			},
+			{
+				"media": [
+					0,
+					0,
+					612,
+					792
+				],
+				"crop": [
+					36,
+					72,
+					456,
+					672
+				],
+				"rotate": 270
+			}
+		],
+		"rects": [
+			{
+				"text": [
+					100,
+					200,
+					300,
+					224
+				],
+				"check": [
+					400,
+					500,
+					416,
+					516
+				]
+			},
+			{
+				"text": [
+					72,
+					600,
+					272,
+					624
+				],
+				"check": [
+					500,
+					100,
+					520,
+					120
+				]
+			},
+			{
+				"text": [
+					200,
+					300,
+					400,
+					330
+				],
+				"check": [
+					500,
+					800,
+					516,
+					816
+				]
+			},
+			{
+				"text": [
+					100,
+					400,
+					300,
+					424
+				],
+				"check": [
+					60,
+					100,
+					76,
+					116
+				]
+			}
+		]
+	},
+	"forms-xfa.pdf": {
+		"pages": 1,
+		"label": "xfa",
+		"expect": "XFA: hasForm false, note"
+	},
+	"forms-needapp.pdf": {
+		"pages": 1,
+		"label": "needapp"
+	},
+	"forms-enc.pdf": {
+		"pages": 2,
+		"label": "kinds",
+		"password": "form"
 	}
 }

@@ -244,7 +244,8 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 				if (info.hasXfa) {
 					notes.push('This file contains an XFA form. Its pages may look different here than in Adobe Reader.');
 				}
-				const hasForm = await detectForm(deps, out);
+				const form = await detectForm(deps, out);
+				notes.push(...form.notes);
 				return {
 					id: newId(),
 					name,
@@ -254,7 +255,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 					originalSize: bytes.length,
 					wasEncrypted,
 					notes,
-					...(hasForm ? { hasForm: true } : {})
+					...(form.hasForm ? { hasForm: true } : {})
 				};
 			}),
 
@@ -416,7 +417,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			flatten: options.flattenForms
 		};
 		const formsRan = formsNeeded(formsCtx);
-		if (formsRan) bytes = await applyForms(deps, bytes, formsCtx);
+		if (formsRan) bytes = await applyForms(deps, bytes, formsCtx, warnings);
 
 		// (c) Redaction (verifies itself before returning).
 		const redactJobs: RedactJob[] = [];
