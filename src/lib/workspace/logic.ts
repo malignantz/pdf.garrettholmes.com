@@ -192,7 +192,8 @@ export function pngName(name: string): string {
 /** Strip the extension and characters that are not allowed in file names. */
 export function baseName(name: string): string {
 	const noExt = name.replace(/\.(pdf|png|jpe?g|webp|gif|bmp|heic|heif|avif|tiff?)$/i, '');
-	return sanitize(noExt) || 'document';
+	// Leave room for a suffix such as "-merged" within the 120-character limit.
+	return sanitize(noExt).slice(0, 100).trim() || 'document';
 }
 
 function sanitize(name: string): string {

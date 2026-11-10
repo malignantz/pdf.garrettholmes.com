@@ -186,6 +186,9 @@ describe('file names', () => {
 		expect(defaultFilename(['contract.pdf', 'id.jpg'], 'all')).toBe('contract-merged.pdf');
 		expect(defaultFilename(['contract.pdf', 'id.jpg'], 'extract')).toBe('contract-pages.pdf');
 		expect(defaultFilename([], 'all')).toBe('document-edited.pdf');
+		const long = defaultFilename(['x'.repeat(300) + '.pdf'], 'extract');
+		expect(long.endsWith('-pages.pdf')).toBe(true);
+		expect(normalizeFilename(long)).toBe(long);
 	});
 	it('normalizeFilename', () => {
 		expect(normalizeFilename('out')).toBe('out.pdf');

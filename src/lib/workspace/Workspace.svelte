@@ -140,6 +140,12 @@
 		say(ev.kind === 'undo' ? `Undid: ${ev.label}` : ev.kind === 'redo' ? `Redid: ${ev.label}` : pastTense(ev.label));
 	});
 
+	// On phones a selection only makes sense in selection mode (its bar holds the actions),
+	// however it was made: Select all from the menu, Ctrl+A on a keyboard, a new blank page.
+	$effect(() => {
+		if (narrow && selCount > 0 && !selectionMode) selectionMode = true;
+	});
+
 	// Leave selection mode when the pages are gone.
 	$effect(() => {
 		if (!hasPages) selectionMode = false;
