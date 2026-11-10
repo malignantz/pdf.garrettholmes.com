@@ -1,0 +1,788 @@
+/**
+ * DocStore: the single source of truth for the workspace. Framework-free.
+ * See ./README.md for the API reference and index semantics.
+ */
+import type {
+	Asset,
+	AssetId,
+	ExportOptions,
+	ExportPlan,
+	PageId,
+	PageRef,
+	PageSize,
+	Rotation,
+	Source,
+	SourceId,
+	Stamp
+} from '../core/types';
+import { newId } from './ids';
+
+export { newId };
+
+// ---------------------------------------------------------------- types
+
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+type KeysOfUnion<T> = T extends unknown ? keyof T : never;
+
+/** A stamp to add; `id` is generated when omitted. */
+export type NewStamp = DistributiveOmit<Stamp, 'id'> & { id?: string };
+
+/**
+ * Fields of a stamp that may change. Keys that do not belong to the stamp's
+ * kind are ignored; `id` and `kind` can never change.
+ */
+export type StampPatch = {
+	[K in Exclude<KeysOfUnion<Stamp>, 'id' | 'kind'>]?: Extract<Stamp, Record<K, unknown>>[K];
+};
+
+export interface HistoryEvent {
+	kind: 'do' | 'undo' | 'redo';
+	label: string;
+}
+
+/** Immutable snapshot. A new object is produced on every change. */
+export interface DocState {
+	/** Open sources (those that have at least one page), in the order first added. */
+	readonly sources: readonly Source[];
+	readonly pages: readonly PageRef[];
+	readonly assets: readonly Asset[];
+	/** Selected page ids. Not part of undo history. */
+	readonly selection: ReadonlySet<PageId>;
+	/** Anchor for shift-range selection, or null. */
+	readonly anchor: PageId | null;
+	readonly canUndo: boolean;
+	readonly canRedo: boolean;
+	/** Label of the step `undo()` would revert, e.g. "Rotate 3 pages". */
+	readonly undoLabel: string | null;
+	readonly redoLabel: string | null;
+	/** The most recent do/undo/redo, for "Undid: ..." toasts. */
+	readonly lastEvent: HistoryEvent | null;
+	/** True when the document differs from the last `markClean()` (or the empty start). */
+	readonly isDirty: boolean;
+}
+
+export interface DocStoreOptions {
+	/** Max undo steps kept. Default 200. */
+	maxHistory?: number;
+	/** Called once per source when nothing (document, undo or redo) references it any more. */
+	onSourceReleased?: (sourceId: SourceId) => void;
+	/** Override id generation (tests). */
+	generateId?: () => string;
+}
+
+export interface DocStore {
+	readonly state: DocState;
+	/** Called after every change (not on subscribe). Returns an unsubscribe function. */
+	subscribe(listener: (state: DocState) => void): () => void;
+
+	// derived
+	readonly pageCount: number;
+	readonly totalOriginalBytes: number;
+	readonly canUndo: boolean;
+	readonly canRedo: boolean;
+	readonly undoLabel: string | null;
+	readonly redoLabel: string | null;
+	readonly isDirty: boolean;
+	markClean(): void;
+	sourceOf(pageId: PageId): Source | undefined;
+	displayedSize(ref: PageRef): PageSize | undefined;
+	toExportPlan(options: ExportOptions, ids?: Iterable<PageId>): ExportPlan;
+	assetUsage(id: AssetId): number;
+
+	// commands (each is one undo step; return value tells whether anything changed)
+	addSource(source: Source, at?: number): PageId[];
+	insertPages(refs: readonly PageRef[], at: number): PageId[];
+	removePages(ids: Iterable<PageId>): boolean;
+	movePages(ids: Iterable<PageId>, toIndex: number): boolean;
+	rotatePages(ids: Iterable<PageId>, delta: number): boolean;
+	duplicatePages(ids: Iterable<PageId>): PageId[];
+	reversePages(ids?: Iterable<PageId>): boolean;
+	sortBySource(): boolean;
+	addStamp(pageId: PageId, stamp: NewStamp): string;
+	updateStamp(pageId: PageId, stampId: string, patch: StampPatch): boolean;
+	removeStamp(pageId: PageId, stampId: string): boolean;
+	addAsset(asset: Asset): void;
+	removeAsset(id: AssetId, opts?: { cascade?: boolean }): boolean;
+	clear(): boolean;
+	/** Drop everything including history; releases all sources. Not undoable. */
+	reset(): void;
+
+	// selection
+	select(id: PageId): void;
+	toggle(id: PageId): void;
+	selectRange(toId: PageId, opts?: { additive?: boolean }): void;
+	selectAll(): void;
+	setSelection(ids: Iterable<PageId>): void;
+	clearSelection(): void;
+
+	// history
+	undo(): boolean;
+	redo(): boolean;
+	transaction<T>(label: string, fn: () => T): T;
+	beginGesture(label: string): void;
+	commitGesture(): void;
+	cancelGesture(): void;
+	readonly gestureActive: boolean;
+}
+
+// ---------------------------------------------------------------- internals
+
+interface Doc {
+	readonly sources: readonly Source[];
+	readonly pages: readonly PageRef[];
+	readonly assets: readonly Asset[];
+}
+
+interface Entry {
+	label: string;
+	before: Doc;
+	after: Doc;
+	selBefore: ReadonlySet<PageId>;
+	selAfter: ReadonlySet<PageId>;
+}
+
+const EMPTY_DOC: Doc = Object.freeze({ sources: [], pages: [], assets: [] });
+const EMPTY_SET: ReadonlySet<PageId> = new Set();
+
+function plural(n: number, one: string, many: string): string {
+	return n === 1 ? one : `${n} ${many}`;
+}
+const pagesLabel = (verb: string, n: number) => `${verb} ${plural(n, 'page', 'pages')}`;
+
+function cloneStamp(s: Stamp, id: string): Stamp {
+	return 'box' in s ? { ...s, id, box: { ...s.box } } : { ...s, id };
+}
+
+function valuesEqual(a: unknown, b: unknown): boolean {
+	if (a === b) return true;
+	if (typeof a !== 'object' || typeof b !== 'object' || !a || !b) return false;
+	const ka = Object.keys(a);
+	if (ka.length !== Object.keys(b).length) return false;
+	return ka.every((k) =>
+		valuesEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k])
+	);
+}
+
+function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+	if (a.size !== b.size) return false;
+	for (const x of a) if (!b.has(x)) return false;
+	return true;
+}
+
+function sameArray<T>(a: readonly T[], b: readonly T[]): boolean {
+	return a.length === b.length && a.every((x, i) => x === b[i]);
+}
+
+const toSet = (ids: Iterable<string>): Set<string> => new Set(ids);
+
+function normRotation(deg: number): Rotation {
+	return (((deg % 360) + 360) % 360) as Rotation;
+}
+
+// ---------------------------------------------------------------- store
+
+export function createDocStore(options: DocStoreOptions = {}): DocStore {
+	const maxHistory = Math.max(1, options.maxHistory ?? 200);
+	const gen = options.generateId ?? newId;
+
+	let doc: Doc = EMPTY_DOC;
+	let cleanDoc: Doc = EMPTY_DOC;
+	let selection: ReadonlySet<PageId> = EMPTY_SET;
+	let anchor: PageId | null = null;
+	let undoStack: Entry[] = [];
+	let redoStack: Entry[] = [];
+	let lastEvent: HistoryEvent | null = null;
+	/** Every source that is alive (referenced by the doc or by any history entry). */
+	const registry = new Map<SourceId, Source>();
+	const listeners = new Set<(s: DocState) => void>();
+
+	let gesture: { label: string; doc: Doc; sel: ReadonlySet<PageId> } | null = null;
+	let batchDepth = 0;
+	let pendingNotify = false;
+
+	let snap: DocState = buildSnap();
+
+	function buildSnap(): DocState {
+		const u = undoStack[undoStack.length - 1];
+		const r = redoStack[redoStack.length - 1];
+		return Object.freeze({
+			sources: doc.sources,
+			pages: doc.pages,
+			assets: doc.assets,
+			selection,
+			anchor,
+			canUndo: !!u && !gesture,
+			canRedo: !!r && !gesture,
+			undoLabel: u?.label ?? null,
+			redoLabel: r?.label ?? null,
+			lastEvent,
+			isDirty: doc !== cleanDoc
+		});
+	}
+
+	function changed(): void {
+		snap = buildSnap();
+		if (batchDepth > 0) {
+			pendingNotify = true;
+			return;
+		}
+		for (const l of [...listeners]) l(snap);
+	}
+
+	function freshId(taken: (id: string) => boolean): string {
+		for (let i = 0; i < 100; i++) {
+			const id = gen();
+			if (!taken(id)) return id;
+		}
+		throw new Error('DocStore: could not generate a unique id');
+	}
+	const pageIdTaken = (d: Doc) => {
+		const s = new Set(d.pages.map((p) => p.id));
+		return (id: string) => s.has(id);
+	};
+
+	/** Drop sources without pages, add back registry sources that pages need. */
+	function normalize(d: Doc): Doc {
+		const used = new Set(d.pages.map((p) => p.sourceId));
+		let sources = d.sources;
+		if (sources.some((s) => !used.has(s.id))) sources = sources.filter((s) => used.has(s.id));
+		const have = new Set(sources.map((s) => s.id));
+		const missing = [...used].filter((id) => !have.has(id));
+		if (missing.length) sources = [...sources, ...missing.map((id) => registry.get(id)!)];
+		return sources === d.sources ? d : { ...d, sources };
+	}
+
+	/** Release sources that neither the document nor any history entry references. */
+	function sweep(): void {
+		const live = new Set<SourceId>();
+		const add = (d: Doc) => d.sources.forEach((s) => live.add(s.id));
+		add(doc);
+		if (gesture) add(gesture.doc);
+		for (const e of undoStack) (add(e.before), add(e.after));
+		for (const e of redoStack) (add(e.before), add(e.after));
+		const released = [...registry.keys()].filter((id) => !live.has(id));
+		for (const id of released) registry.delete(id);
+		for (const id of released) {
+			try {
+				options.onSourceReleased?.(id);
+			} catch (err) {
+				console.error('DocStore: onSourceReleased threw', err);
+			}
+		}
+	}
+
+	function pruneSelection(): void {
+		const ids = new Set(doc.pages.map((p) => p.id));
+		if ([...selection].some((id) => !ids.has(id)))
+			selection = new Set([...selection].filter((x) => ids.has(x)));
+		if (anchor !== null && !ids.has(anchor)) anchor = null;
+	}
+
+	function pushEntry(label: string, before: Doc, selBefore: ReadonlySet<PageId>): void {
+		redoStack = [];
+		undoStack.push({ label, before, after: doc, selBefore, selAfter: selection });
+		if (undoStack.length > maxHistory) undoStack.splice(0, undoStack.length - maxHistory);
+		lastEvent = { kind: 'do', label };
+	}
+
+	/** Core of every command. `fn` returns the new doc, or null/same doc for a no-op. */
+	function run(label: string, fn: (d: Doc) => Doc | null): boolean {
+		const next = fn(doc);
+		if (!next || next === doc) return false;
+		const before = doc;
+		const selBefore = selection;
+		doc = normalize(next);
+		for (const s of doc.sources) registry.set(s.id, s);
+		pruneSelection();
+		if (!gesture) pushEntry(label, before, selBefore);
+		sweep();
+		changed();
+		return true;
+	}
+
+	// ---- lookups and validation
+
+	const pageIndexById = (d: Doc, id: PageId) => d.pages.findIndex((p) => p.id === id);
+
+	function mapPage(d: Doc, id: PageId, f: (p: PageRef) => PageRef): Doc | null {
+		const i = pageIndexById(d, id);
+		if (i < 0) return null;
+		const np = f(d.pages[i]);
+		if (np === d.pages[i]) return null;
+		const pages = d.pages.slice();
+		pages[i] = np;
+		return { ...d, pages };
+	}
+
+	function checkRef(d: Doc, ref: PageRef): void {
+		const src = d.sources.find((s) => s.id === ref.sourceId) ?? registry.get(ref.sourceId);
+		if (!src) throw new Error(`DocStore: unknown source ${ref.sourceId}`);
+		if (!Number.isInteger(ref.pageIndex) || ref.pageIndex < 0 || ref.pageIndex >= src.pages.length)
+			throw new RangeError(`DocStore: pageIndex ${ref.pageIndex} out of range for ${src.name}`);
+		if (![0, 90, 180, 270].includes(ref.rotation))
+			throw new RangeError(`DocStore: invalid rotation ${ref.rotation}`);
+		for (const s of ref.stamps) checkStamp(d, s);
+	}
+
+	function checkStamp(d: Doc, s: Stamp): void {
+		if (s.kind === 'image' && !d.assets.some((a) => a.id === s.assetId))
+			throw new Error(`DocStore: unknown asset ${s.assetId}`);
+	}
+
+	function spliceIn(d: Doc, refs: PageRef[], at: number): Doc {
+		const i = Math.min(Math.max(Math.trunc(at), 0), d.pages.length);
+		const pages = d.pages.slice();
+		pages.splice(i, 0, ...refs);
+		return { ...d, pages };
+	}
+
+	// ---- commands
+
+	function addSource(source: Source, at?: number): PageId[] {
+		if (at !== undefined && Number.isNaN(at)) throw new RangeError('DocStore: bad insert index');
+		if (doc.sources.some((s) => s.id === source.id))
+			throw new Error(`DocStore: source ${source.id} is already open`);
+		const existing = registry.get(source.id);
+		if (existing && existing !== source)
+			throw new Error(`DocStore: source id ${source.id} is still in use by history`);
+		if (source.pages.length === 0) return [];
+		const taken = pageIdTaken(doc);
+		const used = new Set<string>();
+		const refs: PageRef[] = source.pages.map((_, pageIndex) => {
+			const id = freshId((x) => taken(x) || used.has(x));
+			used.add(id);
+			return { id, sourceId: source.id, pageIndex, rotation: 0, stamps: [] };
+		});
+		run(`Add ${source.name}`, (d) =>
+			spliceIn({ ...d, sources: [...d.sources, source] }, refs, at ?? d.pages.length)
+		);
+		return refs.map((r) => r.id);
+	}
+
+	function insertPages(refs: readonly PageRef[], at: number): PageId[] {
+		if (typeof at !== 'number' || Number.isNaN(at))
+			throw new RangeError('DocStore: insert index must be a number');
+		if (refs.length === 0) return [];
+		const seen = new Set<string>();
+		const copies = refs.map((r) => {
+			if (seen.has(r.id) || doc.pages.some((p) => p.id === r.id))
+				throw new Error(`DocStore: duplicate page id ${r.id}`);
+			seen.add(r.id);
+			checkRef(doc, r);
+			return { ...r, stamps: r.stamps.map((s) => cloneStamp(s, s.id)) };
+		});
+		run(pagesLabel('Insert', copies.length), (d) => spliceIn(d, copies, at));
+		return copies.map((r) => r.id);
+	}
+
+	function removePages(ids: Iterable<PageId>): boolean {
+		const set = toSet(ids);
+		const n = doc.pages.filter((p) => set.has(p.id)).length;
+		if (n === 0) return false;
+		return run(pagesLabel('Delete', n), (d) => ({
+			...d,
+			pages: d.pages.filter((p) => !set.has(p.id))
+		}));
+	}
+
+	function movePages(ids: Iterable<PageId>, toIndex: number): boolean {
+		if (typeof toIndex !== 'number' || Number.isNaN(toIndex))
+			throw new RangeError('DocStore: move index must be a number');
+		const set = toSet(ids);
+		const moved = doc.pages.filter((p) => set.has(p.id));
+		if (moved.length === 0) return false;
+		return run(pagesLabel('Move', moved.length), (d) => {
+			const to = Math.min(Math.max(Math.trunc(toIndex), 0), d.pages.length);
+			let before = 0;
+			for (let i = 0; i < to; i++) if (set.has(d.pages[i].id)) before++;
+			const pages = d.pages.filter((p) => !set.has(p.id));
+			pages.splice(to - before, 0, ...moved);
+			return sameArray(pages, d.pages) ? null : { ...d, pages };
+		});
+	}
+
+	function rotatePages(ids: Iterable<PageId>, delta: number): boolean {
+		if (!Number.isInteger(delta) || delta % 90 !== 0)
+			throw new RangeError('DocStore: rotation delta must be a multiple of 90');
+		if (delta % 360 === 0) return false;
+		const set = toSet(ids);
+		const n = doc.pages.filter((p) => set.has(p.id)).length;
+		if (n === 0) return false;
+		return run(pagesLabel('Rotate', n), (d) => ({
+			...d,
+			pages: d.pages.map((p) =>
+				set.has(p.id) ? { ...p, rotation: normRotation(p.rotation + delta) } : p
+			)
+		}));
+	}
+
+	function duplicatePages(ids: Iterable<PageId>): PageId[] {
+		const set = toSet(ids);
+		const n = doc.pages.filter((p) => set.has(p.id)).length;
+		if (n === 0) return [];
+		const created: PageId[] = [];
+		run(pagesLabel('Duplicate', n), (d) => {
+			const taken = pageIdTaken(d);
+			const used = new Set<string>();
+			const fresh = () => {
+				const id = freshId((x) => taken(x) || used.has(x));
+				used.add(id);
+				return id;
+			};
+			const pages: PageRef[] = [];
+			for (const p of d.pages) {
+				pages.push(p);
+				if (set.has(p.id)) {
+					const id = fresh();
+					created.push(id);
+					pages.push({ ...p, id, stamps: p.stamps.map((s) => cloneStamp(s, fresh())) });
+				}
+			}
+			return { ...d, pages };
+		});
+		return created;
+	}
+
+	function reversePages(ids?: Iterable<PageId>): boolean {
+		const set = ids === undefined ? null : toSet(ids);
+		const n = set ? doc.pages.filter((p) => set.has(p.id)).length : doc.pages.length;
+		return run(pagesLabel('Reverse', n), (d) => {
+			const slots: number[] = [];
+			d.pages.forEach((p, i) => {
+				if (!set || set.has(p.id)) slots.push(i);
+			});
+			if (slots.length < 2) return null;
+			const pages = d.pages.slice();
+			const picked = slots.map((i) => d.pages[i]).reverse();
+			slots.forEach((slot, k) => (pages[slot] = picked[k]));
+			return sameArray(pages, d.pages) ? null : { ...d, pages };
+		});
+	}
+
+	function sortBySource(): boolean {
+		return run('Sort pages by file', (d) => {
+			const order = new Map(d.sources.map((s, i) => [s.id, i]));
+			const pages = d.pages
+				.map((p, i) => [p, i] as const)
+				.sort((a, b) => order.get(a[0].sourceId)! - order.get(b[0].sourceId)! || a[1] - b[1])
+				.map(([p]) => p);
+			return sameArray(pages, d.pages) ? null : { ...d, pages };
+		});
+	}
+
+	function addStamp(pageId: PageId, stamp: NewStamp): string {
+		if (pageIndexById(doc, pageId) < 0) throw new Error(`DocStore: unknown page ${pageId}`);
+		const id = stamp.id ?? gen();
+		if (doc.pages.some((p) => p.stamps.some((s) => s.id === id)))
+			throw new Error(`DocStore: duplicate stamp id ${id}`);
+		const full = cloneStamp({ ...stamp, id } as Stamp, id);
+		checkStamp(doc, full);
+		run('Add stamp', (d) => mapPage(d, pageId, (p) => ({ ...p, stamps: [...p.stamps, full] })));
+		return id;
+	}
+
+	function updateStamp(pageId: PageId, stampId: string, patch: StampPatch): boolean {
+		return run('Edit stamp', (d) =>
+			mapPage(d, pageId, (p) => {
+				const si = p.stamps.findIndex((s) => s.id === stampId);
+				if (si < 0) return p;
+				const old = p.stamps[si];
+				const next: Record<string, unknown> = { ...old };
+				let diff = false;
+				for (const [k, v] of Object.entries(patch)) {
+					if (k === 'id' || k === 'kind' || !(k in old) || v === undefined) continue;
+					if (!valuesEqual((old as Record<string, unknown>)[k], v)) {
+						next[k] = v && typeof v === 'object' ? { ...v } : v;
+						diff = true;
+					}
+				}
+				if (!diff) return p;
+				const ns = next as unknown as Stamp;
+				checkStamp(d, ns);
+				const stamps = p.stamps.slice();
+				stamps[si] = ns;
+				return { ...p, stamps };
+			})
+		);
+	}
+
+	function removeStamp(pageId: PageId, stampId: string): boolean {
+		return run('Remove stamp', (d) =>
+			mapPage(d, pageId, (p) =>
+				p.stamps.some((s) => s.id === stampId)
+					? { ...p, stamps: p.stamps.filter((s) => s.id !== stampId) }
+					: p
+			)
+		);
+	}
+
+	function assetUsage(id: AssetId): number {
+		let n = 0;
+		for (const p of doc.pages)
+			for (const s of p.stamps) if (s.kind === 'image' && s.assetId === id) n++;
+		return n;
+	}
+
+	function addAsset(asset: Asset): void {
+		if (doc.assets.some((a) => a.id === asset.id))
+			throw new Error(`DocStore: duplicate asset id ${asset.id}`);
+		run(`Add ${asset.kind}`, (d) => ({ ...d, assets: [...d.assets, asset] }));
+	}
+
+	function removeAsset(id: AssetId, opts: { cascade?: boolean } = {}): boolean {
+		const asset = doc.assets.find((a) => a.id === id);
+		if (!asset) return false;
+		const uses = assetUsage(id);
+		if (uses > 0 && !opts.cascade) return false;
+		const label =
+			uses > 0
+				? `Remove ${asset.kind} and ${plural(uses, 'stamp', 'stamps')}`
+				: `Remove ${asset.kind}`;
+		return run(label, (d) => ({
+			...d,
+			assets: d.assets.filter((a) => a.id !== id),
+			pages: d.pages.map((p) =>
+				p.stamps.some((s) => s.kind === 'image' && s.assetId === id)
+					? { ...p, stamps: p.stamps.filter((s) => !(s.kind === 'image' && s.assetId === id)) }
+					: p
+			)
+		}));
+	}
+
+	function clear(): boolean {
+		return run('Clear workspace', (d) => (d.pages.length || d.assets.length ? EMPTY_DOC : null));
+	}
+
+	function reset(): void {
+		gesture = null;
+		doc = EMPTY_DOC;
+		cleanDoc = EMPTY_DOC;
+		undoStack = [];
+		redoStack = [];
+		selection = EMPTY_SET;
+		anchor = null;
+		lastEvent = null;
+		sweep();
+		changed();
+	}
+
+	// ---- selection
+
+	function setSel(next: ReadonlySet<PageId>, a: PageId | null): void {
+		const sameSel = setsEqual(next, selection);
+		if (sameSel && a === anchor) return;
+		if (!sameSel) selection = next;
+		anchor = a;
+		changed();
+	}
+	const hasPage = (id: PageId) => pageIndexById(doc, id) >= 0;
+
+	function select(id: PageId): void {
+		if (hasPage(id)) setSel(new Set([id]), id);
+	}
+	function toggle(id: PageId): void {
+		if (!hasPage(id)) return;
+		const next = new Set(selection);
+		if (!next.delete(id)) next.add(id);
+		setSel(next, id);
+	}
+	function selectRange(toId: PageId, opts: { additive?: boolean } = {}): void {
+		const to = pageIndexById(doc, toId);
+		if (to < 0) return;
+		const from = anchor === null ? -1 : pageIndexById(doc, anchor);
+		if (from < 0) return select(toId);
+		const [lo, hi] = from <= to ? [from, to] : [to, from];
+		const next = new Set(opts.additive ? selection : []);
+		for (let i = lo; i <= hi; i++) next.add(doc.pages[i].id);
+		setSel(next, anchor);
+	}
+	function selectAll(): void {
+		setSel(new Set(doc.pages.map((p) => p.id)), anchor ?? doc.pages[0]?.id ?? null);
+	}
+	function setSelection(ids: Iterable<PageId>): void {
+		const next = new Set([...ids].filter(hasPage));
+		setSel(
+			next,
+			anchor !== null && next.has(anchor) ? anchor : (next.values().next().value ?? null)
+		);
+	}
+	function clearSelection(): void {
+		setSel(EMPTY_SET, null);
+	}
+
+	// ---- history
+
+	function restoreSelection(sel: ReadonlySet<PageId>): void {
+		const ids = new Set(doc.pages.map((p) => p.id));
+		const next = new Set([...sel].filter((x) => ids.has(x)));
+		if (!setsEqual(next, selection)) selection = next;
+		if (anchor === null || !ids.has(anchor)) anchor = next.values().next().value ?? null;
+	}
+
+	function undo(): boolean {
+		if (gesture) return false;
+		const e = undoStack.pop();
+		if (!e) return false;
+		redoStack.push(e);
+		doc = e.before;
+		restoreSelection(e.selBefore);
+		lastEvent = { kind: 'undo', label: e.label };
+		sweep();
+		changed();
+		return true;
+	}
+
+	function redo(): boolean {
+		if (gesture) return false;
+		const e = redoStack.pop();
+		if (!e) return false;
+		undoStack.push(e);
+		doc = e.after;
+		restoreSelection(e.selAfter);
+		lastEvent = { kind: 'redo', label: e.label };
+		sweep();
+		changed();
+		return true;
+	}
+
+	function beginGesture(label: string): void {
+		if (gesture) throw new Error('DocStore: a gesture is already active');
+		gesture = { label, doc, sel: selection };
+		changed();
+	}
+	function commitGesture(): void {
+		if (!gesture) return;
+		const g = gesture;
+		gesture = null;
+		if (doc !== g.doc) pushEntry(g.label, g.doc, g.sel);
+		sweep();
+		changed();
+	}
+	function cancelGesture(): void {
+		if (!gesture) return;
+		doc = gesture.doc;
+		gesture = null;
+		pruneSelection();
+		sweep();
+		changed();
+	}
+
+	function transaction<T>(label: string, fn: () => T): T {
+		if (gesture) return fn(); // already coalescing into the outer step
+		batchDepth++;
+		try {
+			beginGesture(label);
+			try {
+				const out = fn();
+				commitGesture();
+				return out;
+			} catch (err) {
+				cancelGesture();
+				throw err;
+			}
+		} finally {
+			batchDepth--;
+			if (batchDepth === 0 && pendingNotify) {
+				pendingNotify = false;
+				changed();
+			}
+		}
+	}
+
+	// ---- derived
+
+	function sourceOf(pageId: PageId): Source | undefined {
+		const p = doc.pages.find((x) => x.id === pageId);
+		return p && registry.get(p.sourceId);
+	}
+
+	function displayedSize(ref: PageRef): PageSize | undefined {
+		const size = registry.get(ref.sourceId)?.pages[ref.pageIndex];
+		if (!size) return undefined;
+		return ref.rotation === 90 || ref.rotation === 270
+			? { width: size.height, height: size.width }
+			: { width: size.width, height: size.height };
+	}
+
+	function toExportPlan(opts: ExportOptions, ids?: Iterable<PageId>): ExportPlan {
+		const set = ids === undefined ? null : toSet(ids);
+		return {
+			pages: doc.pages.filter((p) => !set || set.has(p.id)),
+			options: { ...opts }
+		};
+	}
+
+	return {
+		get state() {
+			return snap;
+		},
+		subscribe(listener) {
+			listeners.add(listener);
+			return () => void listeners.delete(listener);
+		},
+		get pageCount() {
+			return doc.pages.length;
+		},
+		get totalOriginalBytes() {
+			return doc.sources.reduce((n, s) => n + s.originalSize, 0);
+		},
+		get canUndo() {
+			return snap.canUndo;
+		},
+		get canRedo() {
+			return snap.canRedo;
+		},
+		get undoLabel() {
+			return snap.undoLabel;
+		},
+		get redoLabel() {
+			return snap.redoLabel;
+		},
+		get isDirty() {
+			return snap.isDirty;
+		},
+		get gestureActive() {
+			return gesture !== null;
+		},
+		markClean() {
+			cleanDoc = doc;
+			changed();
+		},
+		sourceOf,
+		displayedSize,
+		toExportPlan,
+		assetUsage,
+		addSource,
+		insertPages,
+		removePages,
+		movePages,
+		rotatePages,
+		duplicatePages,
+		reversePages,
+		sortBySource,
+		addStamp,
+		updateStamp,
+		removeStamp,
+		addAsset,
+		removeAsset,
+		clear,
+		reset,
+		select,
+		toggle,
+		selectRange,
+		selectAll,
+		setSelection,
+		clearSelection,
+		undo,
+		redo,
+		transaction,
+		beginGesture,
+		commitGesture,
+		cancelGesture
+	};
+}
+
+/** Convenience for building a PageRef for `insertPages`. */
+export function newPageRef(sourceId: SourceId, pageIndex: number, rotation: Rotation = 0): PageRef {
+	return { id: newId(), sourceId, pageIndex, rotation, stamps: [] };
+}
