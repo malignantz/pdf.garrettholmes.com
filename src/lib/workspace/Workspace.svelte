@@ -323,6 +323,21 @@
 		if (id && store.state.pages.some((p) => p.id === id)) grid?.focusPage(id);
 	}
 
+	/**
+	 * The editor threw while drawing. Close it and keep the document, instead of
+	 * letting the error take the whole workspace down.
+	 */
+	function editorFailed(err: unknown) {
+		console.error(err);
+		if (store.gestureActive) store.commitGesture();
+		void closeEditor();
+		const detail = err instanceof Error ? err.message : String(err);
+		toasts.show({
+			message: `The page editor hit a problem and was closed. Your pages are still here. (${detail.slice(0, 160)})`,
+			tone: 'error'
+		});
+	}
+
 	// ------------------------------------------------------------ grid callbacks
 
 	function onselect(id: PageId, m: { toggle: boolean; range: boolean }) {
@@ -695,7 +710,10 @@
 
 {#if editorId && Editor}
 	<div class="editor-layer">
-		<Editor pageId={editorId} onclose={closeEditor} />
+		<svelte:boundary onerror={editorFailed}>
+			<Editor pageId={editorId} onclose={closeEditor} />
+			{#snippet failed()}{/snippet}
+		</svelte:boundary>
 	</div>
 {/if}
 

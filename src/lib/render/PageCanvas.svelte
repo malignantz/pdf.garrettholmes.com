@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import type { Renderer, Rotation, Source } from '../core/types';
 	import { bucketWidth, isSwapped } from './sizing';
 
@@ -72,17 +73,24 @@
 
 	// Rotation changes the unrotated width for the same displayed width.
 	$effect(() => {
-		void rotation;
+		void turn;
 		if (cssWidth > 0) {
 			const displayed = cssWidth * dpr;
 			wantWidth = bucketWidth(swapped ? displayed * (page.width / page.height) : displayed);
 		}
 	});
 
+	// Props are re-read whenever the parent's page object changes (a stamp moved,
+	// say), even when their values are the same. Effects depend on these instead,
+	// which only fire on a real change; otherwise the page blinks on every edit.
+	const sourceId = $derived(source.id);
+	const index = $derived(pageIndex);
+	const turn = $derived(rotation);
+
 	// Source or page changed: the old pixels are wrong.
 	$effect(() => {
-		void source;
-		void pageIndex;
+		void sourceId;
+		void index;
 		clear();
 	});
 
@@ -100,11 +108,12 @@
 			if (!near) clear();
 			return;
 		}
+		void sourceId;
 		const ac = new AbortController();
 		const target = canvas;
-		const rot = rotation;
+		const rot = turn;
 		renderer
-			.render({ source, pageIndex, width: wantWidth, rotation: rot, signal: ac.signal })
+			.render({ source: untrack(() => source), pageIndex: index, width: wantWidth, rotation: rot, signal: ac.signal })
 			.then((bmp) => {
 				if (ac.signal.aborted) {
 					bmp.close();

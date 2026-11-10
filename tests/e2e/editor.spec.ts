@@ -85,6 +85,51 @@ test.describe('page editor', () => {
 		expect((await stamps(page)).some((s) => s.id === sig.id)).toBe(true);
 	});
 
+	test('text: clicking away saves it, clicking it again edits it', async ({ page }, info) => {
+		await openEditor(page, 'file=multi.pdf&page=1');
+		const box = page.getByRole('textbox', { name: 'Text on the page' });
+		// The view may zoom in while typing, so click a fixed spot in the window.
+		const vp = page.viewportSize()!;
+		const away = () => page.mouse.click(vp.width / 2, vp.height * 0.75);
+		await chooseTool(page, 'Text');
+		await tapPage(page, 0.3, 0.2);
+		await page.keyboard.type('Hello');
+		await away();
+		await expect(box).toHaveCount(0);
+		await expect(page.getByTestId('live')).toHaveText('Text saved.');
+		// At phone size the resize handles cover small text; the Edit button is the way in.
+		if (info.project.name === 'phone') await page.getByRole('button', { name: 'Edit', exact: true }).click();
+		else await page.locator('.stamp.text.ed').click();
+		await expect(box).toBeFocused();
+		await page.keyboard.type(' again');
+		await away();
+		await expect(box).toHaveCount(0);
+		expect((await stamps(page)).find((s) => s.kind === 'text')!.text).toBe('Hello again');
+		await expect(page.getByText('Internal Error')).toHaveCount(0);
+	});
+
+	test('dragging a stamp does not redraw the page', async ({ page }, info) => {
+		test.skip(info.project.name === 'phone', 'mouse drag');
+		await openEditor(page, 'file=multi.pdf&page=1');
+		await chooseTool(page, 'Text');
+		await tapPage(page, 0.3, 0.2);
+		await page.keyboard.type('Move me');
+		await page.getByRole('button', { name: 'Done editing' }).click();
+		await page.evaluate(() => {
+			const w = window as unknown as { __redraws: number };
+			w.__redraws = 0;
+			const c = document.querySelector('[data-testid=editor-page] canvas')!;
+			new MutationObserver((ms) => (w.__redraws += ms.length)).observe(c, { attributes: true });
+		});
+		const b = (await page.locator('.stamp.text.ed').boundingBox())!;
+		await page.mouse.move(b.x + 6, b.y + b.height / 2);
+		await page.mouse.down();
+		for (let i = 1; i <= 10; i++) await page.mouse.move(b.x + 6 + i * 6, b.y + b.height / 2 + i * 4);
+		await page.mouse.up();
+		await expect(page.getByTestId('live')).toContainText('moved');
+		expect(await page.evaluate(() => (window as unknown as { __redraws: number }).__redraws)).toBe(0);
+	});
+
 	test('text: characters the font cannot draw are shown and can be removed', async ({ page }) => {
 		await openEditor(page, 'file=multi.pdf&page=1');
 		await chooseTool(page, 'Text');
