@@ -20,6 +20,7 @@ npm run check      # types
 npm test           # unit tests (engine, store, renderer)
 npm run test:e2e   # Playwright, desktop and phone
 npm run build      # static site in build/
+npx wrangler deploy  # after a build: Cloudflare Worker, static assets only
 ```
 
 ## How it works
