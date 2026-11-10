@@ -8,6 +8,7 @@ export { default as IconButton } from './IconButton.svelte';
 export { default as Mark } from './Mark.svelte';
 export { default as Menu, type MenuItem } from './Menu.svelte';
 export { default as Progress } from './Progress.svelte';
+export { default as Select } from './Select.svelte';
 export { default as Sheet } from './Sheet.svelte';
 export { default as Slider } from './Slider.svelte';
 export { default as Spinner } from './Spinner.svelte';
