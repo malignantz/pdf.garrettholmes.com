@@ -124,6 +124,9 @@
 		const br = target.dataset.ctx !== '2d' ? target.getContext('bitmaprenderer') : null;
 		if (br) {
 			target.dataset.ctx = 'bitmap';
+			// transferFromImageBitmap does not resize the canvas; do it so the bitmap is not scaled.
+			target.width = bmp.width;
+			target.height = bmp.height;
 			br.transferFromImageBitmap(bmp);
 			return;
 		}
