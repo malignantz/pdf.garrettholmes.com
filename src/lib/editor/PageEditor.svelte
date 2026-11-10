@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Full-screen view of one page for placing stamps: signature, initials, text,
 	// date and marks. Zoom/pan, page navigation, undo/redo through the store.
-	import { onMount, tick } from 'svelte';
+	import { flushSync, onMount, tick } from 'svelte';
 	import type { Asset, PageId, PageRef, Stamp, StampBox } from '../core/types';
 	import { getApp } from '../app';
 	import { useDocStore } from '../doc/store.svelte';
@@ -334,10 +334,15 @@
 			disarm();
 			const size = textSize;
 			gestureBegin('Add text');
-			const id = store.addStamp(pid, { kind: 'text', text: '', size, color: 'black', ...textOrigin(f, size) });
+			// Starts as a selected placeholder, so the box is visible and typing replaces it.
+			const id = store.addStamp(pid, { kind: 'text', text: PLACEHOLDER, size, color: 'black', ...textOrigin(f, size) });
 			selectedId = id;
 			editing = { id, isNew: true };
+			untouched = true;
 			zoomToText(f.x, f.y, size);
+			// Focus inside the tap itself, or phones will not bring up the keyboard.
+			flushSync();
+			void tick().then(() => clampText(id));
 			announce('Type your text. Press Escape when done.');
 		}
 	}
@@ -615,6 +620,9 @@
 	// ------------------------------------------------------------ text editing
 	let editing = $state<{ id: string; isNew: boolean } | null>(null);
 	let textarea: HTMLTextAreaElement | undefined = $state();
+	const PLACEHOLDER = 'Text';
+	/** A new text box still holds the placeholder: nothing was typed. */
+	let untouched = false;
 	let badChars = $state('');
 	let checkSeq = 0;
 	const editingStamp = $derived(editing ? page?.stamps.find((s) => s.id === editing!.id) : undefined);
@@ -651,13 +659,15 @@
 		if (editing && textarea) {
 			const ta = textarea;
 			ta.focus({ preventScroll: true });
-			ta.setSelectionRange(ta.value.length, ta.value.length);
+			if (editing.isNew) ta.select();
+			else ta.setSelectionRange(ta.value.length, ta.value.length);
 		}
 	});
 
 	function onTextInput(e: Event) {
 		if (!editing || !page) return;
 		const text = (e.currentTarget as HTMLTextAreaElement).value;
+		untouched = false;
 		store.updateStamp(page.id, editing.id, { text });
 		const id = editing.id;
 		void tick().then(() => clampText(id));
@@ -705,7 +715,8 @@
 			viewBeforeText = null;
 		}
 		badChars = '';
-		const empty = !s || s.kind !== 'text' || s.text.replace(/\s/g, '') === '';
+		const empty = !s || s.kind !== 'text' || s.text.replace(/\s/g, '') === '' || (ed.isNew && untouched);
+		untouched = false;
 		if (ed.isNew && empty) {
 			if (store.gestureActive) store.cancelGesture();
 			selectedId = null;

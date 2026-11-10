@@ -2,6 +2,7 @@
 	import '../app.css';
 	import { onMount } from 'svelte';
 	import { dev } from '$app/env';
+	import { getApp } from '#lib/app.ts';
 	import ToastRegion from '#lib/ui/ToastRegion.svelte';
 	import TopBar from '#lib/ui/TopBar.svelte';
 	import { registerServiceWorker } from '#lib/ui/sw-register.ts';
@@ -10,7 +11,7 @@
 	let { children }: LayoutProps = $props();
 
 	onMount(() => {
-		if (!dev) registerServiceWorker();
+		if (!dev) registerServiceWorker(() => getApp().store.state.pages.length === 0);
 	});
 </script>
 

@@ -108,6 +108,27 @@ test.describe('page editor', () => {
 		await expect(page.getByText('Internal Error')).toHaveCount(0);
 	});
 
+	test('text: a new box starts as selected "Text" and typing replaces it', async ({ page }) => {
+		await openEditor(page, 'file=multi.pdf&page=1');
+		const box = page.getByRole('textbox', { name: 'Text on the page' });
+		const vp = page.viewportSize()!;
+		const away = () => page.mouse.click(vp.width / 2, vp.height * 0.75);
+		await chooseTool(page, 'Text');
+		await tapPage(page, 0.3, 0.2);
+		await expect(box).toBeFocused();
+		await expect(box).toHaveValue('Text');
+		expect(await box.evaluate((t: HTMLTextAreaElement) => [t.selectionStart, t.selectionEnd])).toEqual([0, 4]);
+		// Nothing typed: clicking away leaves nothing behind.
+		await away();
+		await expect(box).toHaveCount(0);
+		expect((await stamps(page)).filter((s) => s.kind === 'text')).toHaveLength(0);
+		await chooseTool(page, 'Text');
+		await tapPage(page, 0.3, 0.2);
+		await page.keyboard.type('Hi');
+		await away();
+		expect((await stamps(page)).find((s) => s.kind === 'text')!.text).toBe('Hi');
+	});
+
 	test('dragging a stamp does not redraw the page', async ({ page }, info) => {
 		test.skip(info.project.name === 'phone', 'mouse drag');
 		await openEditor(page, 'file=multi.pdf&page=1');
