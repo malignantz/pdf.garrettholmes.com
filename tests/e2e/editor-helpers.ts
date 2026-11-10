@@ -47,6 +47,9 @@ export async function tapPage(page: Page, fx: number, fy: number) {
 export async function drawOnPad(page: Page) {
 	const pad = page.locator('canvas.pad');
 	await expect(pad).toBeVisible();
+	// The dialog slides in (a bottom sheet on phones); aim only once it has landed.
+	await page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== 'running'));
+	await pad.scrollIntoViewIfNeeded();
 	const b = (await pad.boundingBox())!;
 	const x0 = b.x + b.width * 0.15;
 	const y0 = b.y + b.height * 0.6;

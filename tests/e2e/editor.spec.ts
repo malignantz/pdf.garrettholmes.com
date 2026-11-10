@@ -212,7 +212,9 @@ test.describe('page editor', () => {
 		await expect(dlg.getByLabel('Preview of the signature')).toBeVisible();
 		await dlg.getByRole('switch', { name: /Save on this device/ }).click();
 		await dlg.getByRole('button', { name: 'Use signature' }).click();
+		await expect(dlg).toBeHidden();
 		await tapPage(page, 0.5, 0.5);
+		await expect.poll(() => stamps(page).then((l) => l.length)).toBe(1);
 		const asset = await page.evaluate(() => {
 			const st = (window as unknown as { __editor: { store: { state: { assets: { width: number; height: number }[] } } } }).__editor.store.state;
 			return st.assets[0];
@@ -335,4 +337,71 @@ test('draw pad: undo stroke and clear', async ({ page }) => {
 	await expect(use).toBeDisabled();
 	await dlg.getByRole('button', { name: 'Cancel' }).click();
 	await expect(dlg).toBeHidden();
+});
+
+test('zoom: buttons and Ctrl+wheel zoom about a point and re-render sharp', async ({ page }, info) => {
+	test.skip(info.project.name === 'phone', 'zoom buttons are desktop chrome; pinch is tested below');
+	const sheet = await openEditor(page, 'file=multi.pdf&page=1');
+	const canvasWidth = () => page.locator('[data-testid=editor-page] canvas').evaluate((c: HTMLCanvasElement) => c.width);
+	const w0 = (await sheet.boundingBox())!.width;
+	const px0 = await canvasWidth();
+	await page.getByRole('button', { name: 'Zoom in' }).click();
+	await page.getByRole('button', { name: 'Zoom in' }).click();
+	expect((await sheet.boundingBox())!.width).toBeCloseTo(w0 * 1.5625, 0);
+	await expect.poll(canvasWidth).toBeGreaterThan(px0 * 1.4);
+
+	// Ctrl+wheel keeps the point under the cursor in place.
+	await page.getByRole('button', { name: /Fit page/ }).click();
+	const b = (await sheet.boundingBox())!;
+	const cx = b.x + b.width * 0.3;
+	const cy = b.y + b.height * 0.6;
+	await page.mouse.move(cx, cy);
+	await page.keyboard.down('Control');
+	await page.mouse.wheel(0, -200);
+	await page.keyboard.up('Control');
+	const z = (await sheet.boundingBox())!;
+	expect(z.width).toBeGreaterThan(b.width * 1.5);
+	expect((cx - z.x) / z.width).toBeCloseTo(0.3, 2);
+	expect((cy - z.y) / z.height).toBeCloseTo(0.6, 2);
+
+	// Placing while zoomed lands where clicked.
+	await chooseTool(page, 'Dot');
+	await page.mouse.click(cx, cy);
+	const [dot] = await stamps(page);
+	expect(dot.box!.x + dot.box!.w / 2).toBeCloseTo(0.3, 2);
+	expect(dot.box!.y + dot.box!.h / 2).toBeCloseTo(0.6, 2);
+});
+
+test('pinch-zoom with two fingers and swipe between pages (emulated touch)', async ({ page }, info) => {
+	test.skip(info.project.name !== 'phone', 'touch emulation only on the phone project');
+	const sheet = await openEditor(page, 'file=multi.pdf&page=2');
+	const cdp = await page.context().newCDPSession(page);
+	const b = (await sheet.boundingBox())!;
+	const cx = b.x + b.width / 2;
+	const cy = b.y + b.height / 2;
+	const touch = (type: 'touchStart' | 'touchMove' | 'touchEnd', pts: [number, number][]) =>
+		cdp.send('Input.dispatchTouchEvent', {
+			type,
+			touchPoints: pts.map(([x, y], id) => ({ x, y, id, radiusX: 4, radiusY: 4, force: 1 }))
+		});
+	await touch('touchStart', [
+		[cx - 40, cy],
+		[cx + 40, cy]
+	]);
+	for (let i = 1; i <= 8; i++)
+		await touch('touchMove', [
+			[cx - 40 - i * 10, cy],
+			[cx + 40 + i * 10, cy]
+		]);
+	await touch('touchEnd', []);
+	const z = (await sheet.boundingBox())!;
+	// Fingers went from 80 px apart to 240 px: three times the size.
+	expect(z.width / b.width).toBeCloseTo(3, 1);
+
+	// Back to fit with the keyboard shortcut, then swipe left for the next page.
+	await page.keyboard.press('0');
+	await touch('touchStart', [[cx + 120, cy]]);
+	for (let i = 1; i <= 6; i++) await touch('touchMove', [[cx + 120 - i * 40, cy + 2]]);
+	await touch('touchEnd', []);
+	await expect(page.getByText('3 of 6')).toBeVisible();
 });

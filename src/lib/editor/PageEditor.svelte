@@ -330,6 +330,7 @@
 			const id = store.addStamp(pid, { kind: 'text', text: '', size, color: 'black', ...textOrigin(f, size) });
 			selectedId = id;
 			editing = { id, isNew: true };
+			zoomToText(f.x, f.y, size);
 			announce('Type your text. Press Escape when done.');
 		}
 	}
@@ -605,6 +606,23 @@
 	let checkSeq = 0;
 	const editingStamp = $derived(editing ? page?.stamps.find((s) => s.id === editing!.id) : undefined);
 
+	let viewBeforeText: View | null = null;
+
+	/** Text smaller than about 14 px on screen is hard to edit (phones): zoom in on it. */
+	function zoomToText(x: number, y: number, size: number) {
+		const px = size * base.height * view.zoom;
+		const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+		if (px >= (coarse ? 14 : 9) || px <= 0) return;
+		viewBeforeText = { ...view };
+		const anchor = { x: view.panX + x * base.width * view.zoom, y: view.panY + y * base.height * view.zoom };
+		const z = clampZoom(view.zoom * (16 / px));
+		const v = zoomAt(view, base, z, anchor);
+		// Then bring the start of the text to the left third and upper part of the viewport.
+		const sx = v.panX + x * base.width * z;
+		const sy = v.panY + y * base.height * z;
+		setView({ ...v, panX: v.panX + (vpW * 0.15 - sx), panY: v.panY + (vpH * 0.3 - sy) });
+	}
+
 	function startEditing(id: string) {
 		if (!page) return;
 		const s = page.stamps.find((x) => x.id === id);
@@ -612,6 +630,7 @@
 		gestureBegin('Edit text');
 		selectedId = id;
 		editing = { id, isNew: false };
+		zoomToText(s.x, s.y, s.size);
 		badChars = '';
 	}
 
@@ -668,6 +687,10 @@
 		const ed = editing;
 		const s = page.stamps.find((x) => x.id === ed.id);
 		editing = null;
+		if (viewBeforeText) {
+			view = viewBeforeText;
+			viewBeforeText = null;
+		}
 		badChars = '';
 		const empty = !s || s.kind !== 'text' || s.text.replace(/\s/g, '') === '';
 		if (ed.isNew && empty) {
