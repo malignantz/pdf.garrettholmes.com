@@ -84,6 +84,10 @@ Pruned automatically when pages disappear. **Undo/redo restore the selection the
 `undo()`, `redo()` return whether they did anything. A new command clears the redo stack. At most
 `maxHistory` steps are kept.
 
+`undoToken` / `redoToken` are opaque identities of the next undo / redo step (or null). Save them
+when a session starts (the page editor does) and treat undo as out of scope once `undoToken` is
+back to the saved one, redo once `redoToken` is.
+
 ### Gestures and transactions (coalescing)
 
 - `beginGesture(label)` ... `commitGesture()` / `cancelGesture()`: for drags. Between begin and

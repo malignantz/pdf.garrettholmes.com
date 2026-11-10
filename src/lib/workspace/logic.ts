@@ -297,3 +297,34 @@ export function sourceLabel(s: Source | undefined): string {
 	if (s.kind === 'blank') return 'Blank page';
 	return s.name;
 }
+
+// ---------------------------------------------------------------- verification copy
+
+/**
+ * One plain sentence per verification check, for people who have never heard of
+ * qpdf or PDF.js. The engine's own wording goes in a "Details" disclosure.
+ */
+export function plainCheck(
+	c: { name: 'structure' | 'page-count' | 'page-sizes' | 'reopen' | 'encryption'; ok: boolean; detail: string },
+	pageCount: number
+): string {
+	const pages = plural(pageCount, 'page');
+	switch (c.name) {
+		case 'structure':
+			if (/metadata/i.test(c.detail)) {
+				return c.ok
+					? 'Hidden details such as author and dates are removed.'
+					: 'Some hidden details such as author or dates could not be removed.';
+			}
+			return c.ok ? 'The file is built correctly, with no errors.' : 'The file has errors in how it is built.';
+		case 'reopen':
+			return c.ok ? `It opens cleanly, all ${pages}.` : 'It did not open cleanly when we tried it.';
+		case 'page-count':
+			return c.ok ? `It has ${pages}, as arranged.` : 'It does not have the number of pages you arranged.';
+		case 'page-sizes':
+			return c.ok ? 'Every page keeps its size and orientation.' : 'Some pages came out a different size.';
+		case 'encryption':
+			if (/no password/i.test(c.detail) && c.ok) return 'It has no password, as you chose.';
+			return c.ok ? 'It opens only with your password.' : 'The password protection is not right.';
+	}
+}

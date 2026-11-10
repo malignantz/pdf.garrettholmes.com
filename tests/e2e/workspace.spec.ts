@@ -79,76 +79,8 @@ async function mouseDrag(page: Page, from: number, to: number, side: 'before' | 
 	await page.mouse.up();
 }
 
-test.describe('desktop', () => {
-	test.beforeEach(({}, info) => test.skip(!isDesktop(info.project.name), 'desktop flow'));
-
-	test('open two files, reorder by drag and keyboard, rotate, delete, undo, export', async ({ page }) => {
-		await page.goto('/');
-		await addFiles(page, 'multi.pdf', 'sizes.pdf');
-		await waitForPages(page, 12);
-		await expect(page.getByText('Added 12 pages')).toBeVisible();
-		expect(await order(page)).toEqual(['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 's1', 's2', 's3', 's4', 's5', 's6']);
-
-		// Drag sizes p2 to the very start.
-		await mouseDrag(page, 7, 0, 'before');
-		await expect.poll(() => order(page)).toEqual(['s2', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 's1', 's3', 's4', 's5', 's6']);
-
-		// Escape cancels a drag.
-		const a = (await options(page).nth(3).boundingBox())!;
-		await page.mouse.move(a.x + 20, a.y + 20);
-		await page.mouse.down();
-		await page.mouse.move(a.x + 300, a.y + 40, { steps: 6 });
-		await page.keyboard.press('Escape');
-		await page.mouse.up();
-		expect((await order(page))[3]).toBe('m3');
-
-		// Keyboard: select s5 and move it two places left with Alt+Left.
-		await options(page).nth(10).click();
-		await page.keyboard.press('Alt+ArrowLeft');
-		await page.keyboard.press('Alt+ArrowLeft');
-		await expect.poll(() => order(page)).toEqual(['s2', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 's1', 's5', 's3', 's4', 's6']);
-		await expect(options(page).nth(8)).toBeFocused();
-
-		// Rotate the selected page with R.
-		await page.keyboard.press('r');
-		await expect(options(page).nth(8)).toHaveAttribute('aria-label', /rotated 90°/);
-
-		// Delete m6 from its hover button, then undo from the toast.
-		await options(page).nth(6).hover();
-		await options(page).nth(6).locator('[data-action="delete"]').click();
-		await waitForPages(page, 11);
-		await page.getByRole('button', { name: 'Undo', exact: true }).click();
-		await waitForPages(page, 12);
-		expect((await order(page))[6]).toBe('m6');
-
-		// Delete m1 with the keyboard; undo with Ctrl+Z, redo with Ctrl+Shift+Z.
-		await options(page).nth(1).click();
-		await page.keyboard.press('Delete');
-		await waitForPages(page, 11);
-		await page.keyboard.press('Control+z');
-		await waitForPages(page, 12);
-		await page.keyboard.press('Control+Shift+z');
-		await waitForPages(page, 11);
-		const expected = ['s2', 'm2', 'm3', 'm4', 'm5', 'm6', 's1', 's5@90', 's3', 's4', 's6'];
-		expect(await order(page)).toEqual(expected);
-
-		// Undo shows its label in the tooltip / name.
-		await expect(page.getByRole('button', { name: /^Undo: Delete page/ })).toBeVisible();
-
-		const { bytes, filename } = await exportAndDownload(page);
-		expect(filename).toBe('sizes-merged.pdf');
-		const pages = await shape(bytes);
-		expect(pages).toEqual([
-			{ size: S[1], rotate: 0 },
-			...[1, 2, 3, 4, 5].map(() => ({ size: M, rotate: 0 })),
-			{ size: S[0], rotate: 0 },
-			{ size: S[4], rotate: 90 },
-			{ size: S[2], rotate: 0 },
-			{ size: S[3], rotate: 0 },
-			{ size: S[5], rotate: 0 }
-		]);
-	});
-
+// These do not depend on the viewport: they run on desktop and phone.
+test.describe('both', () => {
 	test('password-protected intake: wrong password, retry, skip', async ({ page }) => {
 		await page.goto('/');
 		await addFiles(page, 'enc-aes-256.pdf', 'enc-aes-128.pdf');
@@ -222,6 +154,78 @@ test.describe('desktop', () => {
 		expect(filename).toBe('multi-edited.pdf');
 		await expect(PDFDocument.load(bytes)).rejects.toThrow();
 		expect((await shape(bytes, 's3cret')).length).toBe(6);
+	});
+
+});
+
+test.describe('desktop', () => {
+	test.beforeEach(({}, info) => test.skip(!isDesktop(info.project.name), 'desktop flow'));
+
+	test('open two files, reorder by drag and keyboard, rotate, delete, undo, export', async ({ page }) => {
+		await page.goto('/');
+		await addFiles(page, 'multi.pdf', 'sizes.pdf');
+		await waitForPages(page, 12);
+		await expect(page.getByText('Added 12 pages')).toBeVisible();
+		expect(await order(page)).toEqual(['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 's1', 's2', 's3', 's4', 's5', 's6']);
+
+		// Drag sizes p2 to the very start.
+		await mouseDrag(page, 7, 0, 'before');
+		await expect.poll(() => order(page)).toEqual(['s2', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 's1', 's3', 's4', 's5', 's6']);
+
+		// Escape cancels a drag.
+		const a = (await options(page).nth(3).boundingBox())!;
+		await page.mouse.move(a.x + 20, a.y + 20);
+		await page.mouse.down();
+		await page.mouse.move(a.x + 300, a.y + 40, { steps: 6 });
+		await page.keyboard.press('Escape');
+		await page.mouse.up();
+		expect((await order(page))[3]).toBe('m3');
+
+		// Keyboard: select s5 and move it two places left with Alt+Left.
+		await options(page).nth(10).click();
+		await page.keyboard.press('Alt+ArrowLeft');
+		await page.keyboard.press('Alt+ArrowLeft');
+		await expect.poll(() => order(page)).toEqual(['s2', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 's1', 's5', 's3', 's4', 's6']);
+		await expect(options(page).nth(8)).toBeFocused();
+
+		// Rotate the selected page with R.
+		await page.keyboard.press('r');
+		await expect(options(page).nth(8)).toHaveAttribute('aria-label', /rotated 90°/);
+
+		// Delete m6 from its hover button, then undo from the toast.
+		await options(page).nth(6).hover();
+		await options(page).nth(6).locator('[data-action="delete"]').click();
+		await waitForPages(page, 11);
+		await page.getByRole('button', { name: 'Undo', exact: true }).click();
+		await waitForPages(page, 12);
+		expect((await order(page))[6]).toBe('m6');
+
+		// Delete m1 with the keyboard; undo with Ctrl+Z, redo with Ctrl+Shift+Z.
+		await options(page).nth(1).click();
+		await page.keyboard.press('Delete');
+		await waitForPages(page, 11);
+		await page.keyboard.press('Control+z');
+		await waitForPages(page, 12);
+		await page.keyboard.press('Control+Shift+z');
+		await waitForPages(page, 11);
+		const expected = ['s2', 'm2', 'm3', 'm4', 'm5', 'm6', 's1', 's5@90', 's3', 's4', 's6'];
+		expect(await order(page)).toEqual(expected);
+
+		// Undo shows its label in the tooltip / name.
+		await expect(page.getByRole('button', { name: /^Undo: Delete page/ })).toBeVisible();
+
+		const { bytes, filename } = await exportAndDownload(page);
+		expect(filename).toBe('sizes-merged.pdf');
+		const pages = await shape(bytes);
+		expect(pages).toEqual([
+			{ size: S[1], rotate: 0 },
+			...[1, 2, 3, 4, 5].map(() => ({ size: M, rotate: 0 })),
+			{ size: S[0], rotate: 0 },
+			{ size: S[4], rotate: 90 },
+			{ size: S[2], rotate: 0 },
+			{ size: S[3], rotate: 0 },
+			{ size: S[5], rotate: 0 }
+		]);
 	});
 
 	test('extract selected pages', async ({ page }) => {
@@ -337,11 +341,17 @@ test.describe('desktop', () => {
 		await page.keyboard.press('Escape');
 
 		await options(page).nth(2).dblclick();
-		const close = page.getByRole('button', { name: /^Close editor/ });
-		await expect(close).toBeVisible();
-		await close.click();
-		await expect(close).toBeHidden();
+		const editor = page.getByRole('dialog', { name: 'Edit page 3 of 6' });
+		await expect(editor).toBeVisible();
+		await editor.getByRole('button', { name: 'Done', exact: true }).click();
+		await expect(editor).toBeHidden();
 		await expect(options(page).nth(2)).toBeFocused();
+
+		// Enter opens the focused page too; Escape with nothing armed does not close it, Done does.
+		await page.keyboard.press('Enter');
+		await expect(editor).toBeVisible();
+		await editor.getByRole('button', { name: 'Done', exact: true }).click();
+		await expect(editor).toBeHidden();
 	});
 });
 
@@ -384,10 +394,10 @@ test.describe('phone', () => {
 
 		// A tap opens the page.
 		await options(page).nth(0).tap();
-		const close = page.getByRole('button', { name: /^Close editor/ });
-		await expect(close).toBeVisible();
-		await close.tap();
-		await expect(close).toBeHidden();
+		const editor = page.getByRole('dialog', { name: 'Edit page 1 of 6' });
+		await expect(editor).toBeVisible();
+		await editor.getByRole('button', { name: 'Done', exact: true }).tap();
+		await expect(editor).toBeHidden();
 
 		// Long-press page 2 enters selection mode; taps then toggle.
 		const p1 = await centre(page, 1);
@@ -411,9 +421,9 @@ test.describe('phone', () => {
 		await expect.poll(() => order(page)).toEqual(['s2@90', 's3', 's1', 's4', 's5', 's6']);
 		expect(Math.abs((await page.evaluate(() => scrollY)) - scrollBefore)).toBeLessThan(40);
 
-		// The long-press that started the drag left selection mode on, with the moved page selected.
-		await expect(page.getByRole('toolbar', { name: 'Selected pages' })).toContainText('1 selected');
-		await page.getByRole('toolbar', { name: 'Selected pages' }).getByRole('button', { name: 'Done' }).tap();
+		// The long-press only picked the page up: selection mode is off again afterwards.
+		await expect(page.getByRole('toolbar', { name: 'Pages' })).toBeVisible();
+		await expect(page.getByRole('option', { selected: true })).toHaveCount(0);
 
 		// Delete via the bottom bar, then undo from the toast.
 		await page.getByRole('toolbar', { name: 'Pages' }).getByRole('button', { name: 'Select' }).tap();

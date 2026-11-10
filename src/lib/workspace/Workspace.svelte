@@ -325,9 +325,22 @@
 		else store.select(id);
 	}
 
+	/** What a long-press changed, so a long-press that turns into a drag can put it back. */
+	let beforeLongPress: { mode: boolean; selection: PageId[] } | null = null;
+
 	function onlongpress(id: PageId) {
+		beforeLongPress = { mode: selectionMode, selection: [...store.state.selection] };
 		selectionMode = true;
 		if (!store.state.selection.has(id)) store.toggle(id);
+	}
+
+	function onlongpressdragend() {
+		const b = beforeLongPress;
+		beforeLongPress = null;
+		if (!b || b.mode) return;
+		// The long-press was only the way to pick the page up: leave things as they were.
+		selectionMode = false;
+		store.setSelection(b.selection.filter((id) => store.state.pages.some((p) => p.id === id)));
 	}
 
 	function onmove(ids: PageId[], slot: number) {
@@ -604,6 +617,7 @@
 			onclearselection={clearSelection}
 			onopen={openEditor}
 			{onlongpress}
+			{onlongpressdragend}
 			{onmove}
 			{onaction}
 			onfocuschange={(id) => (focusedId = id)}

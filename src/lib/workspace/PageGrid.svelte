@@ -25,6 +25,8 @@
 		onopen: (id: PageId) => void;
 		/** A long-press on touch: enter selection mode with this page. */
 		onlongpress: (id: PageId) => void;
+		/** A drag that began with a long-press ended (dropped or cancelled). */
+		onlongpressdragend?: () => void;
 		onmove: (ids: PageId[], slot: number) => void;
 		onaction: (action: 'rotate-left' | 'rotate-right' | 'delete', id: PageId) => void;
 		onfocuschange: (id: PageId) => void;
@@ -47,6 +49,7 @@
 		onclearselection,
 		onopen,
 		onlongpress,
+		onlongpressdragend,
 		onmove,
 		onaction,
 		onfocuschange,
@@ -84,6 +87,7 @@
 		preview: string | null;
 		previewAspect: number;
 		touch: boolean;
+		fromLongPress: boolean;
 	}
 
 	let press: Press | null = null;
@@ -197,6 +201,7 @@
 		const style = getComputedStyle(grid);
 		const gap = parseFloat(style.columnGap) || 16;
 		const { url, aspect } = previewOf(id);
+		const fromLongPress = press.armed;
 		dragPointer = press.pointerId;
 		if (press.timer) clearTimeout(press.timer);
 		press = null;
@@ -214,7 +219,8 @@
 			slot: -1,
 			preview: url,
 			previewAspect: aspect,
-			touch: e.pointerType !== 'mouse'
+			touch: e.pointerType !== 'mouse',
+			fromLongPress
 		};
 		suppress(10_000);
 		updateSlot();
@@ -274,6 +280,7 @@
 		if (commit && d.slot >= 0 && !isNoopMove(pages, d.set, d.slot)) onmove(d.ids, d.slot);
 		else announce(commit ? 'Pages stayed where they were.' : 'Move cancelled.');
 		suppress();
+		if (d.fromLongPress) onlongpressdragend?.();
 	}
 
 	/** Escape while dragging. Returns true when it cancelled a drag. */

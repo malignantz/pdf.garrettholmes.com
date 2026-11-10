@@ -123,6 +123,13 @@ export interface DocStore {
 	commitGesture(): void;
 	cancelGesture(): void;
 	readonly gestureActive: boolean;
+	/**
+	 * Opaque identity of the step `undo()` / `redo()` would revert next (null when
+	 * none). Save them to scope history to a session, e.g. the page editor: undo
+	 * is in scope while `undoToken` differs from the one saved at the start.
+	 */
+	readonly undoToken: object | null;
+	readonly redoToken: object | null;
 }
 
 // ---------------------------------------------------------------- internals
@@ -740,6 +747,12 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 		},
 		get isDirty() {
 			return snap.isDirty;
+		},
+		get undoToken() {
+			return undoStack[undoStack.length - 1] ?? null;
+		},
+		get redoToken() {
+			return redoStack[redoStack.length - 1] ?? null;
 		},
 		get gestureActive() {
 			return gesture !== null;

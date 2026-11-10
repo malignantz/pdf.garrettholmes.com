@@ -785,3 +785,23 @@ describe('ids', () => {
 		expect(new Set(ids(store)).size).toBe(4);
 	});
 });
+
+describe('history tokens', () => {
+	it('identify the next undo and redo step, so a session can scope its history', () => {
+		const { store } = setup(3);
+		const [p0] = ids(store);
+		const mark = store.undoToken;
+		expect(mark).not.toBeNull();
+		expect(store.redoToken).toBeNull();
+		store.rotatePages([p0], 90);
+		expect(store.undoToken).not.toBe(mark);
+		store.undo();
+		expect(store.undoToken).toBe(mark);
+		expect(store.redoToken).not.toBeNull();
+		const redoMark = store.redoToken;
+		store.redo();
+		expect(store.redoToken).toBeNull();
+		store.undo();
+		expect(store.redoToken).toBe(redoMark);
+	});
+});

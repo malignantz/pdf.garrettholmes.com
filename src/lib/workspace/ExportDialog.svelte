@@ -9,7 +9,7 @@
 	import Icon from '../ui/Icon.svelte';
 	import Progress from '../ui/Progress.svelte';
 	import Toggle from '../ui/Toggle.svelte';
-	import { defaultFilename, formatBytes, normalizeFilename, passwordProblem, plural } from './logic';
+	import { defaultFilename, formatBytes, normalizeFilename, passwordProblem, plainCheck, plural } from './logic';
 
 	interface Props {
 		open: boolean;
@@ -205,6 +205,25 @@
 	);
 </script>
 
+{#snippet checkList(checks: VerifyCheck[], pageCount: number)}
+	<ul class="checks">
+		{#each checks as c, i (i)}
+			<li class:bad={!c.ok}>
+				<Icon name={c.ok ? 'check' : 'cross'} size={18} />
+				<span>{plainCheck(c, pageCount)}</span>
+			</li>
+		{/each}
+	</ul>
+	<details class="details">
+		<summary>Details</summary>
+		<ul>
+			{#each checks as c, i (i)}
+				<li><strong>{TITLES[c.name] ?? c.name}:</strong> {c.ok ? 'passed' : 'failed'}. {c.detail}</li>
+			{/each}
+		</ul>
+	</details>
+{/snippet}
+
 <Dialog bind:open {title} width="480px" dismissable={phase.kind !== 'working'} {onclose}>
 	{#if phase.kind === 'form'}
 		<form id="export-form" class="form" onsubmit={run} novalidate>
@@ -263,14 +282,7 @@
 				{phase.filename}<br />
 				<span class="caption io">{formatBytes(phase.inputBytes)} in → {formatBytes(r.bytes.length)} out</span>
 			</p>
-			<ul class="checks">
-				{#each r.checks as c, i (i)}
-					<li class:bad={!c.ok}>
-						<Icon name={c.ok ? 'check' : 'cross'} size={18} />
-						<span><strong>{TITLES[c.name] ?? c.name}</strong> {c.detail}</span>
-					</li>
-				{/each}
-			</ul>
+			{@render checkList(r.checks, r.pageCount)}
 			{#if r.warnings.length}
 				<ul class="warnings">
 					{#each r.warnings as w, i (i)}<li><Icon name="warning" size={18} /><span>{w}</span></li>{/each}
@@ -283,14 +295,7 @@
 		<div class="failed" role="alert">
 			<p class="why"><Icon name="warning" />{err.message}</p>
 			{#if err.checks?.length}
-				<ul class="checks">
-					{#each err.checks as c, i (i)}
-						<li class:bad={!c.ok}>
-							<Icon name={c.ok ? 'check' : 'cross'} size={18} />
-							<span><strong>{TITLES[c.name] ?? c.name}</strong> {c.detail}</span>
-						</li>
-					{/each}
-				</ul>
+				{@render checkList(err.checks, plan.count)}
 			{/if}
 			<p class="caption">No file was made. Your pages are unchanged; you can try again or change the options.</p>
 		</div>
@@ -433,10 +438,6 @@
 		color: var(--danger);
 	}
 
-	.checks strong {
-		color: var(--ink);
-		font-weight: 600;
-	}
 
 	.warnings :global(.icon) {
 		color: var(--ink-soft);
@@ -455,6 +456,29 @@
 
 	.io {
 		font-weight: 400;
+	}
+
+	.details {
+		font-size: var(--text-caption);
+		color: var(--ink-soft);
+	}
+
+	.details summary {
+		width: fit-content;
+		cursor: pointer;
+		border-radius: 4px;
+	}
+
+	.details ul {
+		margin-top: var(--s-2);
+		padding-left: var(--s-4);
+		display: grid;
+		gap: var(--s-1);
+	}
+
+	.details strong {
+		color: var(--ink);
+		font-weight: 600;
 	}
 
 	.saved {

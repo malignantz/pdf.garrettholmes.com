@@ -31,6 +31,16 @@ self.addEventListener('install', (event) => {
 		(async () => {
 			const cache = await caches.open(SHELL);
 			await cache.addAll(precache);
+			// Worker chunks and assets (engine, wasm, fonts) are not in SvelteKit's
+			// manifest; the build lists them in /_app/precache.json.
+			try {
+				const res = await fetch('/_app/precache.json', { cache: 'no-store' });
+				const extra = ((await res.json()) as string[]).filter((p) => !precacheSet.has(p));
+				await cache.addAll(extra);
+				for (const p of extra) precacheSet.add(p);
+			} catch {
+				// Older build without the list: those files are cached on first use instead.
+			}
 			// First install: nothing to replace, so take over at once.
 			if (!self.registration.active) await self.skipWaiting();
 		})()
@@ -64,7 +74,7 @@ self.addEventListener('fetch', (event) => {
 async function respond(req: Request, url: URL): Promise<Response> {
 	const shell = await caches.open(SHELL);
 
-	if (precacheSet.has(url.pathname)) {
+	if (precacheSet.has(url.pathname) || url.pathname.startsWith('/_app/immutable/')) {
 		const hit = await shell.match(url.pathname);
 		if (hit) return hit;
 	}

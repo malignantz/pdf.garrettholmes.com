@@ -232,3 +232,29 @@ describe('copy', () => {
 		expect([...b]).toEqual(['1', '3', '4']);
 	});
 });
+
+describe('plainCheck', () => {
+	it('never names tools in the main line', async () => {
+		const { plainCheck } = await import('../../src/lib/workspace/logic');
+		const cases = [
+			{ name: 'structure', ok: true, detail: 'qpdf --check found no syntax or stream errors.' },
+			{ name: 'structure', ok: true, detail: 'Metadata removed: no Info dictionary and no XMP streams remain.' },
+			{ name: 'reopen', ok: true, detail: 'PDF.js opened the file and all 3 pages.' },
+			{ name: 'page-count', ok: true, detail: '3 pages, as planned.' },
+			{ name: 'page-sizes', ok: false, detail: 'Page 2 is 600 x 800.' },
+			{ name: 'encryption', ok: true, detail: 'No password, as planned.' },
+			{ name: 'encryption', ok: true, detail: 'AES-256: the file opens only with the password.' }
+		] as const;
+		const out = cases.map((c) => plainCheck(c, 3));
+		expect(out).toEqual([
+			'The file is built correctly, with no errors.',
+			'Hidden details such as author and dates are removed.',
+			'It opens cleanly, all 3 pages.',
+			'It has 3 pages, as arranged.',
+			'Some pages came out a different size.',
+			'It has no password, as you chose.',
+			'It opens only with your password.'
+		]);
+		for (const line of out) expect(line).not.toMatch(/qpdf|PDF\.js|XMP|AES/);
+	});
+});

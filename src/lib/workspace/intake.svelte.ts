@@ -79,16 +79,12 @@ export function createIntake(deps: IntakeDeps) {
 	}
 
 	async function runBatch(files: File[], jobIds: number[]) {
-		// Insert after the selection, if any; keep the batch together by anchoring
-		// to the last inserted page, so concurrent edits do not split it.
-		const s = store.state;
+		// Open every file first (in order, one at a time), then add them all in one
+		// undo step, so "Undo" takes back the whole drop.
+		const s0 = store.state;
 		let anchor: PageId | null = null;
-		const anchored = s.selection.size > 0;
-		if (anchored) {
-			for (const p of s.pages) if (s.selection.has(p.id)) anchor = p.id;
-		}
-		const insertedAt = anchor ? s.pages.findIndex((p) => p.id === anchor) + 1 : s.pages.length;
-		const added: PageId[] = [];
+		for (const p of s0.pages) if (s0.selection.has(p.id)) anchor = p.id;
+		const opened: { source: Source; name: string }[] = [];
 
 		for (let i = 0; i < files.length; i++) {
 			const file = files[i];
@@ -97,23 +93,30 @@ export function createIntake(deps: IntakeDeps) {
 			setStatus(jobId, 'opening');
 			try {
 				const source = await openFile(file, name, jobId);
-				if (source) {
-					const at = anchor ? store.state.pages.findIndex((p) => p.id === anchor) + 1 : undefined;
-					const ids = store.addSource(source, at !== undefined && at > 0 ? at : undefined);
-					if (ids.length) {
-						if (added.length === 0) deps.onFirstPages?.(ids);
-						added.push(...ids);
-						if (anchor) anchor = ids[ids.length - 1];
-					}
-					for (const note of source.notes) deps.notify({ message: `${name}: ${note}` });
-				}
+				if (source && source.pages.length) opened.push({ source, name });
 			} catch (e) {
 				deps.notify({ message: describeError(name, e), tone: 'error' });
 			} finally {
 				drop(jobId);
 			}
 		}
-		if (added.length) deps.onBatchDone({ ids: added, insertedAt, anchored });
+		if (!opened.length) return;
+
+		// Insert after the selection as it was when the drop started, if that page still exists.
+		const pages = store.state.pages;
+		const anchorAt = anchor ? pages.findIndex((p) => p.id === anchor) + 1 : 0;
+		const anchored = anchorAt > 0;
+		const insertedAt = anchored ? anchorAt : pages.length;
+		const label = opened.length === 1 ? `Add ${opened[0].source.name}` : `Add ${opened.length} files`;
+		const added: PageId[] = [];
+		store.transaction(label, () => {
+			for (const { source } of opened) added.push(...store.addSource(source, insertedAt + added.length));
+		});
+		for (const { source, name } of opened) {
+			for (const note of source.notes) deps.notify({ message: `${name}: ${note}` });
+		}
+		deps.onFirstPages?.(added);
+		deps.onBatchDone({ ids: added, insertedAt, anchored });
 	}
 
 	async function call<T>(p: Promise<T>): Promise<T> {

@@ -55,6 +55,13 @@
 	const ptSize = $derived(page ? store.displayedSize(page) : undefined);
 	const aspect = $derived(ptSize && ptSize.height > 0 ? ptSize.width / ptSize.height : 0.7727);
 	const assets = $derived(doc.state.assets);
+
+	// History is scoped to this editing session: steps from before the editor
+	// opened (e.g. a reorder in the grid) cannot be undone or redone from here.
+	const undoMark = store.undoToken;
+	const redoMark = store.redoToken;
+	const canUndoHere = $derived(doc.state.canUndo && store.undoToken !== undoMark);
+	const canRedoHere = $derived(doc.state.canRedo && store.redoToken !== redoMark);
 	const assetById = $derived(new Map(assets.map((a) => [a.id, a])));
 
 	$effect(() => {
@@ -747,12 +754,17 @@
 	function undo() {
 		finishEditing(true);
 		endNudge();
+		if (store.undoToken === undoMark) {
+			if (store.canUndo) announce('Nothing to undo on this page. Changes made before opening it can be undone in the page grid.');
+			return;
+		}
 		if (store.undo()) announce(`Undid: ${store.state.lastEvent?.label ?? ''}`);
 	}
 
 	function redo() {
 		finishEditing(true);
 		endNudge();
+		if (store.redoToken === redoMark) return;
 		if (store.redo()) announce(`Redid: ${store.state.lastEvent?.label ?? ''}`);
 	}
 
@@ -849,8 +861,8 @@
 			<IconButton icon="chevron-right" label="Next page" shortcut="PageDown" tooltip="bottom" disabled={index >= pages.length - 1} onclick={() => go(1)} />
 		</div>
 		<div class="history">
-			<IconButton icon="undo" label="Undo" shortcut="Ctrl+Z" tooltip="bottom" disabled={!doc.state.canUndo && !editing && !nudging} onclick={undo} />
-			<IconButton icon="redo" label="Redo" shortcut="Ctrl+Shift+Z" tooltip="bottom" disabled={!doc.state.canRedo} onclick={redo} />
+			<IconButton icon="undo" label="Undo" shortcut="Ctrl+Z" tooltip="bottom" disabled={!canUndoHere && !editing && !nudging} onclick={undo} />
+			<IconButton icon="redo" label="Redo" shortcut="Ctrl+Shift+Z" tooltip="bottom" disabled={!canRedoHere} onclick={redo} />
 		</div>
 		<div class="zoom">
 			<IconButton icon="zoom-out" label="Zoom out" shortcut="-" tooltip="bottom" disabled={view.zoom <= 1.0001} onclick={() => zoomBy(0.8)} />
