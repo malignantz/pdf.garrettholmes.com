@@ -378,6 +378,8 @@
 	}
 
 	function gestureBegin(label: string) {
+		clearTimeout(nudgeTimer);
+		nudging = false;
 		if (store.gestureActive) store.commitGesture();
 		store.beginGesture(label);
 	}
@@ -469,7 +471,7 @@
 	}
 
 	// ------------------------------------------------------------ keyboard on stamps
-	let nudging = false;
+	let nudging = $state(false);
 
 	function stampKey(e: KeyboardEvent, s: Stamp) {
 		if (editing?.id === s.id || !page) return;
@@ -477,6 +479,7 @@
 		if (dir) {
 			e.preventDefault();
 			e.stopPropagation();
+			clearTimeout(nudgeTimer);
 			if (!nudging) {
 				gestureBegin(`Move ${stampName(s, assets).toLowerCase().replace(/^text ".*"$/, 'text')}`);
 				nudging = true;
@@ -503,7 +506,16 @@
 		}
 	}
 
+	let nudgeTimer: ReturnType<typeof setTimeout> | undefined;
+
+	/** Arrow presses in quick succession are one undo step. */
+	function nudgeKeyUp() {
+		clearTimeout(nudgeTimer);
+		if (nudging) nudgeTimer = setTimeout(endNudge, 600);
+	}
+
 	function endNudge() {
+		clearTimeout(nudgeTimer);
 		if (nudging) {
 			nudging = false;
 			if (store.gestureActive) store.commitGesture();
@@ -516,6 +528,7 @@
 
 	// ------------------------------------------------------------ actions on the selection
 	function removeSelected() {
+		endNudge();
 		const s = selected;
 		if (!s || !page) return;
 		finishEditing(true);
@@ -531,6 +544,7 @@
 	}
 
 	function duplicateSelected() {
+		endNudge();
 		const s = selected;
 		if (!s || !page) return;
 		finishEditing(true);
@@ -550,11 +564,13 @@
 	}
 
 	function setColor(color: 'black' | 'blue' | 'red') {
+		endNudge();
 		if (selected?.kind !== 'text' || !page) return;
 		store.updateStamp(page.id, selected.id, { color });
 	}
 
 	function resizeText(factor: number) {
+		endNudge();
 		if (selected?.kind !== 'text' || !page) return;
 		const id = selected.id;
 		store.updateStamp(page.id, id, { size: Math.min(0.5, Math.max(0.004, selected.size * factor)) });
@@ -565,6 +581,7 @@
 
 	let copyOpen = $state(false);
 	function copyTo(indices: number[]) {
+		endNudge();
 		const s = selected;
 		if (!s || !page) return;
 		const name = stampName(s, assets);
@@ -763,7 +780,7 @@
 	}
 
 	function onKeyUp(e: KeyboardEvent) {
-		if (arrowDelta(e.key)) endNudge();
+		if (arrowDelta(e.key)) nudgeKeyUp();
 	}
 
 	// ------------------------------------------------------------ focus in and out
@@ -801,7 +818,7 @@
 			<IconButton icon="chevron-right" label="Next page" shortcut="PageDown" tooltip="bottom" disabled={index >= pages.length - 1} onclick={() => go(1)} />
 		</div>
 		<div class="history">
-			<IconButton icon="undo" label="Undo" shortcut="Ctrl+Z" tooltip="bottom" disabled={!doc.state.canUndo && !editing} onclick={undo} />
+			<IconButton icon="undo" label="Undo" shortcut="Ctrl+Z" tooltip="bottom" disabled={!doc.state.canUndo && !editing && !nudging} onclick={undo} />
 			<IconButton icon="redo" label="Redo" shortcut="Ctrl+Shift+Z" tooltip="bottom" disabled={!doc.state.canRedo} onclick={redo} />
 		</div>
 		<div class="zoom">

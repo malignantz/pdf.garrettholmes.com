@@ -1,0 +1,338 @@
+import { test, expect } from './fixtures';
+import { chooseTool, makeSignature, openEditor, pageBox, stamps, tapPage, drawOnPad } from './editor-helpers';
+
+test.describe('page editor', () => {
+	test('sign, add text and a check, move, resize, undo', async ({ page }) => {
+		await openEditor(page, 'file=multi.pdf&page=1');
+		await expect(page.getByText('1 of 6')).toBeVisible();
+
+		// Signature: draw, place.
+		await makeSignature(page, { save: false });
+		await tapPage(page, 0.5, 0.4);
+		await expect(page.getByTestId('live')).toHaveText('Signature placed.');
+		let list = await stamps(page);
+		expect(list).toHaveLength(1);
+		const sig = list[0];
+		expect(sig.kind).toBe('image');
+		expect(sig.box!.w).toBeCloseTo(0.25, 5);
+		expect(sig.box!.x + sig.box!.w / 2).toBeCloseTo(0.5, 2);
+		expect(sig.box!.y + sig.box!.h / 2).toBeCloseTo(0.4, 2);
+		// The tool disarmed after one signature.
+		await expect(page.getByRole('button', { name: 'Signature', exact: true })).toHaveAttribute('aria-pressed', 'false');
+
+		// Text.
+		await chooseTool(page, 'Text');
+		await tapPage(page, 0.15, 0.7);
+		await expect(page.getByRole('textbox', { name: 'Text on the page' })).toBeFocused();
+		await page.keyboard.type('Jane Doe');
+		await page.keyboard.press('Enter');
+		await page.keyboard.type('Line two');
+		await page.keyboard.press('Escape');
+		list = await stamps(page);
+		const text = list.find((s) => s.kind === 'text')!;
+		expect(text.text).toBe('Jane Doe\nLine two');
+		expect(text.x).toBeCloseTo(0.15, 2);
+
+		// Check marks: the tool stays armed for several.
+		await chooseTool(page, 'Check');
+		await tapPage(page, 0.1, 0.1);
+		await tapPage(page, 0.2, 0.1);
+		await page.keyboard.press('Escape');
+		list = await stamps(page);
+		expect(list.filter((s) => s.kind === 'mark')).toHaveLength(2);
+
+		// Move the signature by dragging.
+		const b = await pageBox(page);
+		const before = (await stamps(page)).find((s) => s.id === sig.id)!.box!;
+		const cx = b.x + (before.x + before.w / 2) * b.width;
+		const cy = b.y + (before.y + before.h / 2) * b.height;
+		await page.mouse.move(cx, cy);
+		await page.mouse.down();
+		await page.mouse.move(cx + 20, cy + 10, { steps: 4 });
+		await page.mouse.move(cx + 40, cy + 20, { steps: 4 });
+		await page.mouse.up();
+		const moved = (await stamps(page)).find((s) => s.id === sig.id)!.box!;
+		expect(moved.x - before.x).toBeCloseTo(40 / b.width, 2);
+		expect(moved.y - before.y).toBeCloseTo(20 / b.height, 2);
+		expect(moved.w).toBeCloseTo(before.w, 6);
+
+		// Resize from the bottom-right handle: aspect kept, top-left fixed.
+		const handle = page.locator(`[data-stamp="${sig.id}"] [data-handle="se"]`);
+		const hb = (await handle.boundingBox())!;
+		await page.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2);
+		await page.mouse.down();
+		await page.mouse.move(hb.x + hb.width / 2 + 60, hb.y + hb.height / 2 + 5, { steps: 6 });
+		await page.mouse.up();
+		const resized = (await stamps(page)).find((s) => s.id === sig.id)!.box!;
+		expect(resized.w).toBeGreaterThan(moved.w * 1.2);
+		expect(resized.x).toBeCloseTo(moved.x, 6);
+		expect(resized.y).toBeCloseTo(moved.y, 6);
+		expect(resized.w / resized.h).toBeCloseTo(moved.w / moved.h, 4);
+
+		// Undo: one step per drag.
+		await page.getByRole('button', { name: 'Undo' }).click();
+		expect((await stamps(page)).find((s) => s.id === sig.id)!.box).toEqual(moved);
+		await page.keyboard.press('Control+z');
+		expect((await stamps(page)).find((s) => s.id === sig.id)!.box).toEqual(before);
+		await page.keyboard.press('Control+Shift+z');
+		expect((await stamps(page)).find((s) => s.id === sig.id)!.box).toEqual(moved);
+
+		// Delete with the keyboard.
+		await page.locator(`[data-stamp="${sig.id}"]`).focus();
+		await page.keyboard.press('Delete');
+		expect((await stamps(page)).some((s) => s.id === sig.id)).toBe(false);
+		await page.keyboard.press('Control+z');
+		expect((await stamps(page)).some((s) => s.id === sig.id)).toBe(true);
+	});
+
+	test('text: characters the font cannot draw are shown and can be removed', async ({ page }) => {
+		await openEditor(page, 'file=multi.pdf&page=1');
+		await chooseTool(page, 'Text');
+		await tapPage(page, 0.3, 0.3);
+		await page.keyboard.type('Hi 中');
+		await expect(page.locator('#bad-chars')).toContainText('中');
+		await page.keyboard.press('Escape');
+		// Still editing: the text was not accepted.
+		await expect(page.getByRole('textbox', { name: 'Text on the page' })).toBeVisible();
+		await page.getByRole('button', { name: 'Remove them' }).click();
+		await page.getByRole('button', { name: 'Done editing' }).click();
+		const t = (await stamps(page)).find((s) => s.kind === 'text')!;
+		expect(t.text).toBe('Hi ');
+	});
+
+	test('keyboard: tools place at the centre, arrows nudge, page keys navigate', async ({ page }) => {
+		await openEditor(page, 'file=multi.pdf&page=2');
+		const tool = page.getByRole('button', { name: 'Cross', exact: true });
+		await tool.focus();
+		await page.keyboard.press('Enter');
+		const [mark] = await stamps(page, 1);
+		expect(mark.kind).toBe('mark');
+		await expect(page.locator(`[data-stamp="${mark.id}"]`)).toBeFocused();
+		await page.keyboard.press('Shift+ArrowRight');
+		await page.keyboard.press('Shift+ArrowRight');
+		const after = (await stamps(page, 1))[0];
+		expect(after.box!.x - mark.box!.x).toBeCloseTo(0.04, 5);
+		// Both key presses were one undo step.
+		await page.keyboard.press('Control+z');
+		expect((await stamps(page, 1))[0].box).toEqual(mark.box);
+		await page.keyboard.press('Escape');
+		await page.keyboard.press('PageDown');
+		await expect(page.getByText('3 of 6')).toBeVisible();
+		await page.getByRole('button', { name: 'Previous page' }).click();
+		await expect(page.getByText('2 of 6')).toBeVisible();
+	});
+
+	test('copy to pages is one undo step', async ({ page }) => {
+		await openEditor(page, 'file=multi.pdf&page=1');
+		await chooseTool(page, 'Dot');
+		await tapPage(page, 0.9, 0.9);
+		await page.keyboard.press('Escape');
+		const [dot] = await stamps(page, 0);
+		await page.locator(`[data-stamp="${dot.id}"]`).click();
+		await page.getByRole('button', { name: 'Copy to pages…' }).click();
+		const dlg = page.getByRole('dialog', { name: 'Copy to pages' });
+		await dlg.getByRole('radio', { name: /^Pages/ }).check();
+		await dlg.getByRole('spinbutton', { name: 'From page' }).fill('2');
+		await dlg.getByRole('spinbutton', { name: 'To page' }).fill('4');
+		await dlg.getByRole('button', { name: 'Copy' }).click();
+		const counts = await page.evaluate(() =>
+			(window as unknown as { __editor: { store: { state: { pages: { stamps: unknown[] }[] } } } }).__editor.store.state.pages.map((p) => p.stamps.length)
+		);
+		expect(counts).toEqual([1, 1, 1, 1, 0, 0]);
+		await page.keyboard.press('Control+z');
+		const after = await page.evaluate(() =>
+			(window as unknown as { __editor: { store: { state: { pages: { stamps: unknown[] }[] } } } }).__editor.store.state.pages.map((p) => p.stamps.length)
+		);
+		expect(after).toEqual([1, 0, 0, 0, 0, 0]);
+	});
+
+	test('saved signature survives a reload, is reused in one tap, and can be deleted', async ({ page }) => {
+		await openEditor(page, 'file=multi.pdf&page=1');
+		await makeSignature(page, { save: true });
+		await tapPage(page, 0.5, 0.5);
+		expect(await stamps(page)).toHaveLength(1);
+
+		await page.reload();
+		await openEditor(page, 'file=multi.pdf&page=1');
+		await chooseTool(page, 'Signature');
+		const dlg = page.getByRole('dialog', { name: 'Add signature' });
+		await expect(dlg.getByText('Saved on this device')).toBeVisible();
+		await expect(dlg.getByText('never uploaded')).toBeVisible();
+		await dlg.getByRole('button', { name: 'Use saved signature 1' }).click();
+		await expect(dlg).toBeHidden();
+		await tapPage(page, 0.4, 0.8);
+		const list = await stamps(page);
+		expect(list).toHaveLength(1);
+		expect(list[0].kind).toBe('image');
+
+		await chooseTool(page, 'Signature');
+		await dlg.getByRole('button', { name: 'Delete saved signature 1' }).click();
+		await expect(dlg.getByText('Saved on this device')).toBeHidden();
+		await page.keyboard.press('Escape');
+		await page.reload();
+		await openEditor(page, 'file=multi.pdf&page=1');
+		await chooseTool(page, 'Signature');
+		await expect(dlg.getByRole('button', { name: 'Use saved signature 1' })).toHaveCount(0);
+	});
+
+	test('done closes the editor and returns focus to the opener', async ({ page }) => {
+		await openEditor(page, 'file=multi.pdf&page=1');
+		await page.getByRole('button', { name: 'Done', exact: true }).click();
+		await expect(page.getByTestId('editor-page')).toBeHidden();
+		const thumb = page.getByRole('button', { name: 'Edit page 3' });
+		await thumb.click();
+		await expect(page.getByText('3 of 6')).toBeVisible();
+		await page.getByRole('button', { name: 'Done', exact: true }).click();
+		await expect(thumb).toBeFocused();
+	});
+
+	test('upload: a photo of a signature, with the paper removed', async ({ page }) => {
+		await openEditor(page, 'file=multi.pdf&page=1');
+		// A grey "photo" with dark ink, made in the page.
+		const png = await page.evaluate(async () => {
+			const c = document.createElement('canvas');
+			c.width = 400;
+			c.height = 160;
+			const ctx = c.getContext('2d')!;
+			ctx.fillStyle = 'rgb(225 222 215)';
+			ctx.fillRect(0, 0, 400, 160);
+			ctx.strokeStyle = 'rgb(30 30 40)';
+			ctx.lineWidth = 6;
+			ctx.beginPath();
+			ctx.moveTo(60, 100);
+			ctx.bezierCurveTo(120, 20, 200, 160, 340, 60);
+			ctx.stroke();
+			const b = await new Promise<Blob | null>((r) => c.toBlob(r, 'image/png'));
+			return [...new Uint8Array(await b!.arrayBuffer())];
+		});
+		await chooseTool(page, 'Signature');
+		const dlg = page.getByRole('dialog', { name: 'Add signature' });
+		await dlg.getByRole('radio', { name: 'Upload a photo' }).click();
+		await dlg.locator('input[type=file]').setInputFiles({ name: 'sig.png', mimeType: 'image/png', buffer: Buffer.from(png) });
+		await expect(dlg.getByLabel('Preview of the signature')).toBeVisible();
+		await dlg.getByRole('switch', { name: /Save on this device/ }).click();
+		await dlg.getByRole('button', { name: 'Use signature' }).click();
+		await tapPage(page, 0.5, 0.5);
+		const asset = await page.evaluate(() => {
+			const st = (window as unknown as { __editor: { store: { state: { assets: { width: number; height: number }[] } } } }).__editor.store.state;
+			return st.assets[0];
+		});
+		// Cropped to the ink (about 280 x 90 px plus stroke), not the 400 x 160 photo.
+		expect(asset.width).toBeLessThan(320);
+		expect(asset.height).toBeLessThan(120);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Preview vs export: what the editor shows must be what the exported PDF draws.
+
+interface Bbox {
+	x0: number;
+	y0: number;
+	x1: number;
+	y1: number;
+}
+
+/** Bounding boxes of blue ink in the top half and the bottom half of an image, as fractions. */
+async function blueBoxes(page: import('@playwright/test').Page, dataUrl: string): Promise<{ top: Bbox | null; bottom: Bbox | null }> {
+	return page.evaluate(async (url) => {
+		const img = new Image();
+		img.src = url;
+		await img.decode();
+		const c = document.createElement('canvas');
+		c.width = img.naturalWidth;
+		c.height = img.naturalHeight;
+		const ctx = c.getContext('2d', { willReadFrequently: true })!;
+		ctx.drawImage(img, 0, 0);
+		const { data, width, height } = ctx.getImageData(0, 0, c.width, c.height);
+		const boxes = [null, null] as (null | { x0: number; y0: number; x1: number; y1: number })[];
+		for (let y = 0; y < height; y++)
+			for (let x = 0; x < width; x++) {
+				const i = (y * width + x) * 4;
+				const r = data[i];
+				const g = data[i + 1];
+				const b = data[i + 2];
+				if (!(b - r > 45 && b - g > 25)) continue;
+				const k = y < height / 2 ? 0 : 1;
+				const bb = (boxes[k] ??= { x0: x, y0: y, x1: x, y1: y });
+				bb.x0 = Math.min(bb.x0, x);
+				bb.y0 = Math.min(bb.y0, y);
+				bb.x1 = Math.max(bb.x1, x + 1);
+				bb.y1 = Math.max(bb.y1, y + 1);
+			}
+		const norm = (bb: (typeof boxes)[number]) =>
+			bb && { x0: bb.x0 / width, y0: bb.y0 / height, x1: bb.x1 / width, y1: bb.y1 / height };
+		return { top: norm(boxes[0]), bottom: norm(boxes[1]) };
+	}, dataUrl);
+}
+
+const CASES = [
+	{ name: 'rotation 0', query: 'file=multi.pdf&page=1' },
+	{ name: 'user rotation 90', query: 'file=multi.pdf&page=1&rotate=90' },
+	{ name: 'intrinsic /Rotate 90', query: 'file=rotated.pdf&page=2' },
+	{ name: 'CropBox offset', query: 'file=cropbox.pdf&page=2' },
+	{ name: 'CropBox offset + /Rotate 270 + user 180', query: 'file=cropbox.pdf&page=5&rotate=180' }
+];
+
+for (const c of CASES) {
+	test(`preview matches export: ${c.name}`, async ({ page }, info) => {
+		const pageNo = Number(/page=(\d+)/.exec(c.query)![1]);
+		const sheet = await openEditor(page, c.query);
+
+		await makeSignature(page, { ink: 'Blue', save: false });
+		await tapPage(page, 0.4, 0.25);
+
+		await chooseTool(page, 'Text');
+		await tapPage(page, 0.2, 0.72);
+		await page.keyboard.type('Signed Hq 2026');
+		await page.keyboard.press('Enter');
+		await page.keyboard.type('Wy line two');
+		await page.keyboard.press('Escape');
+		await page.getByRole('radio', { name: 'Blue' }).click();
+		// Larger text gives a sharper measurement.
+		await page.getByRole('button', { name: 'Larger text' }).click();
+		await page.getByRole('button', { name: 'Larger text' }).click();
+		await page.keyboard.press('Escape');
+		await page.locator('body').evaluate((el) => (document.activeElement as HTMLElement | null)?.blur());
+		await page.mouse.move(0, 0);
+		// Let the sharp re-render and the font settle.
+		await page.evaluate(() => document.fonts.ready);
+		await page.waitForTimeout(400);
+
+		const shot = await sheet.screenshot({ scale: 'css' });
+		const preview = await blueBoxes(page, `data:image/png;base64,${shot.toString('base64')}`);
+		const b = await pageBox(page);
+		const exported = await page.evaluate(
+			({ i, w }) => (window as unknown as { __editor: { exportPage: (i: number, w: number) => Promise<{ dataUrl: string }> } }).__editor.exportPage(i, w),
+			{ i: pageNo - 1, w: Math.round(b.width * 2) }
+		);
+		const out = await blueBoxes(page, exported.dataUrl);
+
+		expect(preview.top, 'signature visible in preview').not.toBeNull();
+		expect(preview.bottom, 'text visible in preview').not.toBeNull();
+		expect(out.top, 'signature in export').not.toBeNull();
+		expect(out.bottom, 'text in export').not.toBeNull();
+		let worst = 0;
+		for (const k of ['top', 'bottom'] as const)
+			for (const e of ['x0', 'y0', 'x1', 'y1'] as const) worst = Math.max(worst, Math.abs(preview[k]![e] - out[k]![e]));
+		info.annotations.push({ type: 'max-error', description: `${(worst * 100).toFixed(2)}% of page size` });
+		console.log(`[${info.project.name}] ${c.name}: max bbox error ${(worst * 100).toFixed(3)}% of page`);
+		expect(worst).toBeLessThan(0.01);
+	});
+}
+
+test('draw pad: undo stroke and clear', async ({ page }) => {
+	await openEditor(page, 'file=multi.pdf&page=1');
+	await chooseTool(page, 'Initials');
+	const dlg = page.getByRole('dialog', { name: 'Add initials' });
+	const use = dlg.getByRole('button', { name: 'Use initials' });
+	await expect(use).toBeDisabled();
+	await drawOnPad(page);
+	await expect(use).toBeEnabled();
+	await dlg.getByRole('button', { name: 'Undo stroke' }).click();
+	await expect(use).toBeEnabled();
+	await dlg.getByRole('button', { name: 'Clear' }).click();
+	await expect(use).toBeDisabled();
+	await dlg.getByRole('button', { name: 'Cancel' }).click();
+	await expect(dlg).toBeHidden();
+});
