@@ -1,0 +1,20 @@
+{
+	"name": "PDF Workspace",
+	"short_name": "PDF Workspace",
+	"description": "Merge, reorder, rotate, sign and type on PDFs. Files stay on your device.",
+	"id": "/",
+	"start_url": "/",
+	"scope": "/",
+	"display": "standalone",
+	"orientation": "any",
+	"background_color": "#ece8de",
+	"theme_color": "#fbfaf6",
+	"categories": ["productivity", "utilities"],
+	"icons": [
+		{ "src": "/favicon.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any" },
+		{ "src": "/icon-192.png", "type": "image/png", "sizes": "192x192", "purpose": "any" },
+		{ "src": "/icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "any" },
+		{ "src": "/icon-maskable-192.png", "type": "image/png", "sizes": "192x192", "purpose": "maskable" },
+		{ "src": "/icon-maskable-512.png", "type": "image/png", "sizes": "512x512", "purpose": "maskable" }
+	]
+}
