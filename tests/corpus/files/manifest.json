@@ -291,5 +291,19 @@
 			80
 		],
 		"alpha": true
+	},
+	"shrink-photos.pdf": {
+		"pages": 12,
+		"label": "photos",
+		"note": "p1 RGB JPEG 300ppi; p2 Flate RGB photo; p3 grey scan JPEG; p4 rotated; p5 one image at two sizes; p6-8 reuse p1 image; p9 image in a Form XObject; p10 ICC wide-gamut JPEG; p11 Flate photo with SMask; p12 flat line art (Flate)"
+	},
+	"shrink-skips.pdf": {
+		"pages": 6,
+		"label": "skips",
+		"note": "p1 1-bit scan; p2 CMYK JPEG; p3 Indexed; p4 tiny icons; p5 colour-key /Mask, stencil /Mask, ImageMask; p6 16-bit and /Decode [1 0]"
+	},
+	"shrink-text.pdf": {
+		"pages": 3,
+		"label": "text"
 	}
 }
