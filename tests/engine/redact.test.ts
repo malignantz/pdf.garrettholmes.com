@@ -320,16 +320,31 @@ describe('redaction: fonts and forms', () => {
 		}
 	}, T);
 
-	it('removes a form field under a box with its value; other fields stay (forms stage not merged yet)', async () => {
-		// form.pdf: text field "name" = "Ada Lovelace" at (72, 600, 300×24), checkbox "agree" at (72, 560).
+	it('flattens every field when a box exists: the redacted value is gone everywhere, the other field is still drawn', async () => {
+		// form.pdf: text field "name" = "Ada Lovelace" at (72, 600, 300×24), checkbox "agree" (ticked) at (72, 560, 18×18).
 		const src = await openCorpus('form.pdf');
 		const res = await exportPages([ref(src, 0, 0, [redact(frac([70, 598, 380, 626]))])], [src]);
+		expect(res.checks.every((c) => c.ok)).toBe(true);
 		const raw = await expanded(res.bytes);
-		expect(findIn(raw, 'Ada Lovelace')).toBe(false);
-		expect(findIn(raw, 'agree')).toBe(true);
+		// No form left: no widgets, no AcroForm, no field names.
+		expect(raw.includes('/AcroForm')).toBe(false);
+		expect(raw.includes('/Widget')).toBe(false);
+		expect(raw.includes('/FT')).toBe(false);
 		const m = await mupdf();
 		const doc = new m.PDFDocument(res.bytes);
-		expect(doc.loadPage(0).getWidgets().map((w) => w.getName())).toEqual(['agree']);
+		expect(doc.loadPage(0).getWidgets()).toEqual([]);
+		// The value cannot be found in any spelling, nor in either engine's text.
+		for (const s of ['Ada Lovelace', 'Lovelace']) {
+			expect(findIn(raw, s), s).toBe(false);
+			expect((await mupdfTexts(res.bytes))[0], s).not.toContain(s);
+			expect((await pageTexts(res.bytes))[0], s).not.toContain(s);
+		}
+		// The unredacted ticked checkbox was baked into the page and is still drawn.
+		const r = await render(res.bytes, 0, 2);
+		const box = frac([72, 560, 90, 578]);
+		expect(r.black({ x: box.x - 0.004, y: box.y - 0.004, w: box.w + 0.008, h: box.h + 0.008 })).toBeGreaterThan(0.03);
+		// ...and the redacted field's area is a solid black box.
+		expect(r.black(frac([70, 598, 380, 626]))).toBe(1);
 	}, T);
 });
 

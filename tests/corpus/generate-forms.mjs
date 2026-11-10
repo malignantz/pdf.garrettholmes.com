@@ -328,6 +328,26 @@ async function needapp() {
 	return save(doc);
 }
 
+// --- forms-dv.pdf: fields with /DV (default values), one page ----------------------------
+// 'dvboth' has /V and a different /DV; 'dvonly' has only /DV. Both rects are listed in the manifest.
+export const DV_RECTS = { dvboth: [72, 600, 372, 624], dvonly: [72, 540, 372, 564] };
+async function dv() {
+	const { doc, font } = await newDoc();
+	const p = doc.addPage([612, 792]);
+	label(p, font, 'dv p1');
+	const f = doc.getForm();
+	for (const [name, r] of Object.entries(DV_RECTS)) {
+		const t = f.createTextField(name);
+		t.addToPage(p, { x: r[0], y: r[1], width: r[2] - r[0], height: r[3] - r[1], font, borderWidth: 1 });
+	}
+	const both = f.getTextField('dvboth');
+	both.setText('Current-Value-One');
+	both.acroField.dict.set(N('DV'), PDFString.of('DEFAULT-SECRET-ONE'));
+	const only = f.getTextField('dvonly');
+	only.acroField.dict.set(N('DV'), PDFString.of('DEFAULT-SECRET-TWO'));
+	return save(doc);
+}
+
 export default async function generateForms({ write, qpdf = runQpdf }) {
 	const kindsBytes = await kinds();
 	write('forms-kinds.pdf', kindsBytes, {
@@ -338,6 +358,7 @@ export default async function generateForms({ write, qpdf = runQpdf }) {
 	});
 	write('forms-calc.pdf', await calc(), { pages: 1, label: 'calc', calculated: ['total'], formatted: ['price', 'date'] });
 	write('forms-geometry.pdf', await geometry(), { pages: GEOMETRY.length, label: 'geometry', pagesGeometry: GEOMETRY, rects: GEOMETRY_RECTS });
+	write('forms-dv.pdf', await dv(), { pages: 1, label: 'dv', rects: DV_RECTS, dv: { dvboth: 'DEFAULT-SECRET-ONE', dvonly: 'DEFAULT-SECRET-TWO' } });
 	write('forms-xfa.pdf', await xfa(), { pages: 1, label: 'xfa', expect: 'XFA: hasForm false, note' });
 	write('forms-needapp.pdf', await needapp(), { pages: 1, label: 'needapp' });
 	write(

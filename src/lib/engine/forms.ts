@@ -37,7 +37,7 @@
  * field gets the answer.
  */
 
-import type { FormField, FormValue, FormValues, FormWidget, Rotation, Source, VerifyCheck } from '../core/types';
+import type { FormField, FormValue, FormValues, FormWidget, Rotation, Source, StampBox, VerifyCheck } from '../core/types';
 import type { EngineDeps } from './deps';
 import { EngineError } from './errors';
 import { displayedUserSize, normalizeRotation, visibleBox, type Box } from './geometry';
@@ -60,6 +60,11 @@ export interface FormsContext {
 	formValues: FormValues;
 	/** Turn fields into page content: options.flattenForms, or forced because the plan has a redaction. */
 	flatten: boolean;
+	/**
+	 * Redaction boxes per output page (fractions of the displayed page). A flattened answer
+	 * under one is meant to be gone, so the final check does not look for it on the page.
+	 */
+	redactions?: StampBox[][];
 }
 
 export const XFA_NOTE = 'This is an XFA form. Its fields cannot be filled here.';
@@ -1061,7 +1066,22 @@ export async function verifyForms(
 				if (((await page.getAnnotations()) as PdfjsAnnotation[]).some((a) => a.subtype === 'Widget')) {
 					problems.push(`page ${i + 1} still has form fields (PDF.js)`);
 				}
-				const mine = expected.filter((e) => e.page === i && e.rec.visible && squash(shownText(e.answer)) !== '');
+				const boxes = ctx.redactions?.[i] ?? [];
+				let frame: { box: Box; rotation: Rotation } | null = null;
+				if (boxes.length) {
+					const pobj = doc.loadPage(i).getObject();
+					const rot = pobj.getInheritable('Rotate');
+					frame = {
+						box: visibleBox(numbers(pobj.getInheritable('MediaBox')), numbers(pobj.getInheritable('CropBox'))),
+						rotation: normalizeRotation(rot.isNumber() ? rot.asNumber() : 0)
+					};
+				}
+				// An answer whose widget touches a redaction box is meant to be gone from the page.
+				const redacted = (e: Expected) => {
+					const wb = frame && e.rec.rect ? widgetBox(e.rec.rect, frame.box, frame.rotation) : null;
+					return wb !== null && boxes.some((b) => b.x < wb.x + wb.w && wb.x < b.x + b.w && b.y < wb.y + wb.h && wb.y < b.y + b.h);
+				};
+				const mine = expected.filter((e) => e.page === i && e.rec.visible && squash(shownText(e.answer)) !== '' && !redacted(e));
 				if (mine.length === 0) continue;
 				const items = (await page.getTextContent()).items.flatMap((it) =>
 					'str' in it ? [{ str: it.str, x: it.transform[4] as number, y: it.transform[5] as number }] : []
