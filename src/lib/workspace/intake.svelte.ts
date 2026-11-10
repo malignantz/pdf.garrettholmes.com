@@ -35,6 +35,8 @@ export interface IntakeDeps {
 }
 
 const MAX_IMAGE_PIXELS = 100_000_000;
+/** The "this PDF has a form" note is shown once per visit. */
+let formNoteShown = false;
 
 export function createIntake(deps: IntakeDeps) {
 	const { store, engine } = deps;
@@ -114,6 +116,11 @@ export function createIntake(deps: IntakeDeps) {
 		});
 		for (const { source, name } of opened) {
 			for (const note of source.notes) deps.notify({ message: `${name}: ${note}` });
+		}
+		const form = opened.find((o) => o.source.hasForm);
+		if (form && !formNoteShown) {
+			formNoteShown = true;
+			deps.notify({ message: `${form.name} has a form you can fill in. Open a page marked “Form” to fill it.` });
 		}
 		deps.onFirstPages?.(added);
 		deps.onBatchDone({ ids: added, insertedAt, anchored });

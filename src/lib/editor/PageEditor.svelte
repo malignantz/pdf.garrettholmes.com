@@ -8,7 +8,7 @@
 	// date and marks (placed by a tap), highlight and redaction boxes (drawn by a
 	// drag). Zoom/pan, page navigation, undo/redo through the store.
 	import { flushSync, onMount, tick, untrack } from 'svelte';
-	import type { Asset, HighlightColor, PageId, PageRef, Stamp, StampBox } from '../core/types';
+	import type { Asset, FormField, FormValue, HighlightColor, PageId, PageRef, Stamp, StampBox } from '../core/types';
 	import { getApp } from '../app';
 	import { useDocStore } from '../doc/store.svelte';
 	import type { NewStamp } from '../doc/store';
@@ -21,6 +21,9 @@
 	import StampShape from './StampShape.svelte';
 	import SignaturePad from './SignaturePad.svelte';
 	import CopyDialog from './CopyDialog.svelte';
+	import FormLayer from './FormLayer.svelte';
+	import { formFieldsOf } from './form-fields.svelte';
+	import { panToReveal, redactionEcho } from './form-view';
 	import { ensureStampFont, stampName, cssColor, HIGHLIGHT_COLORS, HIGHLIGHT_CSS, paintOrder } from './stamp-view';
 	import { stampForPage } from './copy';
 	import {
@@ -173,9 +176,23 @@
 		return { m: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, d: Math.hypot(a.x - b.x, a.y - b.y) };
 	}
 
+	/** The event started on a form field's control (or a locked field). */
+	const onField = (t: EventTarget | null) => t instanceof Element && !!t.closest('[data-form-slot]');
+	let downOnField = false;
+
 	function vpDown(e: PointerEvent) {
 		if (e.pointerType === 'mouse' && e.button !== 0) return;
-		vp!.setPointerCapture?.(e.pointerId);
+		const field = onField(e.target);
+		// A mouse on a field is the field's: it focuses, clicks and selects text natively.
+		if (field && e.pointerType === 'mouse') {
+			if (editing) finishEditing(true);
+			selectedId = null;
+			return;
+		}
+		// A finger on a field still pans and pinches, so it is not captured: a plain tap
+		// reaches the control as usual and focuses it.
+		if (!field) vp!.setPointerCapture?.(e.pointerId);
+		if (pointers.size === 0) downOnField = field;
 		pointers.set(e.pointerId, vpPoint(e));
 		if (pointers.size === 1) {
 			const p = vpPoint(e);
@@ -217,7 +234,12 @@
 		if (!pointers.has(e.pointerId)) return;
 		const p = vpPoint(e);
 		pointers.delete(e.pointerId);
-		if (pmode === 'tap') onTap(toFraction(e));
+		if (pmode === 'tap') {
+			if (downOnField) {
+				if (editing) finishEditing(true);
+				selectedId = null;
+			} else onTap(toFraction(e));
+		}
 		else if (pmode === 'draw') finishDraw(toFraction(e));
 		else if (pmode === 'swipe') {
 			const dx = p.x - pstart.x;
@@ -672,7 +694,7 @@
 	 * from the text box just opened to the viewport, and typing would go nowhere.
 	 */
 	function keepTextFocus(e: MouseEvent) {
-		if (editing && e.target !== textarea) e.preventDefault();
+		if (editing && e.target !== textarea && !onField(e.target)) e.preventDefault();
 	}
 
 	function viewportFocus() {
@@ -892,6 +914,80 @@
 		if (page?.stamps.some((s) => s.kind === 'text') || editing) void ensureStampFont();
 	});
 
+	// ------------------------------------------------------------ form fields
+	const fields = $derived<readonly FormField[]>(formFieldsOf(app.engine, source) ?? []);
+	const formVals = $derived(source ? doc.state.formValues[source.id] : undefined);
+	/** The answers the page bitmap was last drawn with (see FormLayer). */
+	let drawnVals = $state.raw<Readonly<Record<string, FormValue>> | undefined>(undefined);
+	const groupId = `pf${Math.random().toString(36).slice(2, 8)}`;
+	/** A field is focused: the view may be panned off its usual place to keep it in sight. */
+	let fieldFocused = false;
+	let focusedBox: StampBox | null = null;
+
+	function setField(field: FormField, value: FormValue) {
+		if (!source) return;
+		if (editing) finishEditing(true);
+		endNudge();
+		store.setFormValue(source.id, field.name, value);
+	}
+
+	/** Visible part of the viewport, in viewport px: the on-screen keyboard can cover its bottom. */
+	function visibleArea() {
+		const r = vp!.getBoundingClientRect();
+		const vv = window.visualViewport;
+		const bottom = vv ? Math.min(r.height, vv.offsetTop + vv.height - r.top) : r.height;
+		const top = vv ? Math.max(0, vv.offsetTop - r.top) : 0;
+		return { left: 0, top, right: r.width, bottom: Math.max(top + 1, bottom) };
+	}
+
+	function revealField(box: StampBox) {
+		if (!vp) return;
+		const next = panToReveal(view, base, box, visibleArea(), 12);
+		if (next !== view) view = next;
+	}
+
+	function onFieldFocus(box: StampBox) {
+		if (editing) finishEditing(true);
+		endNudge();
+		selectedId = null;
+		fieldFocused = true;
+		focusedBox = box;
+		revealField(box);
+	}
+
+	function onFieldBlur() {
+		fieldFocused = false;
+		focusedBox = null;
+		// Leaving the fields: bring the page back where it belongs if keeping a field in view moved it.
+		setTimeout(() => {
+			if (!fieldFocused) setView(view);
+		}, 0);
+	}
+
+	// The on-screen keyboard opening or closing changes what is visible.
+	$effect(() => {
+		const vv = window.visualViewport;
+		if (!vv) return;
+		const onResize = () => {
+			if (fieldFocused && focusedBox) revealField(focusedBox);
+		};
+		vv.addEventListener('resize', onResize);
+		return () => vv.removeEventListener('resize', onResize);
+	});
+
+	// Browsers scroll clipped boxes to show a focused control (Tab, the keyboard).
+	// The page is placed by `view`, so turn any such scroll into a pan and undo it.
+	function absorbScroll(e: Event) {
+		const el = e.currentTarget as HTMLElement;
+		if (el.scrollTop === 0 && el.scrollLeft === 0) return;
+		view = { ...view, panX: view.panX - el.scrollLeft, panY: view.panY - el.scrollTop };
+		el.scrollTop = 0;
+		el.scrollLeft = 0;
+	}
+
+	/** A redaction here hides a field that also shows on another page. */
+	const echo = $derived(page && fields.length ? redactionEcho(pages, index, fields) : null);
+
 	// ------------------------------------------------------------ navigation, history, close
 	function go(delta: number) {
 		const next = pages[index + delta];
@@ -927,7 +1023,8 @@
 	}
 
 	const typingTarget = (t: EventTarget | null) =>
-		t instanceof HTMLElement && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+		t instanceof HTMLElement &&
+		(t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
 
 	function onKey(e: KeyboardEvent) {
 		if (padOpen || copyOpen) return;
@@ -1103,10 +1200,38 @@
 			onpointerup={vpUp}
 			onpointercancel={vpCancel}
 			onmousedown={keepTextFocus}
+			onscroll={absorbScroll}
 		>
 			{#if page && source}
 				<div class="page" style={pageStyle} data-testid="editor-page">
-					<PageCanvas {source} pageIndex={page.pageIndex} rotation={page.rotation} renderer={app.renderer} alt={`Page ${index + 1}`} />
+					<PageCanvas
+						{source}
+						pageIndex={page.pageIndex}
+						rotation={page.rotation}
+						renderer={app.renderer}
+						alt={`Page ${index + 1}`}
+						formValues={formVals}
+						onrender={(v) => (drawnVals = v)}
+					/>
+					{#if fields.length && source.pages[page.pageIndex]}
+						<FormLayer
+							{fields}
+							pageIndex={page.pageIndex}
+							rotation={page.rotation}
+							pagePt={source.pages[page.pageIndex]}
+							pagePx={{ width: base.width * view.zoom, height: base.height * view.zoom }}
+							values={formVals}
+							drawn={drawnVals}
+							passthrough={!!armed}
+							group={groupId}
+							onset={setField}
+							onfocusfield={onFieldFocus}
+							onblurfield={onFieldBlur}
+							onundo={undo}
+							onredo={redo}
+							onescape={viewportFocus}
+						/>
+					{/if}
 					<div class="layer" bind:this={layer} class:passthrough={!!armed}>
 						{#each ordered as s (s.id)}
 							{@const isSel = s.id === selectedId}
@@ -1188,11 +1313,16 @@
 			{/if}
 		</div>
 
-		{#if armed || note}
+		{#if armed || note || echo}
 			<div class="hints">
 				{#if armed}<p class="armed-hint" role="status">{armedHint}</p>{/if}
 				{#if note}
 					<p class="armed-hint note" role="status" data-testid="editor-note">{note}</p>
+				{/if}
+				{#if echo}
+					<p class="armed-hint warn" role="status" data-testid="form-echo">
+						This field also appears on page {echo.pageNumber}. Redact it there too if it should be hidden.
+					</p>
 				{/if}
 			</div>
 		{/if}
@@ -1399,9 +1529,15 @@
 		position: absolute;
 		inset: 0;
 		container-type: size;
+		/* Only the stamps take pointers, so form fields under the layer can be clicked. */
+		pointer-events: none;
 	}
 
-	.layer.passthrough :global(.ed) {
+	.layer :global(.ed:not(.draft)) {
+		pointer-events: auto;
+	}
+
+	.layer.passthrough :global(.ed:not(.draft)) {
 		pointer-events: none;
 	}
 

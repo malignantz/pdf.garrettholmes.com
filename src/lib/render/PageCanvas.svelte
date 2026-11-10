@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
-	import type { Renderer, Rotation, Source } from '../core/types';
+	import type { FormValue, Renderer, Rotation, Source } from '../core/types';
 	import { bucketWidth, isSwapped } from './sizing';
 
 	interface Props {
@@ -9,9 +9,16 @@
 		rotation: Rotation;
 		renderer: Renderer;
 		alt?: string;
+		/**
+		 * Form answers of this source, drawn into the page (RenderRequest.formValues).
+		 * Pass the store's object itself: a new object means new answers and a redraw.
+		 */
+		formValues?: Readonly<Record<string, FormValue>>;
+		/** Called after a render lands, with the answers it was drawn with. */
+		onrender?: (formValues: Readonly<Record<string, FormValue>> | undefined) => void;
 	}
 
-	let { source, pageIndex, rotation, renderer, alt = '' }: Props = $props();
+	let { source, pageIndex, rotation, renderer, alt = '', formValues, onrender }: Props = $props();
 
 	let box: HTMLDivElement | undefined = $state();
 	let canvas: HTMLCanvasElement | undefined = $state();
@@ -112,8 +119,16 @@
 		const ac = new AbortController();
 		const target = canvas;
 		const rot = turn;
+		const values = formValues;
 		renderer
-			.render({ source: untrack(() => source), pageIndex: index, width: wantWidth, rotation: rot, signal: ac.signal })
+			.render({
+				source: untrack(() => source),
+				pageIndex: index,
+				width: wantWidth,
+				rotation: rot,
+				...(values ? { formValues: values as Record<string, FormValue> } : {}),
+				signal: ac.signal
+			})
 			.then((bmp) => {
 				if (ac.signal.aborted) {
 					bmp.close();
@@ -121,6 +136,7 @@
 				}
 				draw(target, bmp);
 				drawnRotation = rot;
+				untrack(() => onrender)?.(values);
 			})
 			.catch((e) => {
 				if (e?.name !== 'AbortError') console.error('Page render failed', e);

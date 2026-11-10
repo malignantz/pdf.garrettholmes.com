@@ -86,7 +86,7 @@
 				{#if src}
 					<button type="button" class="thumb" aria-label={`Edit page ${i + 1}`} data-testid="thumb" onclick={() => (editing = p.id)}>
 						<div class="sheet-box">
-							<PageCanvas source={src} pageIndex={p.pageIndex} rotation={p.rotation} renderer={app.renderer} />
+							<PageCanvas source={src} pageIndex={p.pageIndex} rotation={p.rotation} renderer={app.renderer} formValues={doc.state.formValues[p.sourceId]} />
 							<StampLayer page={p} assets={doc.state.assets} />
 						</div>
 						<span>{i + 1}</span>

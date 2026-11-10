@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { Asset, PageRef, Renderer, Source } from '../core/types';
+	import type { Asset, FormValue, PageRef, Renderer, Source } from '../core/types';
 	import PageCanvas from '../render/PageCanvas.svelte';
 	import StampLayer from '../editor/StampLayer.svelte';
 	import Icon from '../ui/Icon.svelte';
@@ -23,10 +23,27 @@
 		/** Being dragged right now. */
 		lifted: boolean;
 		selectionMode: boolean;
+		/** Form answers of this page's source (drawn into the thumbnail). */
+		formValues?: Readonly<Record<string, FormValue>>;
+		/** The page has form fields: show the "Form" chip. */
+		hasFields?: boolean;
 	}
 
-	let { page, number, source, renderer, assets, selected, focused, boundary, named, lifted, selectionMode }: Props =
-		$props();
+	let {
+		page,
+		number,
+		source,
+		renderer,
+		assets,
+		selected,
+		focused,
+		boundary,
+		named,
+		lifted,
+		selectionMode,
+		formValues,
+		hasFields = false
+	}: Props = $props();
 
 	/** The frame is a fixed portrait box; each page is fitted inside it. */
 	const FRAME = 1 / 1.3;
@@ -46,7 +63,8 @@
 					? `, ${name}${source.pages.length > 1 ? ` page ${page.pageIndex + 1}` : ''}`
 					: '') +
 			(page.rotation ? `, rotated ${page.rotation}°` : '') +
-			(page.stamps.length ? `, ${page.stamps.length} ${page.stamps.length === 1 ? 'mark' : 'marks'}` : '')
+			(page.stamps.length ? `, ${page.stamps.length} ${page.stamps.length === 1 ? 'mark' : 'marks'}` : '') +
+			(hasFields ? ', has form fields' : '')
 	);
 </script>
 
@@ -67,7 +85,7 @@
 		<div class="page" style:width="{fitWidth}%" style:aspect-ratio="{size.w} / {size.h}">
 			{#if source}
 				<svelte:boundary>
-					<PageCanvas {source} pageIndex={page.pageIndex} rotation={page.rotation} {renderer} />
+					<PageCanvas {source} pageIndex={page.pageIndex} rotation={page.rotation} {renderer} {formValues} />
 					{#snippet failed()}
 						<div class="broken">This page could not be shown.</div>
 					{/snippet}
@@ -82,6 +100,10 @@
 				{/if}
 			{/if}
 		</div>
+
+		{#if hasFields}
+			<span class="form-chip" aria-hidden="true" title="This page has form fields. Open it to fill them in." data-testid="form-chip">Form</span>
+		{/if}
 
 		{#if selected || selectionMode}
 			<span class="tick" class:on={selected} aria-hidden="true">
@@ -212,6 +234,20 @@
 	.tick.on {
 		border-color: var(--accent);
 		background: var(--accent);
+	}
+
+	.form-chip {
+		position: absolute;
+		right: 4px;
+		bottom: 4px;
+		padding: 1px 7px;
+		border: 1px solid var(--line);
+		border-radius: 999px;
+		background: var(--surface);
+		color: var(--ink-soft);
+		font-size: 11px;
+		line-height: 16px;
+		pointer-events: none;
 	}
 
 	.tools {

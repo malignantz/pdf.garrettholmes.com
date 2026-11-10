@@ -1,5 +1,7 @@
 <script lang="ts">
-	import type { Asset, PageId, PageRef, Renderer, Source, SourceId } from '../core/types';
+	import type { Asset, FormValues, PageId, PageRef, Renderer, Source, SourceId } from '../core/types';
+	import { getApp } from '../app';
+	import { formFieldsOf, pagesWithFields } from '../editor/form-fields.svelte';
 	import PageTile from './PageTile.svelte';
 	import { dropSlot, indicatorFor, isNoopMove, sourceBoundaries, type Rect } from './logic';
 
@@ -14,6 +16,8 @@
 		assets: readonly Asset[];
 		selection: ReadonlySet<PageId>;
 		renderer: Renderer;
+		/** Form answers per source, drawn into the thumbnails. */
+		formValues?: FormValues;
 		selectionMode: boolean;
 		/** Thumbnail column width in px (desktop). */
 		thumb: number;
@@ -41,6 +45,7 @@
 		assets,
 		selection,
 		renderer,
+		formValues = {},
 		selectionMode,
 		thumb,
 		focusedId,
@@ -62,6 +67,12 @@
 	const byId = $derived(new Map<SourceId, Source>(sources.map((s) => [s.id, s])));
 	const boundaries = $derived(sourceBoundaries(pages));
 	const multiSource = $derived(sources.length > 1);
+	/** Source id -> page indices with form fields, once the engine has listed them. */
+	const fieldPages = $derived.by(() => {
+		const out = new Map<SourceId, ReadonlySet<number>>();
+		for (const s of sources) if (s.hasForm) out.set(s.id, pagesWithFields(formFieldsOf(getApp().engine, s)));
+		return out;
+	});
 
 	// ------------------------------------------------------------ drag state
 
@@ -433,6 +444,8 @@
 			named={multiSource}
 			lifted={!!drag && drag.set.has(page.id)}
 			{selectionMode}
+			formValues={formValues[page.sourceId]}
+			hasFields={fieldPages.get(page.sourceId)?.has(page.pageIndex) ?? false}
 		/>
 	{/each}
 

@@ -644,6 +644,7 @@
 			assets={doc.state.assets}
 			{selection}
 			{renderer}
+			formValues={doc.state.formValues}
 			{selectionMode}
 			{thumb}
 			{focusedId}
