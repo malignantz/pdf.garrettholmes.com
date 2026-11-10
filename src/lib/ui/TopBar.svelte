@@ -105,7 +105,14 @@
 		}
 	}
 
-	@media (max-width: 719px) {
+	/* Phones: keep the full wordmark unless page actions need the room. */
+	@media (max-width: 599px) {
+		.topbar:has(.actions > :global(*)) .host {
+			display: none;
+		}
+	}
+
+	@media (max-width: 359px) {
 		.host {
 			display: none;
 		}

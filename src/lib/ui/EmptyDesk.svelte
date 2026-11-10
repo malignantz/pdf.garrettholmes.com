@@ -96,12 +96,8 @@
 		</div>
 
 		<p class="proof">
-			<Icon name="shield-check" size={18} />
-			<span
-				>Files stay on this device. This page cannot send them anywhere. <a href="/privacy"
-					>How that is enforced</a
-				></span
-			>
+			<Icon name="shield-check" size={18} />Files stay on this device. This page cannot send them anywhere.
+			<a href="/privacy">How that is enforced</a>
 		</p>
 	</div>
 </section>
@@ -172,14 +168,15 @@
 		transition: transform var(--dur-slow) var(--ease);
 	}
 
+	/* Back sheets sit lower and slightly smaller, so their corners never peek over the front one. */
 	.s1 {
-		transform: translateX(-34%) rotate(-9deg);
-		background: color-mix(in srgb, var(--sheet) 94%, var(--desk-deep));
+		transform: translate(-36%, 8px) rotate(-9deg) scale(0.94);
+		background: color-mix(in srgb, var(--sheet) 88%, var(--desk-deep));
 	}
 
 	.s2 {
-		transform: translateX(30%) rotate(7deg);
-		background: color-mix(in srgb, var(--sheet) 97%, var(--desk-deep));
+		transform: translate(32%, 8px) rotate(7deg) scale(0.94);
+		background: color-mix(in srgb, var(--sheet) 93%, var(--desk-deep));
 	}
 
 	.s3 {
@@ -188,11 +185,11 @@
 	}
 
 	.dragging .s1 {
-		transform: translateX(-48%) rotate(-13deg);
+		transform: translate(-50%, 8px) rotate(-13deg) scale(0.94);
 	}
 
 	.dragging .s2 {
-		transform: translateX(44%) rotate(11deg);
+		transform: translate(46%, 8px) rotate(11deg) scale(0.94);
 	}
 
 	.dragging .s3 {
@@ -271,21 +268,19 @@
 	}
 
 	.proof {
-		display: flex;
-		align-items: flex-start;
-		justify-content: center;
-		gap: var(--s-2);
 		margin-top: var(--s-5);
-		max-width: 26rem;
+		max-width: 36rem;
 		font-size: var(--text-caption);
-		line-height: 1.5;
+		line-height: 1.6;
 		color: var(--ink-soft);
-		text-align: left;
+		text-wrap: balance;
 	}
 
 	.proof :global(.icon) {
+		display: inline-block;
 		color: var(--ok);
-		margin-top: 1px;
+		vertical-align: -4px;
+		margin-right: 4px;
 	}
 
 	.proof a {

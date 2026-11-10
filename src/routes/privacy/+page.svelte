@@ -44,7 +44,7 @@
 				no connection at all.
 			</li>
 			<li>
-				<strong>The code is open.</strong> The full source is public under the AGPL-3.0 licence:
+				<strong>The code is open.</strong> The full source is public under the AGPL-3.0 license:
 				<a href={repo} rel="noreferrer">{repo.replace('https://', '')}</a>.
 			</li>
 		</ul>
@@ -179,7 +179,7 @@
 		padding: 1px 5px;
 		border-radius: 4px;
 		background: var(--desk-deep);
-		overflow-wrap: anywhere;
+		white-space: nowrap;
 	}
 
 	a {

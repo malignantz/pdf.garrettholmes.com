@@ -152,7 +152,7 @@
 				<Progress label="Loading the PDF engine" showLabel />
 				<p class="verified"><Icon name="check" /> Checked: 12 pages, opens cleanly.</p>
 				<p class="warn"><Icon name="warning" /> This file is damaged. Try saving it again from the app that made it.</p>
-				<div class="row"><span class="page-chip chip">p. 12</span><span class="caption num">2.4 MB · 12 pages</span></div>
+				<div class="row"><span class="page-chip chip">12</span><span class="caption num">2.4 MB · 12 pages</span></div>
 			</div>
 		</div>
 

@@ -81,6 +81,8 @@
 	.static {
 		position: relative;
 		display: inline-flex;
+		justify-self: start;
+		width: fit-content;
 		padding: var(--s-1) var(--s-2);
 		border: 1px solid var(--line);
 		border-radius: var(--radius-sheet);
