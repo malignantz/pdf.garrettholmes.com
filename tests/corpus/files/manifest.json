@@ -185,6 +185,11 @@
 		"label": "damaged",
 		"expect": "repaired with notes"
 	},
+	"damaged-streams.pdf": {
+		"pages": 2,
+		"label": "streams",
+		"expect": "repaired with notes"
+	},
 	"linearized.pdf": {
 		"pages": 6,
 		"label": "multi"

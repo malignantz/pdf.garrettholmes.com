@@ -97,6 +97,63 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		return doc.save({ useObjectStreams: true, addDefaultPage: false, updateFieldAppearances: false });
 	}
 
+	/**
+	 * Fallback for files qpdf rejects. This qpdf build does not run its own xref
+	 * reconstruction (its recovery paths never trigger), so: pdf-lib re-reads the file
+	 * object by object, ignoring the xref table, and writes a clean copy; qpdf must then
+	 * accept that copy; and PDF.js, reading the original with its own recovery, must agree
+	 * on the page count and every page size. Anything else is rejected.
+	 */
+	async function repair(bytes: Uint8Array): Promise<{ bytes: Uint8Array; notes: string[] } | null> {
+		let original;
+		try {
+			original = await inspectWithPdfjs(await pdfjs(), bytes);
+		} catch {
+			return null;
+		}
+		if (original.numPages === 0) return null;
+		let rebuilt: Uint8Array;
+		try {
+			const lib = await pdfLib();
+			const doc = await lib.PDFDocument.load(bytes, {
+				updateMetadata: false,
+				throwOnInvalidObject: true,
+				parseSpeed: lib.ParseSpeeds.Fastest
+			});
+			if (doc.isEncrypted) return null;
+			rebuilt = await doc.save({
+				useObjectStreams: false,
+				addDefaultPage: false,
+				updateFieldAppearances: false,
+				objectsPerTick: Infinity
+			});
+		} catch {
+			return null;
+		}
+		const res = await qpdf.run({
+			args: ['--decrypt', '/r.pdf', '/out.pdf'],
+			inputs: { '/r.pdf': rebuilt },
+			outputs: ['/out.pdf']
+		});
+		const out = res.files.get('/out.pdf');
+		if ((res.code !== QPDF_OK && res.code !== QPDF_WARNINGS) || !out) return null;
+		let check;
+		try {
+			check = await inspectWithPdfjs(await pdfjs(), out);
+		} catch {
+			return null;
+		}
+		const same =
+			check.numPages === original.numPages &&
+			check.pages.every(
+				(p, i) =>
+					Math.abs(p.width - original.pages[i].width) <= SIZE_TOLERANCE &&
+					Math.abs(p.height - original.pages[i].height) <= SIZE_TOLERANCE
+			);
+		if (!same) return null;
+		return { bytes: out, notes: ['Repaired a damaged cross-reference table.', 'Check that the pages look right.'] };
+	}
+
 	const engine: Engine = {
 		openPdf: (bytes, name, password) =>
 			guard(async () => {
@@ -111,19 +168,23 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 					inputs: { '/in.pdf': bytes },
 					outputs: ['/out.pdf']
 				});
-				const out = res.files.get('/out.pdf');
+				let out = res.files.get('/out.pdf');
+				let notes: string[];
 				if (res.code === QPDF_ERROR || !out) {
 					if (/invalid password/i.test(res.stderr)) {
 						throw pw.length
 							? new EngineError('password-wrong', 'That password did not open the file. Check it and try again.')
 							: new EngineError('password-required', 'This file is protected with a password. Enter it to open the file.');
 					}
-					throw new EngineError('unreadable', unreadableMessage(res.stderr));
-				}
-				if (res.code !== QPDF_OK && res.code !== QPDF_WARNINGS) {
+					const repaired = await repair(bytes);
+					if (!repaired) throw new EngineError('unreadable', unreadableMessage(res.stderr));
+					out = repaired.bytes;
+					notes = repaired.notes;
+				} else if (res.code === QPDF_OK || res.code === QPDF_WARNINGS) {
+					notes = res.code === QPDF_WARNINGS ? friendlyWarnings(res.stderr) : [];
+				} else {
 					throw new EngineError('internal', 'The PDF engine stopped unexpectedly while reading this file.');
 				}
-				const notes = res.code === QPDF_WARNINGS ? friendlyWarnings(res.stderr) : [];
 
 				const [enc, npages] = await Promise.all([
 					qpdf.run({ args: [...pw, '--is-encrypted', '/in.pdf'], inputs: { '/in.pdf': bytes } }),

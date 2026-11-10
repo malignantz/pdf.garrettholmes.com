@@ -222,13 +222,25 @@ async function metadata() {
 }
 
 // --- damaged xref ----------------------------------------------------------------------
+// Typical real-world damage: the xref table is garbled and startxref points nowhere.
 async function damaged() {
 	const bytes = await multi('damaged', 3);
 	const text = Buffer.from(bytes).toString('latin1');
 	const start = text.lastIndexOf('\nxref');
 	const end = text.indexOf('trailer', start);
-	const section = text.slice(start, end).replace(/(\d{10}) (\d{5}) n/g, (_m, _o, g) => `0000000999 ${g} n`);
-	return Buffer.from(text.slice(0, start) + section + text.slice(end), 'latin1');
+	const section = text.slice(start, end).replace(/\d/g, (d, i) => (i % 3 ? 'x' : d));
+	const broken = text.slice(0, start) + section + text.slice(end);
+	return Buffer.from(broken.replace(/startxref\s+\d+/, 'startxref\n12'), 'latin1');
+}
+
+/** Every /Length is 5 bytes too long, and all xref offsets are zero. */
+async function damagedStreams() {
+	const bytes = await multi('streams', 2);
+	const text = Buffer.from(bytes).toString('latin1');
+	const broken = text
+		.replace(/\/Length (\d+)/g, (_m, n) => `/Length ${Number(n) + 5}`)
+		.replace(/(\d{10}) (\d{5}) n/g, (_m, _o, g) => `0000000000 ${g} n`);
+	return Buffer.from(broken, 'latin1');
 }
 
 // --- JPEG encoder (baseline, flat 8×8 blocks only) --------------------------------------
@@ -391,6 +403,7 @@ write('userunit.pdf', await userunit(), { pages: 1, label: 'userunit', userUnit:
 write('form.pdf', await form(), { pages: 2, label: 'form', fields: ['name', 'agree', 'notes'] });
 write('metadata.pdf', await metadata(), { pages: 2, label: 'metadata' });
 write('damaged-xref.pdf', await damaged(), { pages: 3, label: 'damaged', expect: 'repaired with notes' });
+write('damaged-streams.pdf', await damagedStreams(), { pages: 2, label: 'streams', expect: 'repaired with notes' });
 
 const det = ['--deterministic-id'];
 write('linearized.pdf', await qpdf([...det, '--linearize', '/in.pdf', '/out.pdf'], { '/in.pdf': multiBytes }), {
