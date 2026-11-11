@@ -79,7 +79,27 @@ answer text is on the page (poppler).
   softened to "suspect", not "wrong".
 - `redact` checks only the one box and only page-1 text; a box over text that
   poppler cannot extract (no ToUnicode) passes vacuously (noted in the message).
+  The box may differ, plus 0.01 of the page or 2 rendered pixels (its anti-aliased edge).
+- `redact` pixel doubts get a second look, recorded as a note when it finds practically no
+  difference (under a tenth of the suspect threshold) and a black box: when an image under
+  the box was re-encoded by the redaction, MuPDF again at that image's own resolution (at
+  40 dpi MuPDF decodes JPEG/JPEG 2000 at reduced size, and it interpolates differently when
+  enlarging), then poppler; when MuPDF cannot render the original or draws it blank,
+  poppler (on the original, else on the engine's opened copy), and last a MuPDF render of a
+  plain export of the file. Otherwise the second look's figures are added to the suspect.
+- Suspects are not all faults: drawings, annotations and letters next to a box that the
+  engine removes whole (it warns: see the result's `warnings`), and form flattening, change
+  pixels outside the box by design.
 - `forms` matches by field name; a field PDF.js lists under another name is suspect, not wrong.
 - `target` is lossy by design; only a mean pixel difference above the threshold is flagged.
+
+To look at one redact result closely (text outside the box lost or moved per MuPDF and
+poppler, text left under the box per MuPDF, poppler and PDF.js, areas of pixel difference
+with the text in them, annotations before and after, PNGs side by side):
+
+```sh
+node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs \
+  tools/survey/inspect-redact.ts --out DIR [--dpi 72] FILE.pdf …
+```
 
 The engine code is not changed by this harness; bugs it finds go to the plan's backlog.

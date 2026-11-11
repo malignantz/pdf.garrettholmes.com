@@ -27,6 +27,7 @@ import {
 	type Region
 } from './lib/raster';
 import { prng } from './lib/sampler';
+import { SECOND_LOOK_FRACTION, imageScaleUnderBox, parsePpm, redactAllowance } from './lib/second-look';
 
 export const SCENARIOS = ['open', 'plain', 'arrange', 'stamps', 'protect', 'redact', 'forms', 'forms-flat', 'target'] as const;
 export type Scenario = (typeof SCENARIOS)[number];
@@ -571,7 +572,7 @@ export async function popplerWordsIn(file: string, box: StampBox, password?: str
  * reads neither page 1) in a plain export of the file, whose pages are the same. When MuPDF
  * reads none of them, a fixed box near the top of page 1, so the engine is still tried.
  */
-async function lineToRedact(c: Ctx): Promise<{ line: Line | null; via?: string }> {
+async function lineToRedact(c: Ctx): Promise<{ line: Line | null; via?: string; plain?: Uint8Array }> {
 	let first: unknown;
 	for (const bytes of [c.src.bytes, c.bytes]) {
 		try {
@@ -583,14 +584,14 @@ async function lineToRedact(c: Ctx): Promise<{ line: Line | null; via?: string }
 	const why = `MuPDF cannot read page 1 of the file: ${shortError(first, 60)}`;
 	try {
 		const plain = await exportPlan(c, { pages: allPages(c), options: baseOptions });
-		return { line: firstTextLine(plain.bytes), via: `line found in a plain export (${why})` };
+		return { line: firstTextLine(plain.bytes), via: `line found in a plain export (${why})`, plain: plain.bytes };
 	} catch {
 		return { line: { text: '(fixed box)', box: { x: 0.1, y: 0.08, w: 0.6, h: 0.04 } }, via: `fixed box (${why})` };
 	}
 }
 
 async function redactScenario(c: Ctx): Promise<Partial2> {
-	const { line, via } = await lineToRedact(c);
+	const { line, via, plain } = await lineToRedact(c);
 	if (!line) return { outcome: 'skipped', message: 'No text line found on page 1.' };
 	const pages = allPages(c);
 	pages[0].stamps = [{ id: 'r', kind: 'redact', box: line.box }];
@@ -605,12 +606,120 @@ async function redactScenario(c: Ctx): Promise<Partial2> {
 	if (after === null) problems.push({ level: 'suspect', text: 'poppler could not extract text from the output page 1' });
 	else if (after.length) problems.push({ level: 'wrong', text: `poppler still reads ${after.length} word(s) under the box: ${after.slice(0, 5).join(' ').slice(0, 80)}` });
 	if (before !== null && before.length === 0) note += '; poppler saw no words in the box on the input either (text check vacuous)';
+	const allowed = redactAllowance(c.src.pages[0], line.box);
 	const r = pixelCheck(c, 'redact', res.bytes, 0, 0, file, {
-		allowed: [boxRegion(line.box, 0.01)],
+		allowed: [allowed],
 		mustBeBlack: [innerRegion(line.box)],
 		softer: true // flattening forms and redacting overlapping images may legitimately change nearby pixels
 	});
+	r.problems = await secondOpinion(c, file, line.box, allowed, r.problems, plain);
 	return judge([...problems, ...r.problems], r.evidence, { outcome: 'verified', message: note, warnings: res.warnings });
+}
+
+/** A pixel check MuPDF could not make or may have got wrong, which another render can settle. */
+const RENDER_DOUBT = /could not render page|MuPDF renders the original blank|% of inked pixels differ outside the edited areas/;
+/** Longest side of the full-resolution confirmation render, in pixels. */
+const NATIVE_MAX_PX = 5000;
+
+/**
+ * A second look at page 1 (original against output, the box allowed to differ) for a redact
+ * pixel problem where MuPDF's low-resolution render is not a fair judge:
+ * - an image under the box was re-encoded by the redaction (blanked pixels, lossless). MuPDF
+ *   decodes JPEG and JPEG 2000 at reduced resolution for small renders, and interpolates
+ *   differently when enlarging, so the same pixels render differently. Compared again with
+ *   MuPDF at the image's own resolution, then with poppler;
+ * - MuPDF cannot render the original, or renders it blank (no independent "before"):
+ *   poppler renders the original (or, when it cannot either, the engine's opened copy).
+ * When one of these finds no difference outside the box and the box black, the problem
+ * becomes a note naming it; otherwise their figures are added to the problem.
+ */
+async function secondOpinion(c: Ctx, out: string, box: StampBox, allowed: Region, problems: Problem[], plain?: Uint8Array): Promise<Problem[]> {
+	const doubt = problems.findIndex((p) => p.level !== 'note' && RENDER_DOUBT.test(p.text));
+	if (doubt < 0) return problems;
+	const pixel = /% of inked pixels/.test(problems[doubt].text);
+	const native = pixel ? imageScaleUnderBox(c.src.bytes, box) : 0;
+	if (pixel && !native) return problems;
+	const page = c.src.pages[0];
+	const inner = innerRegion(box);
+	const views: string[] = [];
+	const clean = (a: Raster, b: Raster, who: string) => {
+		const d = compare(a, b, [allowed], [inner]);
+		views.push(`${who}: ${(d.fraction * 100).toFixed(2)}% of inked pixels differ outside the box, box luminance ${d.insideLuma[0].toFixed(0)}`);
+		return d.sameSize && inkPixels(a) >= MIN_DIFF_PIXELS && d.fraction <= SECOND_LOOK_FRACTION && d.insideLuma[0] <= BLACK_LUMA;
+	};
+	let ok = false;
+	if (pixel) {
+		const scale = Math.min(native, NATIVE_MAX_PX / Math.max(page.width, page.height));
+		try {
+			const render = (bytes: Uint8Array) => {
+				const d = openDoc(mupdf, bytes);
+				try {
+					return renderPage(mupdf, d, 0, scale);
+				} finally {
+					d.destroy();
+				}
+			};
+			let before: Raster;
+			try {
+				before = render(c.bytes);
+			} catch {
+				before = render(c.src.bytes);
+			}
+			ok = clean(before, render(fs.readFileSync(out)), `MuPDF at ${Math.round(scale * 72)} dpi (the image's resolution)`);
+		} catch (e) {
+			views.push(`MuPDF at full resolution failed: ${shortError(e, 80)}`);
+		}
+	}
+	if (!ok) {
+		const scale = renderScale(page.width, page.height);
+		const w = Math.max(1, Math.round(page.width * scale));
+		const h = Math.max(1, Math.round(page.height * scale));
+		let who = 'poppler';
+		let a = await popplerRender(c, c.job.path, w, h, 'orig');
+		if (!a && !pixel) {
+			const opened = path.join(c.tmp, `${c.job.sha256.slice(0, 16)}-opened.pdf`);
+			fs.writeFileSync(opened, c.src.bytes);
+			a = await popplerRender(c, opened, w, h, 'opened');
+			who = "poppler (it cannot read the original either; the engine's opened copy)";
+		}
+		const b = a ? await popplerRender(c, out, w, h, 'out') : null;
+		if (a && b) ok = clean(a, b, who);
+		else views.push('poppler could not render it');
+	}
+	if (!ok && plain && !pixel) {
+		// Neither reader opens page 1 of the original or of the opened copy; the line was found
+		// in a plain export of the file (same pages): the last "before" there is.
+		try {
+			const scale = renderScale(page.width, page.height);
+			const render = (bytes: Uint8Array) => {
+				const d = openDoc(mupdf, bytes);
+				try {
+					return renderPage(mupdf, d, 0, scale);
+				} finally {
+					d.destroy();
+				}
+			};
+			ok = clean(render(plain), render(fs.readFileSync(out)), 'MuPDF, against a plain export of the file (no reader opens page 1 of the original)');
+		} catch (e) {
+			views.push(`MuPDF could not render the plain export: ${shortError(e, 80)}`);
+		}
+	}
+	const rest = problems.filter((_, i) => i !== doubt);
+	const text = `${problems[doubt].text}; ${views.join('; ')}`;
+	return ok ? [...rest, { level: 'note', text }] : [...rest, { ...problems[doubt], text }];
+}
+
+/** Poppler render of page 1 at exactly w×h pixels (crop box, as MuPDF shows it), or null. */
+async function popplerRender(c: Ctx, file: string, w: number, h: number, label: string): Promise<Raster | null> {
+	const prefix = path.join(c.tmp, `${c.job.sha256.slice(0, 16)}-pp-${label}`);
+	const res = await tool('pdftoppm', ['-f', '1', '-l', '1', '-singlefile', '-scale-to-x', String(w), '-scale-to-y', String(h), file, prefix], 120_000);
+	const ppm = `${prefix}.ppm`;
+	try {
+		if (res.code !== 0 || !fs.existsSync(ppm)) return null;
+		return parsePpm(fs.readFileSync(ppm));
+	} finally {
+		fs.rmSync(ppm, { force: true });
+	}
 }
 
 /** Field names or labels that ask for a number (dates, amounts, codes). */

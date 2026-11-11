@@ -1206,5 +1206,80 @@
 	"forms-detect-flat.pdf": {
 		"pages": 2,
 		"note": "p1 flat form (no AcroForm): underscores, a drawn rule, a labelled box, a table with two empty rows, two squares, a ZapfDingbats box glyph, a filled-frame box, five comb boxes, a signature line with caption; plus a heading rule and a footer rule that are not blanks. p2 ordinary page: heading rule, paragraphs, underlined link, filled table, footer rule"
+	},
+	"redact-survey-2.pdf": {
+		"label": null,
+		"pages": 6,
+		"cases": [
+			{
+				"box": [
+					71,
+					592,
+					260,
+					623
+				],
+				"keep": [
+					"a new verse comes over",
+					"KEEP-FAR-LINE"
+				]
+			},
+			{
+				"box": [
+					71,
+					589,
+					263.153,
+					623
+				],
+				"keep": [
+					"a new verse comes over",
+					"KEEP-FAR-LINE"
+				]
+			},
+			{
+				"box": [
+					71,
+					696,
+					202.348,
+					712
+				],
+				"noImage": [
+					71,
+					596,
+					186.34,
+					612
+				],
+				"scaled": "KEEP-TZ"
+			},
+			{
+				"box": [
+					71,
+					696,
+					199.672,
+					712
+				]
+			},
+			{
+				"box": [
+					71,
+					696,
+					229.68,
+					712
+				]
+			},
+			{
+				"box": [
+					71,
+					326,
+					223.672,
+					342
+				],
+				"clip": [
+					100,
+					400,
+					300,
+					600
+				]
+			}
+		]
 	}
 }
