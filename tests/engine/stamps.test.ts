@@ -405,6 +405,18 @@ describe('stamps on unusual page content', () => {
 		expect(texts[2]).toContain('open text');
 		expect(texts[3]).toContain('Footer text');
 		expect(res.warnings.join(' ')).not.toMatch(/annotation/);
+		// poppler stops reading a page at an empty /FlateDecode stream, so it must not be kept.
+		if (pdftoppm) {
+			const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'quirks-'));
+			try {
+				fs.writeFileSync(path.join(dir, 'q.pdf'), res.bytes);
+				const t = execFileSync('pdftotext', ['-raw', '-f', '1', '-l', '1', path.join(dir, 'q.pdf'), '-'], { encoding: 'utf8' });
+				expect(t.replace(/\s/g, '')).toContain('Signed1');
+				expect(t.replace(/\s/g, '')).toContain('Page1of4');
+			} finally {
+				fs.rmSync(dir, { recursive: true, force: true });
+			}
+		}
 	}, T);
 
 	it('warn when an annotation lies over a stamp', async () => {

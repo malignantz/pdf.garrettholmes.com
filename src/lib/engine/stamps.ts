@@ -152,6 +152,10 @@ export async function applyStamps(
 			contentRefs.push(rawContents);
 		}
 		const decoded: Uint8Array[] = [];
+		// Streams kept in the new /Contents. Empty and missing ones are left out: they
+		// draw nothing, and poppler stops reading a page's content at an empty stream
+		// that claims /FlateDecode, which would hide the stamps there.
+		const kept: PdfLib.PDFObject[] = [];
 		for (let k = 0; k < contentRefs.length; k++) {
 			let obj = contentRefs[k];
 			if (!(obj instanceof PDFRef)) {
@@ -161,18 +165,17 @@ export async function applyStamps(
 			}
 			obj = ctx.lookup(contentRefs[k]) as PdfLib.PDFObject;
 			if (obj instanceof PDFRawStream) {
-				if (obj.getContentsSize() === 0) {
-					// An empty stream holds no operators, whatever its /Filter says.
-					decoded.push(new Uint8Array(0));
-					continue;
-				}
+				// An empty stream holds no operators, whatever its /Filter says.
+				if (obj.getContentsSize() === 0) continue;
 				try {
 					decoded.push(lib.decodePDFRawStream(obj).decode());
 				} catch {
 					throw new EngineError('unsupported', `Page ${job.pageIndex + 1} has damaged content, so stamps cannot be added to it safely.`);
 				}
+				kept.push(contentRefs[k]);
 			} else if (obj instanceof PDFContentStream) {
 				decoded.push(obj.getUnencodedContents());
+				kept.push(contentRefs[k]);
 			} else if (obj === undefined || obj === lib.PDFNull) {
 				// Missing stream: treated as empty, as viewers do.
 			} else {
@@ -304,7 +307,7 @@ export async function applyStamps(
 				true
 			)
 		);
-		leaf.set(PDFName.of('Contents'), ctx.obj([pre, ...contentRefs, tail]));
+		leaf.set(PDFName.of('Contents'), ctx.obj([pre, ...kept, tail]));
 	}
 
 	return doc.save({ useObjectStreams: false, addDefaultPage: false, updateFieldAppearances: false, objectsPerTick: Infinity });
