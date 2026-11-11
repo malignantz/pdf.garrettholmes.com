@@ -9,9 +9,9 @@
  *   around one root field (XFA-style government forms: thousands of widgets over a hundred
  *   pages) that is quadratic: a 136-page form needed more than 2 GB. Layers are carried
  *   through the copy (oc.ts).
- * - `qpdf <source> --pages . …` (one source with a form, each page used at most once):
- *   the source is edited in place, so its form keeps its single field tree. The catalog is
- *   first reduced to what the copy would give (pages, form, layers, page labels; no
+ * - `qpdf <source> --pages . …` (when a source has a form): that source is edited in
+ *   place, so its form keeps its single field tree; other sources' pages are copied in.
+ *   Its catalog is first reduced to what the copy would give (pages, form, layers, page labels; no
  *   outline, structure tree, names, scripts or Info dictionary, so nothing of a deleted
  *   page survives through them), and an XFA form's XFA part is dropped as in the copy.
  *   The reduction is applied in the same qpdf run; it costs one JSON dump of three objects.
@@ -54,15 +54,19 @@ export async function assemble(qpdf: Qpdf, job: AssembleJob): Promise<Uint8Array
 	const cats = new Map<Source, CatalogText | null>();
 	for (const s of used) cats.set(s, await catalogText(qpdf, s.bytes));
 
-	const single = used.length === 1 ? used[0] : null;
-	const unique = new Set(pages.map((p) => p.pageIndex)).size === pages.length;
-	if (single && unique && catalogHas(cats.get(single)!, 'AcroForm')) {
-		const update = await reducedCatalog(qpdf, single.bytes, cats.get(single)!);
-		const sel = pages.map((p) => p.pageIndex + 1).join(',');
+	// The first source with a form is edited in place; other sources' pages are copied into
+	// it. (Not when another source has layers: their merge is done on the copy path.)
+	const primary = used.find((s) => catalogHas(cats.get(s)!, 'AcroForm'));
+	if (primary && !used.some((s) => s !== primary && catalogHas(cats.get(s)!, 'OCProperties'))) {
+		const update = await reducedCatalog(qpdf, primary.bytes, cats.get(primary)!);
+		const self = fileOf.get(primary.id)!;
+		const inputs: Record<string, Uint8Array> = { '/src/catalog.json': update };
+		for (const s of used) inputs[fileOf.get(s.id)!] = s.bytes;
+		const sel = pageSelection(pages, fileOf).map((a) => (a === self ? '.' : a));
 		return run(
 			{
-				args: ['/src/in.pdf', '--update-from-json=/src/catalog.json', '--pages', '.', sel, '--', ...rotateArgs(pages), OUT],
-				inputs: { '/src/in.pdf': single.bytes, '/src/catalog.json': update },
+				args: [self, '--update-from-json=/src/catalog.json', '--pages', ...sel, '--', ...rotateArgs(pages), OUT],
+				inputs,
 				outputs: [OUT]
 			},
 			OUT
