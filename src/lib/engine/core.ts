@@ -851,6 +851,7 @@ function drawFullPage(
  * is the file's problem, said plainly; anything else is the engine's.
  */
 function failBuild(res: QpdfResult): never {
+	if (/bad_alloc|out of memory/i.test(res.stderr)) throw new EngineError('too-large', 'This file is too large to process on this device.');
 	const damaged = /inflate|decod|jpeg|DCT|stream|parse|expected|invalid|damaged|unexpected/i.test(res.stderr);
 	const err = damaged
 		? new EngineError('unreadable', 'Part of this file is damaged and could not be copied, so nothing was saved.')
