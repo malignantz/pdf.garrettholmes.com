@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures';
+import { writeFile } from 'node:fs/promises';
 import { chooseTool, makeSignature, moreButton, openEditor, pageBox, stamps, tapPage, drawOnPad } from './editor-helpers';
 
 test.describe('page editor', () => {
@@ -464,8 +465,10 @@ for (const c of CASES) {
 			{ i: pageNo - 1, w: Math.round(b.width * 2) }
 		);
 		const out = await blueBoxes(page, exported.dataUrl);
-		await info.attach('preview.png', { body: shot, contentType: 'image/png' });
-		await info.attach('export.png', { body: Buffer.from(exported.dataUrl.split(',')[1], 'base64'), contentType: 'image/png' });
+		// Kept with the test output, so a failure on another machine can be looked at.
+		await writeFile(info.outputPath('preview.png'), shot);
+		await writeFile(info.outputPath('export.png'), Buffer.from(exported.dataUrl.split(',')[1], 'base64'));
+		await writeFile(info.outputPath('boxes.json'), JSON.stringify({ preview, out }));
 
 		expect(preview.top, 'signature visible in preview').not.toBeNull();
 		expect(preview.bottom, 'text visible in preview').not.toBeNull();
