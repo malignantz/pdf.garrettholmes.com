@@ -249,15 +249,15 @@ test.describe('page editor', () => {
 	test('keyboard: tools place at the centre, arrows nudge, page keys navigate', async ({ page }, info) => {
 		await openEditor(page, 'file=multi.pdf&page=2');
 		if (info.project.name === 'phone') {
-			// Cross is in the More sheet: open it, arrow to Cross, Enter.
+			// Check is in the More sheet: open it, arrow to Check, Enter.
 			await moreButton(page).focus();
 			await page.keyboard.press('Enter');
 			await expect(page.getByRole('menuitemradio', { name: 'Initials' })).toBeFocused();
 			await page.keyboard.press('ArrowRight');
 			await page.keyboard.press('ArrowRight');
-			await expect(page.getByRole('menuitemradio', { name: 'Cross' })).toBeFocused();
+			await expect(page.getByRole('menuitemradio', { name: 'Check' })).toBeFocused();
 		} else {
-			await page.getByRole('button', { name: 'Cross', exact: true }).focus();
+			await page.getByRole('button', { name: 'Check', exact: true }).focus();
 		}
 		await page.keyboard.press('Enter');
 		const [mark] = await stamps(page, 1);

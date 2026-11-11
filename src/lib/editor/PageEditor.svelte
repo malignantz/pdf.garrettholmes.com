@@ -320,14 +320,14 @@
 		{ id: 'initials', label: 'Initials', icon: 'initials' },
 		{ id: 'text', label: 'Text', icon: 'text' },
 		{ id: 'date', label: 'Date', icon: 'calendar' },
-		{ id: 'check', label: 'Check', icon: 'check' },
 		{ id: 'cross', label: 'Cross', icon: 'cross' },
+		{ id: 'check', label: 'Check', icon: 'check' },
 		{ id: 'dot', label: 'Dot', icon: 'dot' },
 		{ id: 'highlight', label: 'Highlight', icon: 'highlight' },
 		{ id: 'redact', label: 'Redact', icon: 'redact' }
 	];
 	/** On phones the bar shows these four and a More slot; the rest are in the More sheet. */
-	const PHONE_BAR = new Set<Tool>(['signature', 'text', 'check', 'highlight']);
+	const PHONE_BAR = new Set<Tool>(['signature', 'text', 'cross', 'highlight']);
 	const MORE_TOOLS = TOOLS.filter((t) => !PHONE_BAR.has(t.id));
 	const isMark = (t: Tool | null): t is 'check' | 'cross' | 'dot' => t === 'check' || t === 'cross' || t === 'dot';
 	/** Tools whose box is drawn with a drag; they stay armed for several boxes. */

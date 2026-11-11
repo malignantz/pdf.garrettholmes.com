@@ -372,7 +372,7 @@ test.describe('phone tool bar', () => {
 			const buttons = bar.getByRole('button');
 			await expect(buttons).toHaveCount(5);
 			const names = await buttons.evaluateAll((els) => els.map((e) => e.textContent!.trim()));
-			expect(names).toEqual(['Signature', 'Text', 'Check', 'Highlight', 'More']);
+			expect(names).toEqual(['Signature', 'Text', 'Cross', 'Highlight', 'More']);
 			const m = await bar.evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth }));
 			expect(m.sw).toBeLessThanOrEqual(m.cw);
 			expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
@@ -392,7 +392,7 @@ test.describe('phone tool bar', () => {
 			await expect(menu).toBeVisible();
 			await page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== 'running'));
 			const items = menu.getByRole('menuitemradio');
-			expect(await items.evaluateAll((els) => els.map((e) => e.textContent!.trim()))).toEqual(['Initials', 'Date', 'Cross', 'Dot', 'Redact']);
+			expect(await items.evaluateAll((els) => els.map((e) => e.textContent!.trim()))).toEqual(['Initials', 'Date', 'Check', 'Dot', 'Redact']);
 			const mb = (await menu.boundingBox())!;
 			const barBox = (await bar.boundingBox())!;
 			expect(mb.x).toBeGreaterThanOrEqual(0);
@@ -450,8 +450,8 @@ test.describe('phone tool bar', () => {
 		// Arming a bar tool after a sheet tool returns the slot to More.
 		await chooseTool(page, 'Dot');
 		await expect(more).toHaveText('Dot');
-		await chooseTool(page, 'Check');
-		await expect(tool(page, 'Check')).toHaveAttribute('aria-pressed', 'true');
+		await chooseTool(page, 'Cross');
+		await expect(tool(page, 'Cross')).toHaveAttribute('aria-pressed', 'true');
 		await expect(more).toHaveText('More');
 	});
 
@@ -462,14 +462,14 @@ test.describe('phone tool bar', () => {
 		const menu = page.getByRole('menu', { name: 'More tools' });
 
 		// A tap on the page closes the sheet and does not place the armed check mark.
-		await chooseTool(page, 'Check');
+		await chooseTool(page, 'Cross');
 		await more.tap();
 		await expect(menu).toBeVisible();
 		const b = await pageBox(page);
 		await page.touchscreen.tap(b.x + b.width * 0.5, b.y + b.height * 0.4);
 		await expect(menu).toBeHidden();
 		expect(await stamps(page)).toHaveLength(0);
-		await expect(tool(page, 'Check')).toHaveAttribute('aria-pressed', 'true');
+		await expect(tool(page, 'Cross')).toHaveAttribute('aria-pressed', 'true');
 
 		// Escape closes the sheet only; a second Escape puts the tool away.
 		await more.tap();
@@ -477,9 +477,9 @@ test.describe('phone tool bar', () => {
 		await page.keyboard.press('Escape');
 		await expect(menu).toBeHidden();
 		await expect(more).toBeFocused();
-		await expect(tool(page, 'Check')).toHaveAttribute('aria-pressed', 'true');
+		await expect(tool(page, 'Cross')).toHaveAttribute('aria-pressed', 'true');
 		await page.keyboard.press('Escape');
-		await expect(tool(page, 'Check')).toHaveAttribute('aria-pressed', 'false');
+		await expect(tool(page, 'Cross')).toHaveAttribute('aria-pressed', 'false');
 
 		// More again.
 		await more.tap();
