@@ -3,6 +3,7 @@
 import type { Stamp } from '../core/types';
 import type { NewStamp } from '../doc/store';
 import { adaptBox } from './geometry';
+import { reboxPatch } from './pen';
 
 /**
  * 0-based target page indices: all pages, or pages `from`..`to` (1-based,
@@ -33,5 +34,5 @@ export function stampForPage(s: Stamp, fromAspect: number, toAspect: number): Ne
 		return { ...rest };
 	}
 	const { id: _id, ...rest } = s;
-	return { ...rest, box: adaptBox(s.box, fromAspect, toAspect) } as NewStamp;
+	return { ...rest, ...reboxPatch(s, adaptBox(s.box, fromAspect, toAspect)) } as NewStamp;
 }

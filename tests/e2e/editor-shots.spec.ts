@@ -95,6 +95,7 @@ test('editor screenshots: drawn tools', async ({ browser }, info) => {
 	await chooseTool(page, 'Redact');
 	await drag(0.16, 0.012, 0.3, 0.036);
 	await chooseTool(page, 'Highlight');
+	await page.getByRole('radio', { name: 'Box' }).click();
 	await drag(0.004, 0.012, 0.125, 0.036);
 	await page.keyboard.press('Escape');
 	await page.keyboard.press('Escape');
@@ -148,4 +149,56 @@ for (const scheme of ['light', 'dark'] as const) {
 			await ctx.close();
 		});
 	}
+}
+
+// The highlighter: Pen | Box bar armed, a pen stroke over text and a box (desktop; phone at 390 and 320 px).
+for (const size of [
+	{ name: 'desktop', width: 1440, height: 900, phone: false },
+	{ name: 'phone-390', width: 390, height: 844, phone: true },
+	{ name: 'phone-320', width: 320, height: 640, phone: true }
+]) {
+	test(`editor screenshots: highlighter (${size.name})`, async ({ browser }, info) => {
+		test.skip(!dir, 'set EDITOR_SHOTS to an output folder');
+		test.skip(info.project.name !== (size.phone ? 'phone' : 'desktop-chrome'), 'one project per size');
+		const ctx = await browser.newContext({
+			baseURL: info.project.use.baseURL,
+			viewport: { width: size.width, height: size.height },
+			deviceScaleFactor: 2,
+			hasTouch: size.phone,
+			isMobile: size.phone
+		});
+		const page = await ctx.newPage();
+		await openEditor(page, 'file=multi.pdf&page=1');
+		const b = (await page.getByTestId('editor-page').boundingBox())!;
+		const path = async (pts: [number, number][]) => {
+			await page.mouse.move(b.x + pts[0][0] * b.width, b.y + pts[0][1] * b.height);
+			await page.mouse.down();
+			for (const [x, y] of pts.slice(1)) await page.mouse.move(b.x + x * b.width, b.y + y * b.height, { steps: 8 });
+			await page.mouse.up();
+		};
+		await chooseTool(page, 'Highlight');
+		// Over the "multi p1" label at the top left, then a freehand loop lower down.
+		await path([
+			[0.01, 0.024],
+			[0.13, 0.025]
+		]);
+		await path([
+			[0.2, 0.3],
+			[0.35, 0.36],
+			[0.5, 0.29],
+			[0.62, 0.36],
+			[0.4, 0.4],
+			[0.3, 0.32]
+		]);
+		await page.getByRole('radio', { name: 'Box' }).click();
+		await path([
+			[0.2, 0.5],
+			[0.7, 0.58]
+		]);
+		await page.getByRole('radio', { name: 'Pen' }).click();
+		await page.mouse.move(0, 0);
+		await page.waitForTimeout(300);
+		await page.screenshot({ path: `${dir}/highlighter-${size.name}.png` });
+		await ctx.close();
+	});
 }

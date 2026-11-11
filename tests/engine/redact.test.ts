@@ -476,6 +476,44 @@ describe('redaction: stamps over a box, encryption', () => {
 		expect(text).not.toMatch(/SECRET-HEX|SECRET-ACTUAL|SECRET-UTF/);
 	}, T);
 
+	it('allows our own pen highlight strokes across a box, also one that runs off the page edge', async () => {
+		const src = await openCorpus('redact-basic.pdf');
+		const b = frac(basic.boxes.texts.rect);
+		const aspect = 612 / 792;
+		const w = 0.025;
+		const stroke = (id: string, points: { x: number; y: number }[]): Stamp => {
+			const xs = points.map((p) => p.x);
+			const ys = points.map((p) => p.y);
+			const x0 = Math.max(0, Math.min(...xs) - w / 2 / aspect);
+			const y0 = Math.max(0, Math.min(...ys) - w / 2);
+			const x1 = Math.min(1, Math.max(...xs) + w / 2 / aspect);
+			const y1 = Math.min(1, Math.max(...ys) + w / 2);
+			return { id, kind: 'highlight', color: 'yellow', box: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, pen: { points, width: w } };
+		};
+		// One stroke zigzags through the box and out of it; the other starts at the left
+		// edge of the page and crosses a box that touches that edge.
+		const edgeBox: StampBox = { x: 0, y: 0.9, w: 0.2, h: 0.05 };
+		const stamps: Stamp[] = [
+			redact(b),
+			redact(edgeBox),
+			stroke('p1', [
+				{ x: b.x - 0.05, y: b.y + b.h / 2 },
+				{ x: b.x + b.w / 2, y: b.y + b.h * 0.2 },
+				{ x: b.x + b.w + 0.05, y: b.y + b.h * 0.8 }
+			]),
+			stroke('p2', [
+				{ x: 0, y: 0.925 },
+				{ x: 0.3, y: 0.925 }
+			])
+		];
+		const res = await exportPages([ref(src, 0, 0, stamps)], [src]);
+		for (const c of res.checks) expect(c.ok, `${c.name}: ${c.detail}`).toBe(true);
+		expect((await pageTexts(res.bytes))[0]).not.toMatch(/SECRET-HEX|SECRET-ACTUAL|SECRET-UTF/);
+		// Multiply over black stays black: the box still reads as redacted.
+		const r = await render(res.bytes, 0, 2);
+		expect(r.black(b)).toBeGreaterThan(0.99);
+	}, T);
+
 	it('verifies an encrypted export, and the decrypted bytes hold no secret', async () => {
 		const src = await openCorpus('redact-basic.pdf');
 		const pw = 'correct horse';

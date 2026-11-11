@@ -61,8 +61,13 @@ export type Stamp =
 			color: 'black' | 'blue' | 'red';
 	  }
 	| { id: string; kind: 'mark'; mark: 'check' | 'cross' | 'dot'; box: StampBox }
-	/** Translucent colour over the page; what is under it stays readable and stays in the file. */
-	| { id: string; kind: 'highlight'; color: HighlightColor; box: StampBox }
+	/**
+	 * Translucent colour over the page; what is under it stays readable and stays in the file.
+	 * Without `pen` the whole box is filled (a box highlight). With `pen` it is a freehand
+	 * stroke and `box` is the area the stroke covers (its points, plus half its width each
+	 * way, kept inside the page); moving the stamp moves box and points together.
+	 */
+	| { id: string; kind: 'highlight'; color: HighlightColor; box: StampBox; pen?: PenStroke }
 	/**
 	 * True redaction. On export, text, image pixels and drawings under the box are
 	 * removed from the file (not covered) and the area is painted black. The engine
@@ -71,6 +76,17 @@ export type Stamp =
 	| { id: string; kind: 'redact'; box: StampBox };
 
 export type HighlightColor = 'yellow' | 'green' | 'pink';
+
+/**
+ * A highlighter pen stroke: one polyline drawn with round ends and joins.
+ * `points` are in the stamp space of StampBox (fractions of the page as displayed,
+ * origin top-left), at least two, all inside `box`. `width` is the stroke's
+ * thickness as a fraction of the displayed page height (like text `size`).
+ */
+export interface PenStroke {
+	points: { x: number; y: number }[];
+	width: number;
+}
 
 /**
  * Value of one form field. text: string. checkbox: boolean. radio: the chosen

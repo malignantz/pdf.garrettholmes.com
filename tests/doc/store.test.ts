@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { Stamp } from '../../src/lib/core/types';
 import { newId, newPageRef } from '../../src/lib/doc/store';
 import {
 	checkInvariants,
@@ -290,6 +291,39 @@ describe('stamps and assets', () => {
 		store.undo();
 		store.undo();
 		expect((store.state.pages[0].stamps[0] as { text: string }).text).toBe('a');
+	});
+	it('pen highlights: stored, moved with their box, copied deep, and checked', () => {
+		const { store } = setup(1);
+		const p = ids(store)[0];
+		const points = [
+			{ x: 0.12, y: 0.25 },
+			{ x: 0.35, y: 0.25 }
+		];
+		const pen = { points, width: 0.02 };
+		const sid = store.addStamp(p, { kind: 'highlight', color: 'yellow', box, pen });
+		points[0].x = 0.5; // the store kept its own copy
+		const s0 = store.state.pages[0].stamps[0] as Extract<Stamp, { kind: 'highlight' }>;
+		expect(s0.pen!.points[0].x).toBe(0.12);
+		// Box and points move together in one step; undo brings both back.
+		const moved = { ...box, x: 0.2 };
+		expect(store.updateStamp(p, sid, { box: moved, pen: { points: points.map((q, i) => ({ x: [0.22, 0.45][i], y: q.y })), width: 0.02 } })).toBe(true);
+		expect((store.state.pages[0].stamps[0] as typeof s0).pen!.points[0].x).toBe(0.22);
+		store.undo();
+		expect(store.state.pages[0].stamps[0]).toEqual(s0);
+		// A box that leaves the points behind is refused.
+		expect(() => store.updateStamp(p, sid, { box: { ...box, x: 0.6 } })).toThrow(/outside its box/);
+		// Malformed strokes are refused.
+		expect(() => store.addStamp(p, { kind: 'highlight', color: 'yellow', box, pen: { points: points.slice(0, 1), width: 0.02 } })).toThrow();
+		expect(() => store.addStamp(p, { kind: 'highlight', color: 'yellow', box, pen: { points: s0.pen!.points, width: 0 } })).toThrow();
+		// A box highlight cannot turn into a pen highlight by a patch.
+		const bid = store.addStamp(p, { kind: 'highlight', color: 'green', box });
+		expect(store.updateStamp(p, bid, { pen: s0.pen })).toBe(false);
+		// Duplicated pages get their own copy of the points.
+		store.duplicatePages([p]);
+		const copy = store.state.pages[1].stamps[0] as typeof s0;
+		expect(copy.pen).toEqual(s0.pen);
+		expect(copy.pen).not.toBe(s0.pen);
+		checkInvariants(store);
 	});
 	it('only the stamped page changes identity', () => {
 		const { store } = setup(3);

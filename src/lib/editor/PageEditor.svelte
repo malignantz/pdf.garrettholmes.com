@@ -1,12 +1,15 @@
 <script lang="ts" module>
 	/** The note about what redaction does is shown once per visit. */
 	let redactNoteShown = false;
+	/** Highlight shape: Pen when the app starts, then the last choice for the rest of the visit. */
+	let hlModeChosen: 'pen' | 'box' = 'pen';
 </script>
 
 <script lang="ts">
 	// Full-screen view of one page for placing stamps: signature, initials, text,
-	// date and marks (placed by a tap), highlight and redaction boxes (drawn by a
-	// drag). Zoom/pan, page navigation, undo/redo through the store.
+	// date and marks (placed by a tap), highlights (a freehand pen stroke, or a box)
+	// and redaction boxes (drawn by a drag). Zoom/pan, page navigation, undo/redo
+	// through the store.
 	import { flushSync, onMount, tick, untrack } from 'svelte';
 	import type { Asset, FormField, FormValue, HighlightColor, PageId, PageRef, Stamp, StampBox } from '../core/types';
 	import { getApp } from '../app';
@@ -26,6 +29,7 @@
 	import { panToReveal, redactionEcho } from './form-view';
 	import { ensureStampFont, stampName, cssColor, HIGHLIGHT_COLORS, HIGHLIGHT_CSS, paintOrder } from './stamp-view';
 	import { stampForPage } from './copy';
+	import { defaultStroke, finishStroke, penBox, reboxPatch, type Pt } from './pen';
 	import {
 		arrowDelta,
 		boxAround,
@@ -199,8 +203,9 @@
 			pmode = 'tap';
 			pstart = { x: p.x, y: p.y, t: performance.now(), view: { ...view } };
 		} else if (pointers.size === 2) {
-			// A second finger always means pinch: a box being drawn is dropped.
+			// A second finger always means pinch: a box or stroke being drawn is dropped.
 			draft = null;
+			penDraft = null;
 			pmode = 'pinch';
 			const { m, d } = mid();
 			pinch0 = { view: { ...view }, m, d };
@@ -224,9 +229,11 @@
 			if (isDrawn(armed) && insidePage(f0)) {
 				pmode = 'draw';
 				draftStart = f0;
+				if (penArmed) penPts = [f0];
 			} else pmode = pstart.view.zoom > 1.0001 ? 'pan' : 'swipe';
 		}
-		if (pmode === 'draw') draft = drawnBox(draftStart, toFraction(e));
+		if (pmode === 'draw' && penArmed) addPenPoints(e);
+		else if (pmode === 'draw') draft = drawnBox(draftStart, toFraction(e));
 		else if (pmode === 'pan') setView({ ...pstart.view, panX: pstart.view.panX + dx, panY: pstart.view.panY + dy });
 	}
 
@@ -255,7 +262,10 @@
 
 	function vpCancel(e: PointerEvent) {
 		pointers.delete(e.pointerId);
-		if (pmode === 'draw') draft = null;
+		if (pmode === 'draw') {
+			draft = null;
+			penDraft = null;
+		}
 		if (pointers.size === 0) pmode = 'none';
 	}
 
@@ -275,7 +285,7 @@
 		return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 	}
 
-	/** A drag that stays within this many screen pixels is a slip: it places the default box. */
+	/** A drag that stays within this many screen pixels is a slip: redaction places the default box, highlight nothing. */
 	const SLIP_PX = 12;
 	/** A side thinner than this (a quick stroke along a line) gets the default size. */
 	const MIN_DRAWN_PX = 6;
@@ -287,6 +297,12 @@
 
 	function finishDraw(end: Point) {
 		const t = armed;
+		if (t === 'highlight' && penDraft) {
+			addPenPoints({ clientX: 0, clientY: 0 }, end);
+			finishPen();
+			return;
+		}
+		penDraft = null;
 		const b = drawnBox(draftStart, end);
 		draft = null;
 		if (!isDrawn(t)) return;
@@ -295,15 +311,58 @@
 		const def = defaultBoxSize();
 		const thinW = b.w * pw < MIN_DRAWN_PX;
 		const thinH = b.h * ph < MIN_DRAWN_PX;
+		const slip = (thinW && thinH) || Math.max(b.w * pw, b.h * ph) < SLIP_PX;
+		// A highlight box needs a real drag: a stray tap or slip makes nothing.
+		if (t === 'highlight' && slip) return;
 		let box: StampBox;
-		if ((thinW && thinH) || Math.max(b.w * pw, b.h * ph) < SLIP_PX) box = boxAround(draftStart, def.width, def.height);
+		if (slip) box = boxAround(draftStart, def.width, def.height);
 		else {
 			// One side too thin: that side gets the default size, centred on the stroke.
 			const w = thinW ? def.width : b.w;
 			const h = thinH ? def.height : b.h;
 			box = boxAround({ x: b.x + b.w / 2, y: b.y + b.h / 2 }, w, h);
 		}
-		addBox(t, box, false);
+		if (t === 'highlight') addHighlight({ kind: 'highlight', color: hlColor, box }, false);
+		else addBox(box, false);
+	}
+
+	// ------------------------------------------------------------ the highlighter pen
+	/** Points of the stroke being drawn, page fractions, every pointer sample. */
+	let penPts: Pt[] = [];
+	/** What the live preview shows. */
+	let penDraft = $state.raw<{ points: Pt[]; box: StampBox } | null>(null);
+	/** Pen width: about one line of 11 pt text with its leading (14 pt), as a fraction of the page height. */
+	const penWidth = $derived(Math.min(0.1, Math.max(0.004, 14 / (ptSize?.height ?? 792))));
+
+	const clampPt = (f: Point): Pt => ({ x: Math.min(1, Math.max(0, f.x)), y: Math.min(1, Math.max(0, f.y)) });
+
+	/** Add the event's pointer samples (all of them, where the browser coalesced some), or `last`. */
+	function addPenPoints(e: { clientX: number; clientY: number; getCoalescedEvents?: () => PointerEvent[] }, last?: Point) {
+		if (last) penPts.push(clampPt(last));
+		else {
+			const list = e.getCoalescedEvents?.() ?? [];
+			for (const c of list.length ? list : [e]) penPts.push(clampPt(toFraction(c)));
+		}
+		penDraft = { points: penPts.slice(), box: penBox(penPts, penWidth, aspect) };
+	}
+
+	function finishPen() {
+		const raw = penPts;
+		penPts = [];
+		penDraft = null;
+		if (!page) return;
+		const pw = base.width * view.zoom;
+		const ph = base.height * view.zoom;
+		const widthPx = penWidth * ph;
+		// Simplify, straighten and snap in screen pixels: what the user sees.
+		const done = finishStroke(
+			raw.map((p) => ({ x: p.x * pw, y: p.y * ph })),
+			{ straightMaxPx: Math.max(4, widthPx * 0.6) }
+		);
+		if (!done) return;
+		const points = done.map((p) => clampPt({ x: p.x / pw, y: p.y / ph }));
+		const box = penBox(points, penWidth, aspect);
+		addHighlight({ kind: 'highlight', color: hlColor, box, pen: { points, width: penWidth } }, false);
 	}
 
 	// ------------------------------------------------------------ live region
@@ -326,6 +385,37 @@
 		{ id: 'highlight', label: 'Highlight', icon: 'highlight' },
 		{ id: 'redact', label: 'Redact', icon: 'redact' }
 	];
+	const HL_MODES: { id: 'pen' | 'box'; label: string; icon: IconName }[] = [
+		{ id: 'pen', label: 'Pen', icon: 'hl-pen' },
+		{ id: 'box', label: 'Box', icon: 'hl-box' }
+	];
+
+	/**
+	 * Keys in the highlighter bar: each radio group is one Tab stop, arrows move and
+	 * choose within it (and never turn the page).
+	 */
+	function hlbarKey(e: KeyboardEvent) {
+		const t = e.target as HTMLElement;
+		const group = t.closest('[role="radiogroup"]');
+		if (!group) return;
+		const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
+		if (!step) return;
+		e.preventDefault();
+		e.stopPropagation();
+		const radios = [...group.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
+		const i = radios.indexOf(t as HTMLButtonElement);
+		const next = radios[(i + step + radios.length) % radios.length];
+		next.click();
+		void tick().then(() => next.focus());
+	}
+
+	/** Highlight shape, for the next highlight. */
+	let hlMode = $state<'pen' | 'box'>(hlModeChosen);
+	function setHlMode(m: 'pen' | 'box') {
+		hlMode = m;
+		hlModeChosen = m;
+	}
+
 	/** On phones the bar shows these four and a More slot; the rest are in the More sheet. */
 	const PHONE_BAR = new Set<Tool>(['signature', 'text', 'cross', 'highlight']);
 	const MORE_TOOLS = TOOLS.filter((t) => !PHONE_BAR.has(t.id));
@@ -363,6 +453,8 @@
 	}
 
 	let armed = $state<Tool | null>(null);
+	/** The highlighter pen is the armed tool: a one-finger or mouse drag draws a stroke. */
+	const penArmed = $derived(armed === 'highlight' && hlMode === 'pen');
 	let armedAsset = $state.raw<Asset | null>(null);
 	let padOpen = $state(false);
 	let padKind = $state<'signature' | 'initials'>('signature');
@@ -374,7 +466,8 @@
 		const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
 		const verb = coarse ? 'Tap' : 'Click';
 		const done = coarse ? 'Tap the tool again when done.' : 'Press Escape when done.';
-		if (armed === 'highlight') return `Drag over what to highlight, or ${verb.toLowerCase()} for a box. ${done}`;
+		if (armed === 'highlight')
+			return hlMode === 'pen' ? `Drag over the text to highlight. ${done}` : `Drag a box over what to highlight. ${done}`;
 		if (armed === 'redact') return `Drag over what to remove, or ${verb.toLowerCase()} for a box. ${done}`;
 		return isMark(armed) ? `${verb} each spot to place a ${what} mark. ${done}` : `${verb} the page where the ${what} goes.`;
 	});
@@ -420,7 +513,8 @@
 			finishEditing(false);
 			return;
 		}
-		if (armed && inside) place(armed, f, false);
+		// Highlights are drawn, never placed by a tap.
+		if (armed && inside && armed !== 'highlight') place(armed, f, false);
 		else select(null);
 	}
 
@@ -459,9 +553,18 @@
 			select(id, byKeyboard);
 			announce(`Date placed: ${text}. Press Enter to edit it.`);
 			void tick().then(() => clampText(id));
-		} else if (isDrawn(t)) {
+		} else if (t === 'highlight') {
+			// The keyboard path: a line-long stroke (Pen) or the default box at the point.
+			if (hlMode === 'pen') {
+				const st = defaultStroke(f, 0.3, penWidth, aspect);
+				addHighlight({ kind: 'highlight', color: hlColor, ...st }, byKeyboard);
+			} else {
+				const sz = defaultBoxSize();
+				addHighlight({ kind: 'highlight', color: hlColor, box: boxAround(f, sz.width, sz.height) }, byKeyboard);
+			}
+		} else if (t === 'redact') {
 			const sz = defaultBoxSize();
-			addBox(t, boxAround(f, sz.width, sz.height), byKeyboard);
+			addBox(boxAround(f, sz.width, sz.height), byKeyboard);
 		} else if (t === 'text') {
 			disarm();
 			const size = textSize;
@@ -479,18 +582,33 @@
 		}
 	}
 
-	/** Add a highlight or redaction box. The tool stays armed, except on the keyboard path. */
-	function addBox(t: 'highlight' | 'redact', box: StampBox, byKeyboard: boolean) {
+	/**
+	 * Add a highlight. The tool stays armed and the new highlight is not selected, so
+	 * the Pen | Box switch and colours stay in reach; the keyboard path puts the tool
+	 * away and selects it, so arrow keys move it.
+	 */
+	function addHighlight(ns: Extract<NewStamp, { kind: 'highlight' }>, byKeyboard: boolean) {
 		if (!page) return;
 		const pid = page.id;
-		const ns: NewStamp = t === 'highlight' ? { kind: 'highlight', color: hlColor, box } : { kind: 'redact', box };
-		const id = store.transaction(t === 'highlight' ? 'Add highlight' : 'Add redaction', () => store.addStamp(pid, ns));
+		const id = store.transaction('Add highlight', () => store.addStamp(pid, ns));
+		if (byKeyboard) {
+			disarm();
+			select(id, true);
+		} else select(null);
+		announce(`Highlight placed, ${ns.color}.`);
+	}
+
+	/** Add a redaction box. The tool stays armed, except on the keyboard path. */
+	function addBox(box: StampBox, byKeyboard: boolean) {
+		if (!page) return;
+		const pid = page.id;
+		const id = store.transaction('Add redaction', () => store.addStamp(pid, { kind: 'redact', box }));
 		if (byKeyboard) {
 			disarm();
 			select(id, true);
 		} else select(id);
-		announce(t === 'highlight' ? `Highlight placed, ${hlColor}.` : 'Redaction placed.');
-		if (t === 'redact' && !redactNoteShown) {
+		announce('Redaction placed.');
+		if (!redactNoteShown) {
 			redactNoteShown = true;
 			showNote('Redacted areas are removed from the file when you export, not just covered.');
 		}
@@ -560,6 +678,8 @@
 		wasSelected: boolean;
 		/** Started on the move grip: a tap there never opens the text. */
 		grip: boolean;
+		/** The stamp as it was when the drag started. */
+		stamp: Stamp;
 	}
 	let drag: Drag | null = null;
 
@@ -584,7 +704,8 @@
 			size: s.kind === 'text' ? s.size : 0,
 			moved: false,
 			wasSelected,
-			grip
+			grip,
+			stamp: s
 		};
 	}
 
@@ -616,7 +737,7 @@
 				const scale = drag.box.w > 0 ? next.w / drag.box.w : 1;
 				store.updateStamp(page.id, s.id, { x: next.x, y: next.y, size: Math.min(0.5, Math.max(0.004, drag.size * scale)) });
 			}
-		} else store.updateStamp(page.id, s.id, { box: next });
+		} else store.updateStamp(page.id, s.id, drag.stamp.kind === 'text' ? { box: next } : reboxPatch(drag.stamp, next));
 	}
 
 	function stampUp(e: PointerEvent) {
@@ -658,7 +779,7 @@
 			const step = nudgeStep(e.shiftKey);
 			const b = moveBox(boxOf(s), dir.x * step, dir.y * step);
 			if (s.kind === 'text') store.updateStamp(page.id, s.id, { x: b.x, y: b.y });
-			else store.updateStamp(page.id, s.id, { box: b });
+			else store.updateStamp(page.id, s.id, reboxPatch(s, b));
 			return;
 		}
 		if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -735,7 +856,7 @@
 			ns = { ...rest, x: b.x, y: b.y };
 		} else {
 			const { id: _id, ...rest } = s;
-			ns = { ...rest, box: moveBox(s.box, off, off) } as NewStamp;
+			ns = { ...rest, ...reboxPatch(s, moveBox(s.box, off, off)) } as NewStamp;
 		}
 		const id = store.transaction('Duplicate stamp', () => store.addStamp(page!.id, ns));
 		select(id, true);
@@ -1327,6 +1448,7 @@
 								stamp={s}
 								asset={s.kind === 'image' ? assetById.get(s.assetId) : undefined}
 								{aspect}
+								hit
 								class="ed {isSel ? 'selected' : ''} {isEdit ? 'editing' : ''}"
 								data-stamp={s.id}
 								role="button"
@@ -1374,15 +1496,18 @@
 											<path d="M8 1.5v13M1.5 8h13M6 3.5l2-2 2 2M6 12.5l2 2 2-2M3.5 6l-2 2 2 2M12.5 6l2 2-2 2" />
 										</svg>
 									</span>
-									<span
-										class="handle {RESIZE}"
-										aria-hidden="true"
-										data-handle={RESIZE}
-										onpointerdown={(e) => stampDown(e, s, RESIZE)}
-										onpointermove={stampMove}
-										onpointerup={stampUp}
-										onpointercancel={stampCancel}
-									></span>
+									{#if !(s.kind === 'highlight' && s.pen)}
+										<!-- A pen stroke moves but is not resized: there is no corner to hold. -->
+										<span
+											class="handle {RESIZE}"
+											aria-hidden="true"
+											data-handle={RESIZE}
+											onpointerdown={(e) => stampDown(e, s, RESIZE)}
+											onpointermove={stampMove}
+											onpointerup={stampUp}
+											onpointercancel={stampCancel}
+										></span>
+									{/if}
 								{/if}
 							</StampShape>
 						{/each}
@@ -1392,6 +1517,16 @@
 								{aspect}
 								class="ed selected draft"
 								data-testid="draft-box"
+								aria-hidden="true"
+							/>
+						{/if}
+						{#if penDraft && armed === 'highlight'}
+							<!-- The stroke as it will be stored and exported: one path, one colour, round ends. -->
+							<StampShape
+								stamp={{ id: 'draft', kind: 'highlight', color: hlColor, box: penDraft.box, pen: { points: penDraft.points, width: penWidth } }}
+								{aspect}
+								class="ed draft"
+								data-testid="draft-stroke"
 								aria-hidden="true"
 							/>
 						{/if}
@@ -1417,6 +1552,40 @@
 		{#if moreOpen}
 			<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions (Escape closes the sheet) -->
 			<div class="more-scrim" aria-hidden="true" onclick={() => closeMore()}></div>
+		{:else if armed === 'highlight'}
+			<!-- svelte-ignore a11y_no_noninteractive_element_interactions (arrow keys move within the radio groups) -->
+			<div class="selbar hlbar" role="toolbar" aria-label="Highlighter" tabindex="-1" onkeydown={hlbarKey}>
+				<div class="seg" role="radiogroup" aria-label="Highlight shape">
+					{#each HL_MODES as m (m.id)}
+						<button
+							type="button"
+							role="radio"
+							class="seg-item"
+							aria-checked={hlMode === m.id}
+							tabindex={hlMode === m.id ? 0 : -1}
+							data-mode={m.id}
+							onclick={() => setHlMode(m.id)}
+						>
+							<Icon name={m.icon} />
+							<span>{m.label}</span>
+						</button>
+					{/each}
+				</div>
+				<div class="colors" role="radiogroup" aria-label="Highlight colour">
+					{#each HIGHLIGHT_COLORS as c (c)}
+						<button
+							type="button"
+							role="radio"
+							class="color"
+							aria-checked={hlColor === c}
+							tabindex={hlColor === c ? 0 : -1}
+							aria-label={c[0].toUpperCase() + c.slice(1)}
+							style="--c: {HIGHLIGHT_CSS[c]}"
+							onclick={() => rememberHl(c)}
+						></button>
+					{/each}
+				</div>
+			</div>
 		{:else if editing && editingStamp?.kind === 'text'}
 			<div class="selbar" role="toolbar" aria-label="Text">
 				{#if badChars}
@@ -1679,6 +1848,30 @@
 		pointer-events: none;
 	}
 
+	/* A pen stroke takes pointers on the stroke itself (a wider invisible copy), not
+	   on its whole box, so a diagonal stroke does not cover what is beside it. */
+	.layer :global(.ed.pen:not(.draft)) {
+		pointer-events: none;
+	}
+
+	.layer :global(.ed.pen::before) {
+		content: none;
+	}
+
+	.layer :global(.ed.pen .hit) {
+		pointer-events: stroke;
+		cursor: move;
+	}
+
+	/* pointer-events is inherited: the stroke's handles take pointers again. */
+	.layer :global(.ed.pen .handle) {
+		pointer-events: auto;
+	}
+
+	.layer.passthrough :global(.ed.pen .hit) {
+		pointer-events: none;
+	}
+
 	.layer :global(.ed.draft::before) {
 		content: none;
 	}
@@ -1862,6 +2055,50 @@
 		box-shadow:
 			0 0 0 2px var(--surface),
 			0 0 0 4px var(--ink);
+	}
+
+	/* Highlighter options: Pen | Box, then the colours. */
+	.hlbar {
+		gap: var(--s-2);
+		outline: none;
+	}
+
+	.hlbar .colors {
+		margin-right: 0;
+	}
+
+	.seg {
+		display: flex;
+		gap: 2px;
+		padding: 2px;
+		border-radius: var(--radius-control);
+		background: var(--desk-deep);
+	}
+
+	.seg-item {
+		display: flex;
+		align-items: center;
+		gap: var(--s-1);
+		min-height: calc(var(--control-h) - 4px);
+		padding: 0 var(--s-3) 0 var(--s-2);
+		border-radius: calc(var(--radius-control) - 2px);
+		color: var(--ink-soft);
+		font-size: var(--text-control);
+		white-space: nowrap;
+	}
+
+	.seg-item:hover {
+		color: var(--ink);
+	}
+
+	.seg-item[aria-checked='true'] {
+		background: var(--surface);
+		color: var(--ink);
+		box-shadow: 0 0 0 1px var(--line-strong);
+	}
+
+	.seg-item:focus-visible {
+		outline-offset: 0;
 	}
 
 	.pt {
@@ -2092,7 +2329,24 @@
 		}
 	}
 
+	/* The highlighter bar fits a 320px screen without scrolling. */
+	@media (max-width: 399px) {
+		.hlbar {
+			gap: var(--s-1);
+			padding-left: var(--s-1);
+			padding-right: var(--s-1);
+		}
+
+		.seg-item {
+			padding: 0 var(--s-2) 0 6px;
+		}
+	}
+
 	@media (max-width: 359px) {
+		.hlbar .color {
+			width: 44px;
+		}
+
 		.indicator .num,
 		.of::after {
 			font-size: var(--text-caption);

@@ -6,8 +6,8 @@
  *  - images use one object URL per asset, reference-counted.
  */
 
-import type { Asset, AssetId, HighlightColor, Stamp } from '../core/types';
-import { MARKS, STAMP_COLORS, STAMP_FONT } from '../engine/geometry';
+import type { Asset, AssetId, HighlightColor, PenStroke, Stamp, StampBox } from '../core/types';
+import { HIGHLIGHT_RADIUS, MARKS, STAMP_COLORS, STAMP_FONT } from '../engine/geometry';
 import fontUrl from '../engine/fonts/NotoSans-Regular.ttf?url';
 
 /** CSS family name for the stamp font. Private so it never matches a system font. */
@@ -54,6 +54,35 @@ export const HIGHLIGHT_CSS: Record<HighlightColor, string> = {
 };
 
 export const HIGHLIGHT_COLORS: readonly HighlightColor[] = ['yellow', 'green', 'pink'];
+
+/**
+ * Corner radius of a box highlight in a layer with `container-type: size`: the
+ * engine's highlightRadius (a share of the page height, at most a quarter of the
+ * shorter side).
+ */
+export function highlightRadiusCss(box: StampBox): string {
+	const f = (v: number) => v.toFixed(5);
+	return `min(${f(HIGHLIGHT_RADIUS * 100)}cqh, ${f(box.w * 25)}cqw, ${f(box.h * 25)}cqh)`;
+}
+
+export interface PenSvg {
+	viewBox: string;
+	d: string;
+	/** Stroke width in viewBox units. */
+	width: number;
+}
+
+/**
+ * SVG for a pen highlight drawn in its own box. viewBox units are page heights on
+ * both axes (x is scaled by the page aspect), so the stroke keeps one width
+ * whatever its direction, as in the export.
+ */
+export function penSvg(box: StampBox, pen: PenStroke, aspect: number): PenSvg {
+	const a = aspect > 0 && Number.isFinite(aspect) ? aspect : 1;
+	const f = (v: number) => v.toFixed(5);
+	const d = pen.points.map((p, i) => `${i === 0 ? 'M' : 'L'}${f((p.x - box.x) * a)} ${f(p.y - box.y)}`).join('');
+	return { viewBox: `0 0 ${f(box.w * a)} ${f(box.h)}`, d, width: pen.width };
+}
 
 /**
  * Draw order matching the export: redaction is applied to the page itself, then

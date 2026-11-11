@@ -17,7 +17,9 @@ import {
 	STAMP_BASELINE_EM,
 	STAMP_COLORS,
 	STAMP_FONT,
+	displayToPdf,
 	displayedUserSize,
+	highlightRadius,
 	normalizeRotation,
 	normalizeStampText,
 	stampBoxMatrix,
@@ -383,22 +385,53 @@ const HIGHLIGHT_RGB = {
 	pink: [1, 0.612, 0.796]
 } as const satisfies Record<Extract<Stamp, { kind: 'highlight' }>['color'], readonly [number, number, number]>;
 
-/** Filled rectangle over the box, Multiply blend: dark content underneath stays as it was. */
+/**
+ * Multiply blend, so dark content underneath stays as it was. A box highlight is a
+ * filled rectangle with slightly rounded corners; a pen highlight is one stroked
+ * path with round caps and joins, so where it crosses itself the colour does not
+ * get darker.
+ */
 function highlightOps(ops: typeof PdfLib, geom: PageGeometry, stamp: Extract<Stamp, { kind: 'highlight' }>, mulName: string) {
-	const r = stampPdfRect(geom.box, geom.rotation, stamp.box);
 	const [cr, cg, cb] = HIGHLIGHT_RGB[stamp.color];
-	return [
-		ops.pushGraphicsState(),
-		ops.setGraphicsState(mulName),
-		ops.setFillingRgbColor(cr, cg, cb),
-		ops.moveTo(r4(r.x0), r4(r.y0)),
-		ops.lineTo(r4(r.x1), r4(r.y0)),
-		ops.lineTo(r4(r.x1), r4(r.y1)),
-		ops.lineTo(r4(r.x0), r4(r.y1)),
-		ops.closePath(),
-		ops.fill(),
-		ops.popGraphicsState()
-	];
+	const shown = displayedUserSize(geom.box, geom.rotation);
+	const out: PdfLib.PDFOperator[] = [ops.pushGraphicsState(), ops.setGraphicsState(mulName)];
+	if (stamp.pen) {
+		const P = (p: { x: number; y: number }) => displayToPdf(geom.box, geom.rotation, p.x * shown.width, p.y * shown.height).map(r4);
+		const [x0, y0] = P(stamp.pen.points[0]);
+		out.push(
+			ops.setStrokingRgbColor(cr, cg, cb),
+			ops.setLineWidth(r4(stamp.pen.width * shown.height)),
+			ops.setLineCap(ops.LineCapStyle.Round),
+			ops.setLineJoin(ops.LineJoinStyle.Round),
+			ops.moveTo(x0, y0)
+		);
+		for (const p of stamp.pen.points.slice(1)) {
+			const [x, y] = P(p);
+			out.push(ops.lineTo(x, y));
+		}
+		out.push(ops.stroke());
+	} else {
+		const r = stampPdfRect(geom.box, geom.rotation, stamp.box);
+		const rad = highlightRadius(shown.height, r.x1 - r.x0, r.y1 - r.y0);
+		// Bezier quarter circles: k is the usual 4/3·(√2−1).
+		const k = rad * (1 - 0.5522847498);
+		out.push(
+			ops.setFillingRgbColor(cr, cg, cb),
+			ops.moveTo(r4(r.x0 + rad), r4(r.y0)),
+			ops.lineTo(r4(r.x1 - rad), r4(r.y0)),
+			ops.appendBezierCurve(r4(r.x1 - k), r4(r.y0), r4(r.x1), r4(r.y0 + k), r4(r.x1), r4(r.y0 + rad)),
+			ops.lineTo(r4(r.x1), r4(r.y1 - rad)),
+			ops.appendBezierCurve(r4(r.x1), r4(r.y1 - k), r4(r.x1 - k), r4(r.y1), r4(r.x1 - rad), r4(r.y1)),
+			ops.lineTo(r4(r.x0 + rad), r4(r.y1)),
+			ops.appendBezierCurve(r4(r.x0 + k), r4(r.y1), r4(r.x0), r4(r.y1 - k), r4(r.x0), r4(r.y1 - rad)),
+			ops.lineTo(r4(r.x0), r4(r.y0 + rad)),
+			ops.appendBezierCurve(r4(r.x0), r4(r.y0 + k), r4(r.x0 + k), r4(r.y0), r4(r.x0 + rad), r4(r.y0)),
+			ops.closePath(),
+			ops.fill()
+		);
+	}
+	out.push(ops.popGraphicsState());
+	return out;
 }
 
 function numberOps(

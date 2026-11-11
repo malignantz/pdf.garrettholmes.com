@@ -48,8 +48,8 @@ step and does not notify. Unknown ids are ignored.
 | `duplicatePages(ids) -> PageId[]` | each copy goes right after its original; new page ids; stamps deep-copied with new stamp ids. Returns new ids in document order. |
 | `reversePages(ids?)` | no ids: reverse all. With ids: those pages swap places among their own positions. |
 | `sortBySource()` | stable group by source order (order of `state.sources`). |
-| `addStamp(pageId, stamp) -> stampId` | `id` optional. Any stamp kind (`image`, `text`, `mark`, `highlight`, `redact`). Throws on unknown page, image stamp whose asset is missing, or unknown highlight colour. |
-| `updateStamp(pageId, stampId, patch)` | shallow merge; `id`/`kind` and keys foreign to the stamp kind are ignored; equal values are a no-op. |
+| `addStamp(pageId, stamp) -> stampId` | `id` optional. Any stamp kind (`image`, `text`, `mark`, `highlight`, `redact`). Throws on unknown page, image stamp whose asset is missing, unknown highlight colour, or a pen highlight whose stroke is malformed (fewer than 2 points, a bad width, or a point outside its `box`). |
+| `updateStamp(pageId, stampId, patch)` | shallow merge; `id`/`kind` and keys foreign to the stamp kind are ignored (so a box highlight cannot gain a `pen`); equal values are a no-op. A pen highlight's `box` and `pen` move together: patch both. |
 | `removeStamp(pageId, stampId)` | |
 | `addAsset(asset)` | throws on duplicate id. |
 | `removeAsset(id, {cascade?})` | **Refuses (returns false) if any stamp uses the asset**, unless `cascade: true`, which also removes those stamps in the same step ("Remove signature and 2 stamps"). Check `assetUsage(id)` first to ask the user. |

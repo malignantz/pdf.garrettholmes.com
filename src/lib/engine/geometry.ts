@@ -185,6 +185,20 @@ export function normalizeStampText(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Highlights. The editor draws the same shapes with CSS/SVG.
+
+/**
+ * Corner radius of a box highlight: this fraction of the displayed page height
+ * (about 2.8 pt on Letter), and never more than a quarter of the box's shorter side.
+ */
+export const HIGHLIGHT_RADIUS = 0.0035;
+
+/** Corner radius in the units of `pageHeight`, `w` and `h`. */
+export function highlightRadius(pageHeight: number, w: number, h: number): number {
+	return Math.max(0, Math.min(HIGHLIGHT_RADIUS * pageHeight, 0.25 * Math.min(w, h)));
+}
+
+// ---------------------------------------------------------------------------
 // Marks, as vector paths in a box. Coordinates are fractions of the box,
 // origin top-left, y down (display terms). The editor can draw the same SVG.
 

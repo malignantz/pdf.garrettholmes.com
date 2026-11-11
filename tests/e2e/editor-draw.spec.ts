@@ -1,7 +1,8 @@
-// Highlight and Redact: boxes drawn with a drag (mouse, pen or one finger).
+// Highlight (a freehand pen stroke by default, or a box) and Redact (a box), drawn
+// with a drag: mouse, pen or one finger.
 import type { CDPSession, Page, TestInfo } from '@playwright/test';
 import { test, expect } from './fixtures';
-import { chooseTool, moreButton, openEditor, pageBox, stamps, tapPage } from './editor-helpers';
+import { chooseTool, highlightShape, moreButton, openEditor, pageBox, stamps, tapPage, type StampJson } from './editor-helpers';
 
 type Box = { x: number; y: number; w: number; h: number };
 
@@ -46,6 +47,65 @@ async function dragOnPage(page: Page, info: TestInfo, from: [number, number], to
 	}
 }
 
+/** Press, move through page fractions, release: the mouse on desktop, one finger on the phone. */
+async function drawPath(page: Page, info: TestInfo, pts: [number, number][], during?: () => Promise<void>) {
+	const b = await pageBox(page);
+	const at = ([fx, fy]: [number, number]): [number, number] => [b.x + fx * b.width, b.y + fy * b.height];
+	// Several samples per leg, like a real pointer.
+	const path: [number, number][] = [at(pts[0])];
+	for (let i = 1; i < pts.length; i++) {
+		const [x0, y0] = at(pts[i - 1]);
+		const [x1, y1] = at(pts[i]);
+		for (let k = 1; k <= 6; k++) path.push([x0 + ((x1 - x0) * k) / 6, y0 + ((y1 - y0) * k) / 6]);
+	}
+	if (isPhone(info)) {
+		let s = cdpFor.get(page);
+		if (!s) cdpFor.set(page, (s = await touchSession(page)));
+		await s.touch('touchStart', [path[0]]);
+		for (const p of path.slice(1)) await s.touch('touchMove', [p]);
+		await during?.();
+		await s.touch('touchEnd', []);
+	} else {
+		await page.mouse.move(...path[0]);
+		await page.mouse.down();
+		for (const p of path.slice(1)) await page.mouse.move(...p);
+		await during?.();
+		await page.mouse.up();
+	}
+}
+
+const penOf = (s: StampJson) => s.pen!;
+
+/** Export the page through the dev harness; returns the checks and the rendered image. */
+async function exportPage(page: Page, i = 0, width = 600) {
+	return page.evaluate(
+		({ i, w }) =>
+			(window as unknown as { __editor: { exportPage: (i: number, w: number) => Promise<{ dataUrl: string; checks: { name: string; ok: boolean }[] }> } }).__editor.exportPage(i, w),
+		{ i, w: width }
+	);
+}
+
+/** RGB at page fractions of an exported page image. */
+async function pixels(page: Page, dataUrl: string, at: [number, number][]) {
+	return page.evaluate(
+		async ({ url, at }) => {
+			const img = new Image();
+			img.src = url;
+			await img.decode();
+			const c = document.createElement('canvas');
+			c.width = img.naturalWidth;
+			c.height = img.naturalHeight;
+			const ctx = c.getContext('2d', { willReadFrequently: true })!;
+			ctx.drawImage(img, 0, 0);
+			return at.map(([fx, fy]) => [...ctx.getImageData(Math.floor(fx * c.width), Math.floor(fy * c.height), 1, 1).data.slice(0, 3)]);
+		},
+		{ url: dataUrl, at }
+	);
+}
+
+const yellowish = (p: number[]) => p[0] > 220 && p[1] > 200 && p[2] < 140;
+const whiteish = (p: number[]) => p.every((v) => v > 240);
+
 function expectBox(actual: Box | undefined, want: Box, digits = 2) {
 	expect(actual).toBeDefined();
 	for (const k of ['x', 'y', 'w', 'h'] as const) expect(actual![k], k).toBeCloseTo(want[k], digits);
@@ -58,34 +118,78 @@ test.beforeEach(() => {
 });
 
 test.describe('drawn tools', () => {
-	test('highlight: a drag draws the box, the tool stays armed, Escape puts it away', async ({ page }, info) => {
+	test('highlight pen: a drag draws one stroke, the tool stays armed, Escape puts it away', async ({ page }, info) => {
 		await openEditor(page, 'file=multi.pdf&page=1');
 		await chooseTool(page, 'Highlight');
 		await expect(tool(page, 'Highlight')).toHaveAttribute('aria-pressed', 'true');
-		await expect(page.locator('.armed-hint').first()).toContainText('Drag over what to highlight');
+		await expect(page.locator('.armed-hint').first()).toContainText('Drag over the text to highlight');
+		// Pen is the default shape; the bar offers Pen | Box and the colours.
+		const bar = page.getByRole('toolbar', { name: 'Highlighter' });
+		await expect(bar).toBeVisible();
+		const shapes = bar.getByRole('radiogroup', { name: 'Highlight shape' });
+		await expect(shapes.getByRole('radio', { name: 'Pen' })).toHaveAttribute('aria-checked', 'true');
+		await expect(shapes.getByRole('radio', { name: 'Box' })).toHaveAttribute('aria-checked', 'false');
+		await expect(bar.getByRole('radiogroup', { name: 'Highlight colour' }).getByRole('radio')).toHaveCount(3);
 
-		await dragOnPage(page, info, [0.2, 0.3], [0.6, 0.34], async () => {
-			// The box follows the pointer before it is let go, and nothing is in the store yet.
-			await expect(page.getByTestId('draft-box')).toBeVisible();
+		// A wavy stroke: the preview follows the pointer, nothing is stored before release.
+		const wave: [number, number][] = [
+			[0.2, 0.3],
+			[0.3, 0.34],
+			[0.4, 0.3],
+			[0.5, 0.35],
+			[0.6, 0.3]
+		];
+		await drawPath(page, info, wave, async () => {
+			await expect(page.getByTestId('draft-stroke')).toBeVisible();
 			expect(await stamps(page)).toHaveLength(0);
 		});
-		await expect(page.getByTestId('draft-box')).toHaveCount(0);
+		await expect(page.getByTestId('draft-stroke')).toHaveCount(0);
 		let list = await stamps(page);
 		expect(list).toHaveLength(1);
 		expect(list[0].kind).toBe('highlight');
-		expect((list[0] as { color?: string }).color).toBe('yellow');
-		expectBox(list[0].box, { x: 0.2, y: 0.3, w: 0.4, h: 0.04 });
+		expect(list[0].color).toBe('yellow');
+		const pts = penOf(list[0]).points;
+		// Simplified: the corners of the wave, not every pointer sample.
+		expect(pts.length).toBeGreaterThanOrEqual(4);
+		expect(pts.length).toBeLessThan(15);
+		expect(pts[0].x).toBeCloseTo(0.2, 2);
+		expect(pts[pts.length - 1].x).toBeCloseTo(0.6, 2);
+		// About 14 pt wide.
+		const pt = await page.evaluate(() => {
+			const s = (window as unknown as { __editor: { store: { state: { pages: unknown[] }; displayedSize: (p: unknown) => { height: number } } } }).__editor.store;
+			return s.displayedSize(s.state.pages[0]).height;
+		});
+		expect(penOf(list[0]).width * pt).toBeCloseTo(14, 1);
 		await expect(page.getByTestId('live')).toHaveText('Highlight placed, yellow.');
-		await expect(page.locator(`[data-stamp="${list[0].id}"]`)).toHaveAccessibleName(/^Highlight, yellow/);
+		const el = page.locator(`[data-stamp="${list[0].id}"]`);
+		await expect(el).toHaveAccessibleName(/^Highlight, yellow/);
+		// Drawn like the export: one path in the export colour, round ends, multiplied with the page.
+		expect(await el.evaluate((e) => getComputedStyle(e).mixBlendMode)).toBe('multiply');
+		const path = el.locator('svg path').first();
+		expect(await path.getAttribute('stroke-linecap')).toBe('round');
+		expect(await path.getAttribute('stroke-linejoin')).toBe('round');
+		expect(await path.getAttribute('stroke')).toBe('#FFEB3B');
+		// Not selected, so the highlighter bar stays.
+		await expect(bar).toBeVisible();
 
-		// Still armed: the next line is one more drag, drawn right to left this time.
+		// Still armed: the next stroke is one more drag.
 		await expect(tool(page, 'Highlight')).toHaveAttribute('aria-pressed', 'true');
-		await dragOnPage(page, info, [0.7, 0.42], [0.25, 0.38]);
+		await drawPath(page, info, [
+			[0.7, 0.5],
+			[0.25, 0.6]
+		]);
 		list = await stamps(page);
 		expect(list).toHaveLength(2);
-		expectBox(list[1].box, { x: 0.25, y: 0.38, w: 0.45, h: 0.04 });
+		expect(penOf(list[1]).points).toHaveLength(2);
 
-		// Each box is one undo step.
+		// A tap with no movement makes nothing.
+		if (isPhone(info)) {
+			const b = await pageBox(page);
+			await page.touchscreen.tap(b.x + 0.5 * b.width, b.y + 0.8 * b.height);
+		} else await tapPage(page, 0.5, 0.8);
+		expect(await stamps(page)).toHaveLength(2);
+
+		// Each stroke is one undo step.
 		await page.keyboard.press('Control+z');
 		expect(await stamps(page)).toHaveLength(1);
 		await page.keyboard.press('Control+Shift+z');
@@ -94,6 +198,7 @@ test.describe('drawn tools', () => {
 		await page.keyboard.press('Escape');
 		await expect(tool(page, 'Highlight')).toHaveAttribute('aria-pressed', 'false');
 		await expect(page.locator('.armed-hint')).toHaveCount(0);
+		await expect(bar).toHaveCount(0);
 		// Put away: a drag on the page no longer draws.
 		await dragOnPage(page, info, [0.2, 0.6], [0.5, 0.65]);
 		expect(await stamps(page)).toHaveLength(2);
@@ -102,6 +207,112 @@ test.describe('drawn tools', () => {
 		await chooseTool(page, 'Highlight');
 		await chooseTool(page, 'Highlight');
 		await expect(tool(page, 'Highlight')).toHaveAttribute('aria-pressed', 'false');
+	});
+
+	test('highlight pen: a nearly level line is stored as an exactly level two-point line', async ({ page }, info) => {
+		await openEditor(page, 'file=multi.pdf&page=1');
+		const b = await pageBox(page);
+		await chooseTool(page, 'Highlight');
+		// About 2° off level, with a small wobble.
+		const dy = (Math.tan((2 * Math.PI) / 180) * 0.4 * b.width) / b.height;
+		await drawPath(page, info, [
+			[0.2, 0.4],
+			[0.3, 0.4 + dy / 4 + 2 / b.height],
+			[0.45, 0.4 + dy / 2 - 1 / b.height],
+			[0.6, 0.4 + dy]
+		]);
+		let [h] = await stamps(page);
+		const pts = penOf(h).points;
+		expect(pts).toHaveLength(2);
+		expect(pts[0].y).toBe(pts[1].y);
+		expect(pts[0].y).toBeCloseTo(0.4 + dy / 2, 2);
+		// And near-vertical: exactly vertical.
+		const dx = (Math.tan((3 * Math.PI) / 180) * 0.3 * b.height) / b.width;
+		await drawPath(page, info, [
+			[0.8, 0.3],
+			[0.8 + dx, 0.6]
+		]);
+		h = (await stamps(page))[1];
+		expect(penOf(h).points).toHaveLength(2);
+		expect(penOf(h).points[0].x).toBe(penOf(h).points[1].x);
+		// A clear diagonal stays diagonal.
+		await drawPath(page, info, [
+			[0.2, 0.7],
+			[0.5, 0.8]
+		]);
+		h = (await stamps(page))[2];
+		const [a, c] = penOf(h).points;
+		expect(c.y - a.y).toBeCloseTo(0.1, 2);
+	});
+
+	test('highlight box: drag draws a box; taps and slips make nothing; the choice lasts the visit', async ({ page }, info) => {
+		await openEditor(page, 'file=multi.pdf&page=1');
+		await chooseTool(page, 'Highlight');
+		await highlightShape(page, 'Box');
+		await expect(page.locator('.armed-hint').first()).toContainText('Drag a box over what to highlight');
+		await dragOnPage(page, info, [0.2, 0.3], [0.6, 0.34], async () => {
+			await expect(page.getByTestId('draft-box')).toBeVisible();
+		});
+		let list = await stamps(page);
+		expect(list).toHaveLength(1);
+		expect(list[0].pen).toBeUndefined();
+		expectBox(list[0].box, { x: 0.2, y: 0.3, w: 0.4, h: 0.04 });
+		// Slightly rounded, like the export.
+		const fill = page.locator(`[data-stamp="${list[0].id}"] .fill`);
+		expect(parseFloat(await fill.evaluate((f) => getComputedStyle(f).borderTopLeftRadius))).toBeGreaterThan(0.5);
+		// Drawn right to left.
+		await dragOnPage(page, info, [0.7, 0.42], [0.25, 0.38]);
+		list = await stamps(page);
+		expectBox(list[1].box, { x: 0.25, y: 0.38, w: 0.45, h: 0.04 });
+
+		// A tap, or a slip of a few pixels, makes nothing.
+		const b = await pageBox(page);
+		if (isPhone(info)) await page.touchscreen.tap(b.x + 0.5 * b.width, b.y + 0.7 * b.height);
+		else await tapPage(page, 0.5, 0.7);
+		await dragOnPage(page, info, [0.4, 0.75], [0.4 + 10 / b.width, 0.75 + 3 / b.height]);
+		expect(await stamps(page)).toHaveLength(2);
+		// A long stroke along a line keeps its length and gets one line's height.
+		await dragOnPage(page, info, [0.2, 0.8], [0.2 + 150 / b.width, 0.8 + 2 / b.height]);
+		list = await stamps(page);
+		expect(list).toHaveLength(3);
+		expect(list[2].box!.w).toBeCloseTo(150 / b.width, 2);
+		expect(list[2].box!.x).toBeCloseTo(0.2, 2);
+
+		// Box is remembered when the tool is armed again and in a reopened editor…
+		await page.keyboard.press('Escape');
+		await chooseTool(page, 'Highlight');
+		await expect(page.getByRole('radio', { name: 'Box' })).toHaveAttribute('aria-checked', 'true');
+		await page.getByRole('button', { name: 'Done', exact: true }).click();
+		await page.getByRole('button', { name: 'Edit page 1' }).click();
+		await chooseTool(page, 'Highlight');
+		await expect(page.getByRole('radio', { name: 'Box' })).toHaveAttribute('aria-checked', 'true');
+		// …but a new visit starts with Pen.
+		await page.reload();
+		await openEditor(page, 'file=multi.pdf&page=1');
+		await chooseTool(page, 'Highlight');
+		await expect(page.getByRole('radio', { name: 'Pen' })).toHaveAttribute('aria-checked', 'true');
+	});
+
+	test('highlighter bar: keyboard reaches Pen | Box and the colours; arrows choose', async ({ page }, info) => {
+		test.skip(isPhone(info), 'keyboard');
+		await openEditor(page, 'file=multi.pdf&page=1');
+		await chooseTool(page, 'Highlight');
+		const pen = page.getByRole('radio', { name: 'Pen' });
+		await pen.focus();
+		await page.keyboard.press('ArrowRight');
+		await expect(page.getByRole('radio', { name: 'Box' })).toBeFocused();
+		await expect(page.getByRole('radio', { name: 'Box' })).toHaveAttribute('aria-checked', 'true');
+		// Arrow keys stayed in the bar: the page did not change.
+		await expect(page.getByText('1 of 6')).toBeVisible();
+		await page.keyboard.press('Tab');
+		const yellow = page.getByRole('toolbar', { name: 'Highlighter' }).getByRole('radio', { name: 'Yellow' });
+		await expect(yellow).toBeFocused();
+		await page.keyboard.press('ArrowRight');
+		await expect(page.getByRole('toolbar', { name: 'Highlighter' }).getByRole('radio', { name: 'Green' })).toHaveAttribute('aria-checked', 'true');
+		await page.keyboard.press('ArrowLeft');
+		await page.keyboard.press('ArrowLeft');
+		await expect(page.getByRole('toolbar', { name: 'Highlighter' }).getByRole('radio', { name: 'Pink' })).toHaveAttribute('aria-checked', 'true');
+		await expect(page.getByText('1 of 6')).toBeVisible();
 	});
 
 	test('a tap places a default box; a tiny drag does too', async ({ page }, info) => {
@@ -177,34 +388,37 @@ test.describe('drawn tools', () => {
 		await expect(note).toHaveCount(0);
 	});
 
-	test('highlight colours: chosen on a selected box, remembered for the next one', async ({ page }, info) => {
+	test('highlight colours: chosen in the highlighter bar or on a selected highlight, remembered', async ({ page }, info) => {
 		await openEditor(page, 'file=multi.pdf&page=1');
 		await chooseTool(page, 'Highlight');
-		await dragOnPage(page, info, [0.2, 0.3], [0.6, 0.34]);
-		// The new box is selected, so its colour can be changed right away.
-		const colours = page.getByRole('radiogroup', { name: 'Highlight colour' });
-		await expect(colours.getByRole('radio')).toHaveCount(3);
-		await expect(colours.getByRole('radio', { name: 'Yellow' })).toHaveAttribute('aria-checked', 'true');
-		await colours.getByRole('radio', { name: 'Green' }).click();
+		const bar = page.getByRole('toolbar', { name: 'Highlighter' });
+		const barColours = bar.getByRole('radiogroup', { name: 'Highlight colour' });
+		await expect(barColours.getByRole('radio', { name: 'Yellow' })).toHaveAttribute('aria-checked', 'true');
+		await barColours.getByRole('radio', { name: 'Green' }).click();
+		await drawPath(page, info, [
+			[0.2, 0.3],
+			[0.6, 0.3]
+		]);
 		let [h] = await stamps(page);
-		expect((h as { color?: string }).color).toBe('green');
+		expect(h.color).toBe('green');
 		const el = page.locator(`[data-stamp="${h.id}"]`);
 		await expect(el).toHaveAccessibleName(/^Highlight, green/);
-		// Drawn like the export: the export colour, multiplied with the page.
-		expect(await el.evaluate((e) => getComputedStyle(e).mixBlendMode)).toBe('multiply');
-		expect(await el.locator('.fill').evaluate((f) => getComputedStyle(f).backgroundColor)).toBe('rgb(165, 243, 107)');
+		expect(await el.locator('svg path').first().getAttribute('stroke')).toBe('#A5F36B');
 
-		// Next box: green.
+		// Box shape: the same colours.
+		await highlightShape(page, 'Box');
 		await dragOnPage(page, info, [0.2, 0.5], [0.6, 0.54]);
 		let list = await stamps(page);
-		expect((list[1] as { color?: string }).color).toBe('green');
+		expect(list[1].color).toBe('green');
+		expect(await page.locator(`[data-stamp="${list[1].id}"] .fill`).evaluate((f) => getComputedStyle(f).backgroundColor)).toBe('rgb(165, 243, 107)');
 
 		// Select an existing one with the tool put away and make it pink.
 		await page.keyboard.press('Escape');
-		await page.locator(`[data-stamp="${h.id}"]`).click();
+		await el.click();
+		const colours = page.getByRole('toolbar', { name: /^Highlight, green/ }).getByRole('radiogroup', { name: 'Highlight colour' });
 		await colours.getByRole('radio', { name: 'Pink' }).click();
 		[h] = await stamps(page);
-		expect((h as { color?: string }).color).toBe('pink');
+		expect(h.color).toBe('pink');
 		// Colour change is one undo step.
 		await page.keyboard.press('Control+z');
 		expect((await stamps(page))[0].color).toBe('green');
@@ -213,14 +427,71 @@ test.describe('drawn tools', () => {
 		await page.reload();
 		await openEditor(page, 'file=multi.pdf&page=1');
 		await chooseTool(page, 'Highlight');
-		await dragOnPage(page, info, [0.2, 0.3], [0.6, 0.34]);
+		await drawPath(page, info, [
+			[0.2, 0.3],
+			[0.6, 0.3]
+		]);
 		list = await stamps(page);
-		expect((list[0] as { color?: string }).color).toBe('pink');
+		expect(list[0].color).toBe('pink');
+	});
+
+	test('a pen stroke moves with its points, deletes, undoes; it has no resize handle', async ({ page }, info) => {
+		await openEditor(page, 'file=multi.pdf&page=1');
+		await chooseTool(page, 'Highlight');
+		await drawPath(page, info, [
+			[0.2, 0.3],
+			[0.35, 0.36],
+			[0.5, 0.3]
+		]);
+		await page.keyboard.press('Escape');
+		const [h] = await stamps(page);
+		const el = page.locator(`[data-stamp="${h.id}"]`);
+		const b = await pageBox(page);
+		// The stroke itself takes the click (the middle of its box is on the stroke here: the top of the V is not).
+		const p1 = penOf(h).points[1];
+		await page.mouse.click(b.x + p1.x * b.width, b.y + p1.y * b.height);
+		await expect(el).toHaveAccessibleName(/selected/);
+		await expect(el.locator('[data-handle="se"]')).toHaveCount(0);
+		const grab = isPhone(info) ? (await el.locator('[data-handle="move"]').boundingBox())! : { x: b.x + p1.x * b.width - 1, y: b.y + p1.y * b.height - 1, width: 2, height: 2 };
+		const gx = grab.x + grab.width / 2;
+		const gy = grab.y + grab.height / 2;
+		await page.mouse.move(gx, gy);
+		await page.mouse.down();
+		await page.mouse.move(gx + 20, gy + 15, { steps: 4 });
+		await page.mouse.move(gx + 40, gy + 30, { steps: 4 });
+		await page.mouse.up();
+		const [m] = await stamps(page);
+		expect(m.box!.x - h.box!.x).toBeCloseTo(40 / b.width, 2);
+		expect(m.box!.y - h.box!.y).toBeCloseTo(30 / b.height, 2);
+		penOf(m).points.forEach((q, i) => {
+			expect(q.x - penOf(h).points[i].x).toBeCloseTo(m.box!.x - h.box!.x, 6);
+			expect(q.y - penOf(h).points[i].y).toBeCloseTo(m.box!.y - h.box!.y, 6);
+		});
+		// Arrow keys move it too.
+		await page.keyboard.press('Shift+ArrowDown');
+		const [k] = await stamps(page);
+		expect(penOf(k).points[0].y).toBeCloseTo(penOf(m).points[0].y + 0.02, 5);
+		// Duplicate, delete, undo.
+		await page.getByRole('button', { name: 'Duplicate' }).click();
+		const two = await stamps(page);
+		expect(two).toHaveLength(2);
+		expect(penOf(two[1]).points[0].x).toBeCloseTo(penOf(k).points[0].x + 0.02, 5);
+		await page.getByRole('button', { name: 'Delete' }).click();
+		await page.keyboard.press('Delete');
+		expect(await stamps(page)).toHaveLength(0);
+		await page.keyboard.press('Control+z');
+		await page.keyboard.press('Control+z');
+		expect(await stamps(page)).toHaveLength(2);
+		// Back past the duplicate and the arrow nudge: where the drag left it.
+		await page.keyboard.press('Control+z');
+		await page.keyboard.press('Control+z');
+		expect(await stamps(page)).toEqual([m]);
 	});
 
 	test('a placed box moves, resizes freely, deletes and duplicates like other stamps', async ({ page }, info) => {
 		await openEditor(page, 'file=multi.pdf&page=1');
 		await chooseTool(page, 'Highlight');
+		await highlightShape(page, 'Box');
 		await dragOnPage(page, info, [0.2, 0.3], [0.5, 0.35]);
 		await page.keyboard.press('Escape');
 		const [h] = await stamps(page);
@@ -277,14 +548,25 @@ test.describe('drawn tools', () => {
 		// Rotated: the page is shown landscape.
 		expect(b.width).toBeGreaterThan(b.height);
 		await chooseTool(page, 'Highlight');
+		await highlightShape(page, 'Box');
 		await dragOnPage(page, info, [0.1, 0.2], [0.7, 0.3]);
+		await highlightShape(page, 'Pen');
+		await drawPath(page, info, [
+			[0.1, 0.4],
+			[0.5, 0.45],
+			[0.7, 0.4]
+		]);
 		await chooseTool(page, 'Redact');
 		await dragOnPage(page, info, [0.6, 0.8], [0.3, 0.55]);
 		const list = await stamps(page);
-		expectBox(list.find((s) => s.kind === 'highlight')!.box, { x: 0.1, y: 0.2, w: 0.6, h: 0.1 });
+		const pen = list.find((s) => s.pen)!;
+		expect(penOf(pen).points[0].x).toBeCloseTo(0.1, 2);
+		expect(penOf(pen).points[0].y).toBeCloseTo(0.4, 2);
+		expect(penOf(pen).points.at(-1)!.x).toBeCloseTo(0.7, 2);
+		expectBox(list.find((s) => s.kind === 'highlight' && !s.pen)!.box, { x: 0.1, y: 0.2, w: 0.6, h: 0.1 });
 		expectBox(list.find((s) => s.kind === 'redact')!.box, { x: 0.3, y: 0.55, w: 0.3, h: 0.25 });
 		// Drawn where they were dragged.
-		const hb = (await page.locator('.stamp.highlight.ed').boundingBox())!;
+		const hb = (await page.locator('.stamp.highlight.ed:not(.pen)').boundingBox())!;
 		expect((hb.x - b.x) / b.width).toBeCloseTo(0.1, 2);
 		expect((hb.y - b.y) / b.height).toBeCloseTo(0.2, 2);
 	});
@@ -306,17 +588,21 @@ test.describe('drawn tools', () => {
 		expect(await page.evaluate(() => (window as unknown as { __redraws: number }).__redraws)).toBe(0);
 	});
 
-	test('keyboard: Enter on the tool places a default box at the centre, selected', async ({ page }) => {
+	test('keyboard: Enter on the tool places a level pen stroke at the centre, selected', async ({ page }) => {
 		await openEditor(page, 'file=multi.pdf&page=1');
 		await tool(page, 'Highlight').focus();
 		await page.keyboard.press('Enter');
 		const [h] = await stamps(page);
 		expect(h.kind).toBe('highlight');
+		expect(penOf(h).points).toHaveLength(2);
+		expect(penOf(h).points[0].y).toBe(penOf(h).points[1].y);
 		expect(h.box!.x + h.box!.w / 2).toBeCloseTo(0.5, 3);
 		expect(h.box!.y + h.box!.h / 2).toBeCloseTo(0.5, 3);
 		await expect(page.locator(`[data-stamp="${h.id}"]`)).toBeFocused();
 		await page.keyboard.press('Shift+ArrowDown');
-		expect((await stamps(page))[0].box!.y).toBeCloseTo(h.box!.y + 0.02, 5);
+		const [m] = await stamps(page);
+		expect(m.box!.y).toBeCloseTo(h.box!.y + 0.02, 5);
+		expect(penOf(m).points[0].y).toBeCloseTo(penOf(h).points[0].y + 0.02, 5);
 	});
 
 	test('pinch-zoom still works with a drawn tool armed, and draws nothing', async ({ page }, info) => {
@@ -344,6 +630,7 @@ test.describe('drawn tools', () => {
 		expect(z.width / b.width).toBeGreaterThan(2);
 		expect(await stamps(page, 1)).toHaveLength(0);
 		await expect(page.getByTestId('draft-box')).toHaveCount(0);
+		await expect(page.getByTestId('draft-stroke')).toHaveCount(0);
 		await expect(tool(page, 'Highlight')).toHaveAttribute('aria-pressed', 'true');
 
 		// Zoomed in, one finger still draws (it does not pan).
@@ -406,6 +693,25 @@ test.describe('phone tool bar', () => {
 			}
 			expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
 			expect(await bar.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+
+			// Highlight armed: the Pen | Box bar and the colours fit without scrolling, above the tool bar.
+			await page.keyboard.press('Escape');
+			await expect(menu).toBeHidden();
+			await chooseTool(page, 'Highlight');
+			const hl = page.getByRole('toolbar', { name: 'Highlighter' });
+			await expect(hl).toBeVisible();
+			const hb = (await hl.boundingBox())!;
+			expect(hb.x).toBeGreaterThanOrEqual(0);
+			expect(hb.x + hb.width).toBeLessThanOrEqual(width);
+			expect(hb.y + hb.height).toBeLessThanOrEqual((await bar.boundingBox())!.y);
+			expect(await hl.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+			for (const r of await hl.getByRole('radio').all()) {
+				const rb = (await r.boundingBox())!;
+				expect(rb.height).toBeGreaterThanOrEqual(44);
+				expect(rb.width).toBeGreaterThanOrEqual(44);
+			}
+			for (const r of await hl.getByRole('radiogroup', { name: 'Highlight shape' }).getByRole('radio').all()) expect(await r.evaluate(labelFits)).toBe(true);
+			expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
 		});
 	}
 
@@ -499,9 +805,12 @@ test.describe('phone tool bar', () => {
 		test.skip(!isPhone(info), 'phone layout');
 		await openEditor(page, 'file=multi.pdf&page=1');
 		await chooseTool(page, 'Highlight');
-		await dragOnPage(page, info, [0.2, 0.3], [0.6, 0.34]);
+		await drawPath(page, info, [
+			[0.2, 0.3],
+			[0.6, 0.3]
+		]);
 		await page.keyboard.press('Escape');
-		await page.locator('[data-stamp]').first().click({ position: { x: 4, y: 4 } });
+		await page.locator('[data-stamp]').first().click();
 		const selbar = page.getByRole('toolbar', { name: /highlight/i });
 		await expect(selbar).toBeVisible();
 		await moreButton(page).click();
@@ -554,5 +863,69 @@ test.describe('phone tool bar', () => {
 		const [d] = await stamps(page);
 		expect(d.kind).toBe('text');
 		await expect(page.locator(`[data-stamp="${d.id}"]`)).toBeFocused();
+	});
+});
+
+test.describe('highlight export', () => {
+	test('draw a pen stroke, export: verified, colour along the stroke only', async ({ page }, info) => {
+		await openEditor(page, 'file=multi.pdf&page=1');
+		await chooseTool(page, 'Highlight');
+		await drawPath(page, info, [
+			[0.2, 0.5],
+			[0.4, 0.56],
+			[0.6, 0.5]
+		]);
+		const [h] = await stamps(page);
+		expect(h.pen).toBeDefined();
+		const out = await exportPage(page);
+		for (const c of out.checks) expect(c.ok, c.name).toBe(true);
+		const [p0, p1] = penOf(h).points;
+		const mid: [number, number] = [(p0.x + p1.x) / 2, (p0.y + p1.y) / 2];
+		const [onStroke, above, below] = await pixels(page, out.dataUrl, [mid, [mid[0], mid[1] - 0.06], [0.5, 0.85]]);
+		expect(yellowish(onStroke), `${onStroke}`).toBe(true);
+		expect(whiteish(above), `${above}`).toBe(true);
+		expect(whiteish(below), `${below}`).toBe(true);
+	});
+
+	test('switch to Box, draw, export: verified, the box is coloured', async ({ page }, info) => {
+		await openEditor(page, 'file=multi.pdf&page=1');
+		await chooseTool(page, 'Highlight');
+		await highlightShape(page, 'Box');
+		await dragOnPage(page, info, [0.2, 0.6], [0.6, 0.7]);
+		const [h] = await stamps(page);
+		expect(h.pen).toBeUndefined();
+		const out = await exportPage(page);
+		for (const c of out.checks) expect(c.ok, c.name).toBe(true);
+		const [inBox, outside] = await pixels(page, out.dataUrl, [
+			[0.4, 0.65],
+			[0.4, 0.75]
+		]);
+		expect(yellowish(inBox), `${inBox}`).toBe(true);
+		expect(whiteish(outside), `${outside}`).toBe(true);
+	});
+
+	test('a snapped straight stroke exports level', async ({ page }, info) => {
+		await openEditor(page, 'file=multi.pdf&page=1');
+		const b = await pageBox(page);
+		await chooseTool(page, 'Highlight');
+		await drawPath(page, info, [
+			[0.2, 0.62],
+			[0.7, 0.62 + 6 / b.height]
+		]);
+		const [h] = await stamps(page);
+		const [a, c] = penOf(h).points;
+		expect(a.y).toBe(c.y);
+		const out = await exportPage(page, 0, 800);
+		for (const k of out.checks) expect(k.ok, k.name).toBe(true);
+		// The same height at both ends of the line.
+		const half = penOf(h).width / 2;
+		const [l, r, lOff, rOff] = await pixels(page, out.dataUrl, [
+			[0.25, a.y + half * 0.6],
+			[0.65, a.y + half * 0.6],
+			[0.25, a.y + half * 1.6],
+			[0.65, a.y + half * 1.6]
+		]);
+		expect(yellowish(l) && yellowish(r), `${l} ${r}`).toBe(true);
+		expect(whiteish(lOff) && whiteish(rOff), `${lOff} ${rOff}`).toBe(true);
 	});
 });
