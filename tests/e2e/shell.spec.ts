@@ -142,7 +142,7 @@ test('manifest, icons and service worker are served', async ({ request }) => {
 	const sw = await request.get('/service-worker.js');
 	expect(sw.ok()).toBe(true);
 	expect(sw.headers()['content-type']).toContain('javascript');
-	expect(sw.headers()['cache-control']).toBe('no-cache');
+	expect(sw.headers()['cache-control']).toBe('no-cache, no-transform');
 
 	const immutable = (await sw.text()).match(/_app\/immutable\/[^`"']+\.js/)?.[0];
 	expect(immutable).toBeTruthy();
