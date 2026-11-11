@@ -434,7 +434,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 				...(numbering?.labels[i] ? [numbering.labels[i]!] : [])
 			]);
 		});
-		if (redactJobs.length) bytes = await applyRedactions(deps, bytes, redactJobs);
+		if (redactJobs.length) bytes = await applyRedactions(deps, bytes, redactJobs, warnings);
 
 		// (d) Stamps and page numbers.
 		const jobs: StampJob[] = [];

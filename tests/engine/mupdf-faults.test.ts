@@ -29,6 +29,9 @@ const meta = manifest['redact-survey.pdf'] as unknown as {
 	keep: string[];
 	tight: { line: string; keep: string[] };
 	times: { line: string; keep: string[] };
+	bold: { line: string; keep: string; rect: UserRect };
+	scaled: { line: string };
+	gradient: { line: string };
 };
 
 function frac([x0, y0, x1, y1]: UserRect, w = 612, h = 792): StampBox {
@@ -42,11 +45,11 @@ async function redactSurvey(eng = engine()) {
 	return eng.exportPlan({ pages: [ref(src, 0, 0, [redact(frac(meta.box.rect))])], options: defaultOptions }, [src], []);
 }
 
-/** Mean RGB of a user-space rect of page 1, rendered by MuPDF at 1 px/pt. */
-async function meanColour(bytes: Uint8Array, [x0, y0, x1, y1]: UserRect): Promise<number[]> {
+/** Mean RGB of a user-space rect of a page (default the first), rendered by MuPDF at 1 px/pt. */
+async function meanColour(bytes: Uint8Array, [x0, y0, x1, y1]: UserRect, pageIndex = 0): Promise<number[]> {
 	const m = await mupdf();
 	const doc = new m.PDFDocument(bytes);
-	const page = doc.loadPage(0);
+	const page = doc.loadPage(pageIndex);
 	const pix = page.toPixmap(m.Matrix.identity, m.ColorSpace.DeviceRGB, false, true);
 	try {
 		const stride = pix.getStride();
@@ -152,6 +155,58 @@ describe('redaction: text next to the box (redact-survey.pdf page 2)', () => {
 		const text = (await pageTexts(res.bytes))[0];
 		expect(text).not.toContain(meta.times.line);
 		for (const k of [...meta.tight.keep, ...meta.times.keep]) expect(text).toContain(k);
+	}, T);
+});
+
+describe('redaction: the rest of the page stays as it was (redact-survey.pdf pages 2-5)', () => {
+	const exportBox = async (pageIndex: number, box: StampBox) => {
+		const src = await openCorpus('redact-survey.pdf');
+		return engine().exportPlan({ pages: [ref(src, pageIndex, 0, [redact(box)])], options: defaultOptions }, [src], []);
+	};
+
+	it('keeps the stroke width of "bold" text drawn as fill plus stroke', async () => {
+		const src = await openCorpus('redact-survey.pdf');
+		const res = await exportBox(2, await lineBox(src, 2, meta.bold.line));
+		expect(res.checks.every((c) => c.ok)).toBe(true);
+		const text = (await pageTexts(res.bytes))[0];
+		expect(text).toContain(meta.bold.keep);
+		expect(text).not.toContain(meta.bold.line);
+		// Mean darkness of the bold line, before and after (a 1 pt stroke instead of 0.3 pt
+		// made it about twice as dark).
+		const before = await meanColour(src.bytes, meta.bold.rect, 2);
+		const after = await meanColour(res.bytes, meta.bold.rect, 0);
+		for (let k = 0; k < 3; k++) expect(Math.abs(after[k] - before[k])).toBeLessThan(2);
+	}, T);
+
+	it('refuses when MuPDF would move text outside the box (horizontal scaling with TJ adjustments)', async () => {
+		const src = await openCorpus('redact-survey.pdf');
+		const err = await exportBox(4, await lineBox(src, 4, meta.scaled.line)).then(
+			() => null,
+			(e: unknown) => e
+		);
+		expect(err).toBeInstanceOf(EngineError);
+		expect((err as EngineError).code).toBe('unsupported');
+		expect((err as EngineError).message).toMatch(/also remove or move text outside/);
+	}, T);
+
+	it('refuses a box over a page-wide colour gradient rather than removing the background', async () => {
+		const src = await openCorpus('redact-survey.pdf');
+		const err = await exportBox(3, await lineBox(src, 3, meta.gradient.line)).then(
+			() => null,
+			(e: unknown) => e
+		);
+		expect(err).toBeInstanceOf(EngineError);
+		expect((err as EngineError).code).toBe('unsupported');
+		expect((err as EngineError).message).toMatch(/gradient/);
+	}, T);
+
+	it('warns when letters only partly under a box are removed whole', async () => {
+		const src = await openCorpus('redact-survey.pdf');
+		const box = await lineBox(src, 1, meta.times.line);
+		// 2 pt lower: the tops of the capitals of the next line are now under the box.
+		const res = await exportBox(1, { ...box, h: box.h + 2 / 792 });
+		expect(res.checks.every((c) => c.ok)).toBe(true);
+		expect(res.warnings.join(' ')).toMatch(/only partly under a redaction box were removed whole/);
 	}, T);
 });
 

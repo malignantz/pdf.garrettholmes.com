@@ -1061,7 +1061,7 @@
 	},
 	"redact-survey.pdf": {
 		"label": null,
-		"pages": 2,
+		"pages": 5,
 		"box": {
 			"rect": [
 				70,
@@ -1086,6 +1086,22 @@
 			"keep": [
 				"KEEP-TIMES-NEXT"
 			]
+		},
+		"bold": {
+			"line": "SECRET-BOLD-PAGE",
+			"keep": "KEEP-PSEUDO-BOLD",
+			"rect": [
+				72,
+				590,
+				400,
+				625
+			]
+		},
+		"scaled": {
+			"line": "SECRET-NEAR-SCALED"
+		},
+		"gradient": {
+			"line": "SECRET-ON-GRADIENT"
 		},
 		"image": [
 			300,

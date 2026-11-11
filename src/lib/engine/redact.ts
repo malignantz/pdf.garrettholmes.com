@@ -22,7 +22,12 @@
  *     chosen glyph (a second pass takes the whole nominal and em box of any chosen
  *     glyph still there). Redacting text with the box itself, or with the box grown
  *     over touched glyphs, removed whole neighbouring lines. Only the boxes the user
- *     drew are painted black (a partly covered glyph disappears and leaves a gap).
+ *     drew are painted black (a partly covered glyph disappears and leaves a gap; the
+ *     export then carries a warning to check the text around the boxes).
+ *     Before that, on a page with stroked text, stroke-state operators are turned into
+ *     equivalent ExtGStates (keepStrokeState: MuPDF's rewrite drops them before text).
+ *     After the text passes, every visible character outside the boxes must still be
+ *     there, in place (MuPDF's rewrite can take or move one), or the stage refuses.
  *
  *  3. MuPDF `applyRedactions(black=false, IMAGE_PIXELS, LINE_ART_NONE, TEXT_NONE)`
  *     over the boxes (after the text passes of 2). MuPDF rewrites the page content into
@@ -136,9 +141,12 @@
  *    MuPDF copies every form of a redacted page);
  *  - inline images not written as ASCIIHex/ASCII85 in MuPDF's output, or content the
  *    tokenizer cannot read;
+ *  - text outside the boxes that MuPDF's text removal took or moved (see 2);
+ *  - a gradient or pattern fill touching a box that also covers more than a quarter
+ *    of the page outside the boxes (a background; it can only go whole);
  *  - anything the check finds (a glyph MuPDF kept, an image it did not blank, …).
  * Handled by removal, not refused: Type 3 fonts (as text), tiling patterns (the
- * painted path goes), shadings (removed whole), clipped content, outlined text and
+ * painted path goes), smaller shadings (removed whole), clipped content, outlined text and
  * other drawings that are not kept (removed whole), image masks and soft-masked images (blanked by MuPDF, checked).
  * Not covered: bookmarks, named destinations, document JavaScript or other pages
  * that quote the same text (search-and-redact is in the backlog).
@@ -182,13 +190,14 @@ const DEVICE_SPACES = new Set(['DeviceGray', 'DeviceRGB', 'DeviceCMYK', 'Pattern
  * black) before returning, and throws EngineError('verification-failed') with
  * 'redaction' checks otherwise.
  */
-export async function applyRedactions(deps: EngineDeps, bytes: Uint8Array, jobs: RedactJob[]): Promise<Uint8Array> {
+export async function applyRedactions(deps: EngineDeps, bytes: Uint8Array, jobs: RedactJob[], warnings: string[] = []): Promise<Uint8Array> {
 	if (jobs.length === 0) return bytes;
 	const m = await deps.mupdf();
 	let out: Uint8Array;
+	const notes = { partly: 0 };
 	const doc = openDoc(m, bytes);
 	try {
-		out = redactDocument(m, doc, jobs);
+		out = redactDocument(m, doc, jobs, notes);
 	} catch (e) {
 		if (e instanceof ContentError) {
 			const err = new EngineError(
@@ -206,6 +215,11 @@ export async function applyRedactions(deps: EngineDeps, bytes: Uint8Array, jobs:
 	if (isRetired(m)) throw new EngineError('internal', 'The PDF engine had to restart. Try again.');
 	if (!checks.every((c) => c.ok)) {
 		throw new EngineError('verification-failed', 'A redaction could not be verified, so the file was not saved.', checks);
+	}
+	if (notes.partly) {
+		warnings.push(
+			`${notes.partly === 1 ? 'A letter' : `${notes.partly} letters`} only partly under a redaction box ${notes.partly === 1 ? 'was' : 'were'} removed whole, so nothing of ${notes.partly === 1 ? 'it' : 'them'} is left in the file. Check the text around the boxes.`
+		);
 	}
 	return out;
 }
@@ -230,7 +244,7 @@ export async function verifyRedactions(
 // ---------------------------------------------------------------------------
 // The stage
 
-function redactDocument(m: Mupdf, doc: Doc, jobs: RedactJob[]): Uint8Array {
+function redactDocument(m: Mupdf, doc: Doc, jobs: RedactJob[], notes: { partly: number }): Uint8Array {
 	const preCount = doc.countObjects();
 	// Glyph boxes are measured with hidden layers visible, so hidden text is grown over too.
 	const probe = hasOptionalContent(doc) ? withoutOptionalContent(m, doc) : null;
@@ -243,6 +257,7 @@ function redactDocument(m: Mupdf, doc: Doc, jobs: RedactJob[]): Uint8Array {
 			const probePage = probe ? probe.loadPage(job.pageIndex) : null;
 			try {
 				const boxes = pageBoxes(page, job);
+				keepStrokeState(doc, page.getObject());
 				// Text first: exactly the glyphs whose ink touches a box (see glyphMarks). Then
 				// pictures under the boxes themselves, text left alone (MuPDF's own test would
 				// also take every glyph whose nominal box merely overlaps a box).
@@ -253,11 +268,30 @@ function redactDocument(m: Mupdf, doc: Doc, jobs: RedactJob[]): Uint8Array {
 					destroy(a);
 					page.applyRedactions(false, m.PDFPage.REDACT_IMAGE_NONE, m.PDFPage.REDACT_LINE_ART_NONE, m.PDFPage.REDACT_TEXT_REMOVE);
 				};
-				removeText(glyphMarks(m, probePage ?? page, boxes, false));
+				const before = readChars(page, true);
+				const choice = glyphMarks(m, probePage ?? page, boxes, false);
+				removeText(choice.marks);
 				// A glyph whose metrics disagree between text extraction and MuPDF's redaction
 				// (a Type 3 glyph with no width in one and some in the other) can survive its
-				// small area: once more over its whole em box.
-				removeText(glyphMarks(m, page, boxes, true));
+				// point: once more over its whole nominal and em box; and if a chosen glyph is
+				// still there (combining marks MuPDF extracts at another place than it draws
+				// them), over the boxes themselves, as MuPDF judges text.
+				const again = glyphMarks(m, page, boxes, true).marks;
+				if (again.length) {
+					removeText(again);
+					if (glyphMarks(m, page, boxes, true).marks.length) removeText(boxes);
+				}
+				// Text that should have stayed must still be there, in its place (MuPDF's test is
+				// by nominal box, so where those overlap a lot removing one glyph takes its
+				// neighbour; and its rewrite of a text object can shift the glyphs after a
+				// removed one, seen with character spacing).
+				if (lostText(before, readChars(page, true), boxes, choice.cores)) {
+					throw new EngineError(
+						'unsupported',
+						`Page ${pageNo}: removing the text under a redaction box would also remove or move text outside it, so nothing was exported.`
+					);
+				}
+				notes.partly += choice.chosen.filter((ch) => ch.ink && shareInside(ch.ink, boxes) < 0.5).length;
 				for (const r of boxes) {
 					const a = page.createAnnotation('Redact');
 					a.setRect(r);
@@ -311,32 +345,111 @@ function fractionRect(b: Rect, s: StampBox): Rect {
 /**
  * Glyphs to remove: every glyph whose ink touches a box (any amount), by its
  * structured-text outline box, or by the core of its em box in a device pass (which
- * also sees clipped and invisible text). Each comes back as a small area in page space
- * in the middle of the glyph's nominal box. MuPDF removes a glyph when its nominal box
+ * also sees clipped and invisible text). MuPDF removes a glyph when its nominal box
  * (font descent to ascent along its advance, shrunk by a tenth) meets a redaction
- * area, so these areas remove the chosen glyphs and not their neighbours. Redacting
- * text with the box itself also removed glyphs of the next line, or of a big title
- * above, whose nominal boxes reach into the box while their ink is outside it: text
- * visibly outside the box disappeared. (A glyph with no advance has a zero-width
- * nominal box; its area is zero-width too, at its origin.) With `whole`, the areas are
- * the glyphs' whole nominal and em boxes: the second pass, for glyphs still there.
+ * area. Redacting text with the box itself also removed glyphs of the next line, or
+ * of a big title above, whose nominal boxes reach into the box while their ink is
+ * outside it: text visibly outside the box disappeared. So each chosen glyph gets a
+ * point area of its own: inside its nominal box and, where the nominal boxes of
+ * tightly set lines overlap, outside the nominal box of every glyph that stays.
+ * (A glyph with no advance has a zero-width nominal box; its point is on it.)
+ *
+ * With `whole` (the second pass, for chosen glyphs still there), the areas are the
+ * glyphs' whole nominal and em boxes.
  */
-function glyphMarks(m: Mupdf, page: MU.PDFPage, boxes: Rect[], whole: boolean): Rect[] {
-	const marks: Rect[] = [];
+function glyphMarks(m: Mupdf, page: MU.PDFPage, boxes: Rect[], whole: boolean): GlyphChoice {
 	const hit = (r: Rect) => boxes.some((b) => touches(r, b, 0));
-	for (const ch of readChars(page)) {
-		if (!ch.ink || !hit(ch.ink)) continue;
-		const [x0, y0, x1, y1] = ch.nominal;
-		const w = x1 - x0;
-		const h = y1 - y0;
-		marks.push(whole ? ch.nominal : [x0 + w * 0.25, y0 + h * 0.3, x1 - w * 0.25, y1 - h * 0.3]);
-	}
+	const chars = readChars(page);
+	const chosen = chars.filter((ch) => ch.ink && hit(ch.ink));
+	const kept = chars.filter((ch) => !(ch.ink && hit(ch.ink)) && ch.c.trim() !== '');
+	// Where MuPDF's test would take a glyph that stays (its shrunk nominal box), plus a margin.
+	const keptAreas = kept.map((ch) => pad(shrinkBy(ch.nominal, 0.1), 0.25));
+	const free = (r: Rect): Rect => {
+		const near = keptAreas.filter((a) => a[0] <= r[2] && a[2] >= r[0] && a[1] <= r[3] && a[3] >= r[1]);
+		const steps = [0.5, 0.3, 0.7, 0.1, 0.9];
+		for (const fy of steps) {
+			for (const fx of steps) {
+				const x = r[0] + (r[2] - r[0]) * fx;
+				const y = r[1] + (r[3] - r[1]) * fy;
+				if (!near.some((a) => x >= a[0] && x <= a[2] && y >= a[1] && y <= a[3])) return [x, y, x, y];
+			}
+		}
+		const x = (r[0] + r[2]) / 2;
+		const y = (r[1] + r[3]) / 2;
+		return [x, y, x, y];
+	};
+	const marks = chosen.map((ch) => (whole ? ch.nominal : free(shrinkBy(ch.nominal, 0.15))));
+	const cores: Pt[] = [];
 	runDevice(m, page, {
 		glyph: (g) => {
-			if (hit(g.core)) marks.push(whole ? g.em : g.mark);
+			if (!hit(g.core)) return;
+			if (whole) {
+				marks.push(g.em);
+				return;
+			}
+			// Text extraction already chose this glyph: its point is set.
+			const cx = (g.core[0] + g.core[2]) / 2;
+			const cy = (g.core[1] + g.core[3]) / 2;
+			cores.push([cx, cy]);
+			if (chosen.some((ch) => cx >= ch.nominal[0] && cx <= ch.nominal[2] && cy >= ch.nominal[1] && cy <= ch.nominal[3])) return;
+			marks.push(free(g.mark));
 		}
 	});
-	return marks;
+	return { marks, chosen: chosen.filter((ch) => ch.c.trim() !== ''), cores };
+}
+
+interface GlyphChoice {
+	/** Redaction areas, page space. */
+	marks: Rect[];
+	/** Visible characters chosen (their ink touches a box). */
+	chosen: CharBox[];
+	/** Centres of the em cores of glyphs the device pass chose. */
+	cores: Pt[];
+}
+
+/**
+ * True when a visible character whose ink is outside every box (so it should have
+ * stayed) is gone: no character with the same text within half a point of it is left.
+ */
+function lostText(before: CharBox[], after: CharBox[], boxes: Rect[], cores: Pt[]): boolean {
+	const byText = new Map<string, CharBox[]>();
+	for (const ch of after) {
+		const l = byText.get(ch.c);
+		if (l) l.push(ch);
+		else byText.set(ch.c, [ch]);
+	}
+	const near = (a: Rect, b: Rect) => Math.abs(a[0] - b[0]) <= 0.5 && Math.abs(a[1] - b[1]) <= 0.5;
+	for (const ch of before) {
+		if (ch.c.trim() === '' || !ch.ink || boxes.some((b) => touches(ch.ink!, b, 0))) continue;
+		const n = ch.nominal;
+		// A character without width is a mark on, or a part of, another glyph (a ligature
+		// lists its letters, all but the first with no width): it goes with that glyph.
+		if (n[2] - n[0] < 0.01 || n[3] - n[1] < 0.01) continue;
+		if (cores.some(([x, y]) => x >= n[0] && x <= n[2] && y >= n[1] && y <= n[3])) continue;
+		const same = byText.get(ch.c) ?? [];
+		const i = same.findIndex((o) => near(o.nominal, ch.nominal));
+		if (i < 0) return true;
+		same.splice(i, 1);
+	}
+	return false;
+}
+
+function shrinkBy(r: Rect, f: number): Rect {
+	const w = (r[2] - r[0]) * f;
+	const h = (r[3] - r[1]) * f;
+	return [r[0] + w, r[1] + h, r[2] - w, r[3] - h];
+}
+
+/** Share of a rectangle's area inside the boxes (0 for an empty rectangle). */
+function shareInside(r: Rect, boxes: Rect[]): number {
+	const area = (r[2] - r[0]) * (r[3] - r[1]);
+	if (area <= 0) return 0;
+	let best = 0;
+	for (const b of boxes) {
+		const i = intersect(r, b);
+		if (i) best = Math.max(best, ((i[2] - i[0]) * (i[3] - i[1])) / area);
+	}
+	return best;
 }
 
 interface CharBox {
@@ -359,7 +472,7 @@ interface CharBox {
  * ever do not, every character of both passes is returned with its quad as its ink
  * (the stricter rule: a nominal quad that touches a box counts).
  */
-function readChars(page: MU.PDFPage): CharBox[] {
+function readChars(page: MU.PDFPage, ignoreActualText = false): CharBox[] {
 	const read = (opts: string) => {
 		const out: { c: string; line: number; r: Rect }[] = [];
 		let line = -1;
@@ -378,8 +491,9 @@ function readChars(page: MU.PDFPage): CharBox[] {
 		}
 		return out;
 	};
-	const nominal = read('preserve-whitespace');
-	const ink = read('preserve-whitespace,accurate-bboxes');
+	const extra = ignoreActualText ? ',ignore-actualtext' : '';
+	const nominal = read(`preserve-whitespace${extra}`);
+	const ink = read(`preserve-whitespace,accurate-bboxes${extra}`);
 	const blank = (c: string) => c.trim() === '';
 	if (ink.length === nominal.length && ink.every((x, i) => x.c === nominal[i].c)) {
 		return nominal.map((n, i) => {
@@ -438,6 +552,30 @@ interface PassCtx {
 	extGStates: Obj[];
 	patterns: PatternUse[];
 	active: Set<number>;
+	/** Area of the displayed page (pt²). */
+	pageArea: number;
+}
+
+/** A gradient or pattern fill that goes whole may cover at most this share of the page outside the boxes. */
+const LARGE_FILL = 0.25;
+
+/**
+ * A colour gradient (`sh`) or a pattern-filled shape that touches a box is removed
+ * whole (its data under the box cannot be removed alone). When it also covers a large
+ * area outside the boxes (a page background), removing it would visibly change the
+ * page far from the boxes (white text on a removed gradient becomes invisible), so the
+ * export is refused instead.
+ */
+function refuseLargeFill(ctx: PassCtx, r: Rect | null) {
+	if (!r) return;
+	const area = (q: Rect) => Math.max(0, q[2] - q[0]) * Math.max(0, q[3] - q[1]);
+	const outside = area(r) - ctx.boxes.reduce((n, b) => n + area(intersect(r, b) ?? [0, 0, 0, 0]), 0);
+	if (outside > LARGE_FILL * ctx.pageArea) {
+		throw new EngineError(
+			'unsupported',
+			`Page ${ctx.pageNo}: a colour gradient or pattern runs under a redaction box and across a large part of the page (a background, for example). It can only be removed whole, which would change the page far from the box, so nothing was exported.`
+		);
+	}
 }
 
 interface GState {
@@ -457,6 +595,110 @@ interface PatternUse {
 	e: number;
 	stroke: boolean;
 	used: boolean;
+}
+
+/**
+ * MuPDF's redaction rewrites the content of the page and its forms, and that rewrite
+ * writes line width, caps, joins, miter limit and dash (`w J j M d`) only before a
+ * path it strokes: before stroked text (render modes 1, 2, 5, 6; word processors draw
+ * "bold" for fonts without a bold face as fill plus a thin stroke) they were dropped,
+ * and that text came out heavier on the whole page. `gs` operators are kept where they
+ * are, so on a page with stroked text every such operator in the page's content and
+ * in the forms it draws is replaced by an ExtGState with the same values (exactly
+ * equivalent drawing). Content our tokenizer cannot read is left as it was (only its
+ * stroked text can change weight, nothing is lost).
+ */
+function keepStrokeState(doc: Doc, pageObj: Obj) {
+	interface Part {
+		ref: Obj;
+		res: Obj;
+		data: Uint8Array;
+		ops: Op[];
+	}
+	const parts: Part[] = [];
+	const seen = new Set<number>();
+	const read = (ref: Obj, res: Obj, depth: number): boolean => {
+		if (!ref.isIndirect() || seen.has(ref.asIndirect()) || depth > 20) return true;
+		seen.add(ref.asIndirect());
+		const data = readBytes(ref);
+		const ops: Op[] = [];
+		try {
+			const lexer = new Lexer(data, 0);
+			for (let op = lexer.next(); op; op = lexer.next()) ops.push(op);
+		} catch (e) {
+			rethrowFault(e);
+			return false;
+		}
+		parts.push({ ref, res, data, ops });
+		for (const op of ops) {
+			if (op.op !== 'Do' || op.args[0]?.k !== 'name' || res.isNull()) continue;
+			const xo = res.get('XObject').get(op.args[0].v);
+			if (!xo.isIndirect() || xo.get('Subtype').asName() !== 'Form') continue;
+			const own = xo.get('Resources');
+			if (!read(xo, own.isNull() ? res : own, depth + 1)) return false;
+		}
+		return true;
+	};
+	const res = pageObj.getInheritable('Resources');
+	const contents = pageObj.get('Contents');
+	const refs = contents.isArray() ? Array.from({ length: contents.length }, (_, i) => contents.get(i)) : [contents];
+	for (const ref of refs) if (!read(ref, res, 0)) return;
+	const strokedText = parts.some((pt) =>
+		pt.ops.some((op) => op.op === 'Tr' && op.args[0]?.k === 'num' && [1, 2, 5, 6].includes(op.args[0].v))
+	);
+	if (!strokedText) return;
+
+	const KEYS: Record<string, string> = { w: 'LW', J: 'LC', j: 'LJ', M: 'ML', d: 'D' };
+	const names = new Map<string, string>();
+	let counter = 0;
+	for (const pt of parts) {
+		const edits: Edit[] = [];
+		for (const op of pt.ops) {
+			const key = KEYS[op.op];
+			if (!key) continue;
+			let value: string;
+			if (op.op === 'd') {
+				const [arr, phase] = op.args.slice(-2);
+				if (arr?.k !== 'arr' || phase?.k !== 'num') continue;
+				value = `[${latin1(pt.data, arr.s, arr.e)} ${n4(phase.v)}]`;
+			} else {
+				const a = op.args[op.args.length - 1];
+				if (a?.k !== 'num') continue;
+				value = n4(a.v);
+			}
+			if (pt.res.isNull() || !pt.res.isDictionary()) return;
+			let gsDict = pt.res.get('ExtGState');
+			if (gsDict.isNull()) {
+				pt.res.put('ExtGState', doc.newDictionary());
+				gsDict = pt.res.get('ExtGState');
+			}
+			const id = `${key} ${value}`;
+			let name = names.get(id);
+			if (!name) {
+				do name = `RdxS${counter++}`;
+				while (!gsDict.get(name).isNull());
+				names.set(id, name);
+			}
+			if (gsDict.get(name).isNull()) {
+				const g = doc.newDictionary();
+				g.put('Type', doc.newName('ExtGState'));
+				if (op.op === 'd') {
+					const a = op.args[op.args.length - 2] as Extract<Val, { k: 'arr' }>;
+					const dash = doc.newArray();
+					for (const v of a.v) if (v.k === 'num') dash.push(v.v);
+					const pair = doc.newArray();
+					pair.push(dash);
+					pair.push((op.args[op.args.length - 1] as Extract<Val, { k: 'num' }>).v);
+					g.put('D', pair);
+				} else {
+					g.put(key, (op.args[op.args.length - 1] as Extract<Val, { k: 'num' }>).v);
+				}
+				gsDict.put(name, doc.addObject(g));
+			}
+			edits.push({ start: op.args[0]?.s ?? op.s, end: op.e, text: `/${name} gs` });
+		}
+		if (edits.length) pt.ref.writeStream(applyEdits(pt.data, edits));
+	}
 }
 
 function cleanContent(
@@ -480,7 +722,8 @@ function cleanContent(
 		resources: [],
 		extGStates: [],
 		patterns: [],
-		active: new Set()
+		active: new Set(),
+		pageArea: Math.max(1, (bounds[2] - bounds[0]) * (bounds[3] - bounds[1]))
 	};
 	const res = localResources(doc, pageObj, pageObj.getInheritable('Resources'));
 	const usage = newUsage();
@@ -642,7 +885,10 @@ function walkStream(ctx: PassCtx, ref: Obj, res: Obj, usage: Usage, state: GStat
 					const stroke = /^([Ss]|[Bb]\*?)$/.test(op.op);
 					const pattern = (fill && top().fillPat !== null) || (stroke && top().strokePat !== null);
 					// Removed unless it is a plain rule/border/background (see the header).
-					if (p && ctx.boxes.some((b) => touches(p, b, 0)) && (pattern || !path.keepable(ctx.boxes, fill))) edit(op.s, op.e, 'n');
+					if (p && ctx.boxes.some((b) => touches(p, b, 0)) && (pattern || !path.keepable(ctx.boxes, fill))) {
+						if (pattern) refuseLargeFill(ctx, intersect(p, top().clip ?? p));
+						edit(op.s, op.e, 'n');
+					}
 					else paint(fill, stroke);
 				}
 				if (clipPending && p) {
@@ -656,7 +902,10 @@ function walkStream(ctx: PassCtx, ref: Obj, res: Obj, usage: Usage, state: GStat
 			case 'sh': {
 				const name = nameArg(op, 0);
 				const area = top().clip;
-				if (!area || ctx.boxes.some((b) => touches(area, b, 0))) edit(op.args[0]?.s ?? op.s, op.e, '');
+				if (!area || ctx.boxes.some((b) => touches(area, b, 0))) {
+					refuseLargeFill(ctx, area);
+					edit(op.args[0]?.s ?? op.s, op.e, '');
+				}
 				else if (name) usage.Shading.add(name);
 				break;
 			}

@@ -584,15 +584,49 @@ function survey() {
 	const page2 = pdf.add(
 		`<< /Type /Page /Parent ${pages} 0 R /MediaBox [0 0 612 792] /Contents ${c2} 0 R /Resources << /Font << /F1 ${font} 0 R /F2 ${times} 0 R >> >> >>`
 	);
-	pdf.set(pages, `<< /Type /Pages /Kids [${page} 0 R ${page2} 0 R] /Count 2 >>`);
+	// Page 3: "bold" drawn as fill plus a thin stroke (2 Tr, 0.3 w inside the text
+	// object), as word processors do for fonts without a bold face. MuPDF's rewrite
+	// dropped the line width, so this text came out much heavier.
+	const c3 = pdf.stream(
+		'<< >>',
+		[
+			text(72, 700, 'SECRET-BOLD-PAGE'),
+			'BT /F1 28 Tf 0 0 0 rg 2 Tr 0.3 w 1 0 0 1 72 600 Tm (KEEP-PSEUDO-BOLD) Tj 0 Tr 0 w ET',
+			'2 w 72 560 m 300 560 l S'
+		].join('\n'),
+		{ flate: true }
+	);
+	const page3 = pdf.add(`<< /Type /Page /Parent ${pages} 0 R /MediaBox [0 0 612 792] /Contents ${c3} 0 R /Resources << /Font << /F1 ${font} 0 R >> >> >>`);
+	// Page 4: a page-wide colour gradient (a background) under white text.
+	const bg = pdf.add('<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 0 792] /Function << /FunctionType 2 /Domain [0 1] /C0 [0.9 0.3 0.5] /C1 [0.3 0.3 0.9] /N 1 >> /Extend [true true] >>');
+	const c4 = pdf.stream(
+		'<< >>',
+		['q 0 0 612 792 re W n /Bg sh Q', 'BT /F1 12 Tf 1 1 1 rg 1 0 0 1 72 700 Tm (SECRET-ON-GRADIENT) Tj ET', 'BT /F1 12 Tf 1 1 1 rg 1 0 0 1 72 600 Tm (KEEP-WHITE-TEXT) Tj ET'].join('\n'),
+		{ flate: true }
+	);
+	const page4 = pdf.add(
+		`<< /Type /Page /Parent ${pages} 0 R /MediaBox [0 0 612 792] /Contents ${c4} 0 R /Resources << /Font << /F1 ${font} 0 R >> /Shading << /Bg ${bg} 0 R >> >> >>`
+	);
+	// Page 5: a line with horizontal scaling and TJ adjustments, far from the box: MuPDF's
+	// rewrite of the page moves its glyphs, and the stage must notice and refuse.
+	const c5 = pdf.stream(
+		'<< >>',
+		[text(80, 300, 'SECRET-NEAR-SCALED'), 'BT /F1 24 Tf 0 0 0 rg 50 Tz 1 0 0 1 72 200 Tm (KEEP-SCALED) Tj [( T)-200(J)-200(ADJUST)] TJ ET'].join('\n'),
+		{ flate: true }
+	);
+	const page5 = pdf.add(`<< /Type /Page /Parent ${pages} 0 R /MediaBox [0 0 612 792] /Contents ${c5} 0 R /Resources << /Font << /F1 ${font} 0 R >> >> >>`);
+	pdf.set(pages, `<< /Type /Pages /Kids [${page} 0 R ${page2} 0 R ${page3} 0 R ${page4} 0 R ${page5} 0 R] /Count 5 >>`);
 	const catalog = pdf.add(`<< /Type /Catalog /Pages ${pages} 0 R >>`);
 	return {
 		bytes: pdf.bytes(catalog),
 		meta: {
-			pages: 2,
+			pages: 5,
 			box: { rect: [70, 695, 72 + secretW + 2, 712], hides: ['SECRET-SURVEY-LINE'] },
 			tight: { line: 'SECRET-TIGHT-LINE', keep: ['KEEP-BIG-TITLE', 'KEEP-NEXT-LINE', 'KEEP-FAR-LINE'] },
 			times: { line: 'SECRET-TIMES-LINE', keep: ['KEEP-TIMES-NEXT'] },
+			bold: { line: 'SECRET-BOLD-PAGE', keep: 'KEEP-PSEUDO-BOLD', rect: [72, 590, 400, 625] },
+			scaled: { line: 'SECRET-NEAR-SCALED' },
+			gradient: { line: 'SECRET-ON-GRADIENT' },
 			image: [300, 400, 500, 500],
 			shading: [72, 200, 372, 260],
 			keep: ['KEEP-SURVEY-TEXT', 'KEEP-FORM-TEXT']
