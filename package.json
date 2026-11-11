@@ -16,7 +16,11 @@
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"test": "vitest run",
 		"test:e2e": "playwright test",
-		"icons": "node scripts/make-icons.mjs"
+		"icons": "node scripts/make-icons.mjs",
+		"survey:profile": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/survey/survey.ts profile",
+		"survey:sample": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/survey/survey.ts sample",
+		"survey:run": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/survey/survey.ts run",
+		"survey:report": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/survey/survey.ts report"
 	},
 	"devDependencies": {
 		"@playwright/test": "^1.65.0",
