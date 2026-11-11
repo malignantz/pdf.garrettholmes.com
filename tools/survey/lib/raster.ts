@@ -105,6 +105,9 @@ export interface Diff {
 	insideFractions: number[];
 	/** Mean luminance inside each `inside` region of the second raster. */
 	insideLuma: number[];
+	/** Per inside region: pixels that were light (every channel ≥ LIGHT_LEVEL) before, and the share of those that changed. */
+	insideLight: number[];
+	insideLightFractions: number[];
 	diff: Raster;
 }
 
@@ -114,6 +117,13 @@ const inRegion = (r: Region, fx: number, fy: number) => fx >= r.x0 && fx <= r.x1
  * Compares two renders of the same page. Pixels in `exclude` regions are skipped;
  * `inside` regions are measured separately (e.g. "did the stamp show up").
  */
+/**
+ * A pixel whose every channel is at least this before an edit (light grey to white) must
+ * visibly change under a highlight; a multiply highlight cannot show on dark or
+ * strongly coloured pixels.
+ */
+export const LIGHT_LEVEL = 160;
+
 export function compare(a: Raster, b: Raster, exclude: Region[] = [], inside: Region[] = []): Diff {
 	const sameSize = Math.abs(a.w - b.w) <= SIZE_SLACK_PX && Math.abs(a.h - b.h) <= SIZE_SLACK_PX;
 	const w = Math.min(a.w, b.w);
@@ -126,6 +136,8 @@ export function compare(a: Raster, b: Raster, exclude: Region[] = [], inside: Re
 	const inCount = inside.map(() => 0);
 	const inDiff = inside.map(() => 0);
 	const inLuma = inside.map(() => 0);
+	const inLight = inside.map(() => 0);
+	const inLightDiff = inside.map(() => 0);
 	for (let y = 0; y < h; y++) {
 		const fy = (y + 0.5) / h;
 		for (let x = 0; x < w; x++) {
@@ -148,6 +160,10 @@ export function compare(a: Raster, b: Raster, exclude: Region[] = [], inside: Re
 				inCount[k]++;
 				if (isDiff) inDiff[k]++;
 				inLuma[k] += 0.299 * b.px[ib] + 0.587 * b.px[ib + 1] + 0.114 * b.px[ib + 2];
+				if (Math.min(a.px[ia], a.px[ia + 1], a.px[ia + 2]) >= LIGHT_LEVEL) {
+					inLight[k]++;
+					if (isDiff) inLightDiff[k]++;
+				}
 			});
 			if (exclude.some((r) => inRegion(r, fx, fy))) {
 				diff.px[o] = diff.px[o + 1] = diff.px[o + 2] = isDiff ? 160 : 230;
@@ -170,6 +186,8 @@ export function compare(a: Raster, b: Raster, exclude: Region[] = [], inside: Re
 		compared,
 		insideFractions: inside.map((_, k) => (inCount[k] ? inDiff[k] / inCount[k] : 0)),
 		insideLuma: inside.map((_, k) => (inCount[k] ? inLuma[k] / inCount[k] : 255)),
+		insideLight: inLight,
+		insideLightFractions: inside.map((_, k) => (inLight[k] ? inLightDiff[k] / inLight[k] : 0)),
 		diff
 	};
 }
