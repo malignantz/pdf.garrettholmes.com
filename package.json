@@ -20,7 +20,8 @@
 		"survey:profile": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/survey/survey.ts profile",
 		"survey:sample": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/survey/survey.ts sample",
 		"survey:run": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/survey/survey.ts run",
-		"survey:report": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/survey/survey.ts report"
+		"survey:report": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/survey/survey.ts report",
+		"forms:measure": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/forms-detect/measure.ts"
 	},
 	"devDependencies": {
 		"@playwright/test": "^1.65.0",

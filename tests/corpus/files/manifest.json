@@ -1202,5 +1202,9 @@
 	"objstm-metadata.pdf": {
 		"pages": 3,
 		"note": "empty /AcroForm; pages in object stream 21; page 3 /PieceInfo SECRETPIECE and /Metadata (XMP SECRETXMP); Info /Author SECRETAUTHOR; text \"objstm-metadata p<N>\""
+	},
+	"forms-detect-flat.pdf": {
+		"pages": 2,
+		"note": "p1 flat form (no AcroForm): underscores, a drawn rule, a labelled box, a table with two empty rows, two squares, a ZapfDingbats box glyph, a filled-frame box, five comb boxes, a signature line with caption; plus a heading rule and a footer rule that are not blanks. p2 ordinary page: heading rule, paragraphs, underlined link, filled table, footer rule"
 	}
 }
