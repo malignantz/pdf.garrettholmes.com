@@ -250,7 +250,66 @@ export async function verifyRedactions(
 // ---------------------------------------------------------------------------
 // The stage
 
+/**
+ * Decoded drawing instructions (page content and the forms and tiling patterns it uses)
+ * above which a page is not redacted. Measured in Node (survey, 2026-11-11): the stage's
+ * time and memory grow with this size, about 3 s and 40 MB per MB (generated pages:
+ * 8 MB took 23 s and 640 MB at peak, 16 MB 52 s and 970 MB, 32 MB 99 s and 1.7 GB; a
+ * 79 MB USGS map sheet 170 s and 3.1 GB, more than a browser tab can count on). The
+ * largest redacted page of an ordinary file among 366 surveyed held 3.3 MB.
+ */
+export const MAX_REDACT_CONTENT_BYTES = 16 * 1024 * 1024;
+
+/** Refuses, before any heavy work, a page whose content is larger than MAX_REDACT_CONTENT_BYTES. */
+function checkPageSize(doc: Doc, pageIndex: number) {
+	const pageObj = doc.findPage(pageIndex);
+	let total = 0;
+	const seen = new Set<number>();
+	const add = (ref: Obj): boolean => {
+		if (total > MAX_REDACT_CONTENT_BYTES || !ref.isStream()) return false;
+		if (ref.isIndirect()) {
+			if (seen.has(ref.asIndirect())) return false;
+			seen.add(ref.asIndirect());
+		}
+		const buf = ref.readStream();
+		try {
+			total += buf.getLength();
+		} finally {
+			destroy(buf);
+		}
+		return true;
+	};
+	const walk = (res: Obj, depth: number) => {
+		if (res.isNull() || depth > 20) return;
+		const r = res.resolve();
+		if (!r.isDictionary()) return;
+		for (const kind of ['XObject', 'Pattern']) {
+			const dict = r.get(kind);
+			if (dict.isNull() || !dict.resolve().isDictionary()) continue;
+			dict.resolve().forEach((v) => {
+				const sub = v.get('Subtype');
+				if (kind === 'XObject' && (!sub.isName() || sub.asName() !== 'Form')) return;
+				if (add(v)) walk(v.get('Resources'), depth + 1);
+			});
+		}
+	};
+	const contents = pageObj.get('Contents');
+	if (contents.isArray()) {
+		const a = contents.resolve();
+		for (let i = 0; i < a.length; i++) add(a.get(i));
+	} else add(contents);
+	walk(pageObj.getInheritable('Resources'), 0);
+	if (total > MAX_REDACT_CONTENT_BYTES) {
+		throw new EngineError(
+			'too-large',
+			`Page ${pageIndex + 1} is too detailed to redact on this device (more than ${MAX_REDACT_CONTENT_BYTES / 1024 / 1024} MB of drawing instructions), so nothing was exported.`
+		);
+	}
+}
+
 function redactDocument(m: Mupdf, doc: Doc, jobs: RedactJob[], notes: { partly: number; drawings: number }): Uint8Array {
+	// Before anything heavy (the probe copy, text extraction, MuPDF's rewrite).
+	for (const job of jobs) checkPageSize(doc, job.pageIndex);
 	const preCount = doc.countObjects();
 	// Glyph boxes are measured with hidden layers visible, so hidden text is grown over too.
 	const probe = hasOptionalContent(doc) ? withoutOptionalContent(m, doc) : null;

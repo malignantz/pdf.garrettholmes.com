@@ -634,6 +634,33 @@ function survey() {
 	};
 }
 
+/**
+ * A page with `mb` MB of drawing instructions (a short line repeated, so it compresses to
+ * a few KB), drawn directly or (`inForm`) from a Form XObject, and SECRET-DENSE-LINE at
+ * the top in a 12 pt line box [72 700 .. 72+w 712]. Not written to files/: corpus-wide
+ * tests would have to draw it. The redaction size guard is tested with it.
+ */
+export function densePage(mb, { inForm = false } = {}) {
+	const pdf = new Pdf();
+	const font = pdf.add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
+	const unit = '0.5 w 100 100 m 110 120 l S\n';
+	const dense = unit.repeat(Math.ceil((mb * 1024 * 1024) / unit.length));
+	const head = 'BT /F1 12 Tf 0 0 0 rg 1 0 0 1 72 700 Tm (SECRET-DENSE-LINE) Tj ET\n';
+	let res = `/Font << /F1 ${font} 0 R >>`;
+	let body = head + dense;
+	if (inForm) {
+		const form = pdf.stream('<< /Type /XObject /Subtype /Form /BBox [0 0 612 792] >>', dense, { flate: true });
+		res += ` /XObject << /Fm1 ${form} 0 R >>`;
+		body = `${head}/Fm1 Do\n`;
+	}
+	const c = pdf.stream('<< >>', body, { flate: true });
+	const pages = pdf.alloc();
+	const page = pdf.add(`<< /Type /Page /Parent ${pages} 0 R /MediaBox [0 0 612 792] /Contents ${c} 0 R /Resources << ${res} >> >>`);
+	pdf.set(pages, `<< /Type /Pages /Kids [${page} 0 R] /Count 1 >>`);
+	const catalog = pdf.add(`<< /Type /Catalog /Pages ${pages} 0 R >>`);
+	return { bytes: pdf.bytes(catalog), line: [72, 700, 72 + helvWidth('SECRET-DENSE-LINE', 12), 712] };
+}
+
 /** `write(name, bytes, meta)` as in generate.mjs; `outDir` must already hold photo-plain.jpg. */
 export async function generateRedact({ write, outDir }) {
 	const b = basic();
