@@ -78,6 +78,8 @@ export async function runPool<J, R>(jobs: J[], opts: PoolOptions<J, R>): Promise
 		const spawn = (): Slot<J> => {
 			const child = fork(opts.script, [], {
 				execArgv: childExecArgv(Math.max(256, Math.floor(opts.memMB * 0.6))),
+				// A fixed cwd: children must not depend on the caller's folder still existing.
+				cwd: surveyDir,
 				stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
 				serialization: 'advanced'
 			});
