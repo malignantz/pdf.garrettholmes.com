@@ -381,10 +381,13 @@ async function arrangeScenario(c: Ctx): Promise<Partial2> {
 		const doc = openDoc(mupdf, res.bytes);
 		const srcDoc = (() => {
 			try {
-				return openDoc(mupdf, c.bytes);
+				const d = openDoc(mupdf, c.bytes);
+				if (d.countPages() === c.src.pages.length) return d;
+				d.destroy();
 			} catch {
-				return openDoc(mupdf, c.src.bytes);
+				// MuPDF cannot read the original: use the engine's opened copy.
 			}
+			return openDoc(mupdf, c.src.bytes);
 		})();
 		const goodDoc = openDoc(mupdf, good.bytes);
 		const bad: string[] = [];
