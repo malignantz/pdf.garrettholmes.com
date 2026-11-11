@@ -1118,5 +1118,9 @@
 	"form-comb.pdf": {
 		"pages": 1,
 		"note": "comb text field \"code\", 8 cells (MaxLen 8)"
+	},
+	"form-shared.pdf": {
+		"pages": 1,
+		"note": "checkbox \"tick\": on/off appearances share indirect /Resources; two images share an indirect /ColorSpace"
 	}
 }

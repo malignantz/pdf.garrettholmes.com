@@ -988,7 +988,10 @@ export async function applyForms(
 			if (wrote.length && job.an.calculates) warnings.push(CALC_WARNING);
 			if (wrote.some((a) => a.rec.formatted)) warnings.push(FORMAT_WARNING);
 		}
-		return doc.saveToBuffer('garbage=compact').asUint8Array().slice();
+		// Not garbage=compact: renumbering copies objects that MuPDF.js still holds from JS and
+		// writes copied streams without their data (docs/research/2026-11-10-mupdf-api.md).
+		// Unreferenced objects are still dropped; qpdf renumbers at finalize.
+		return doc.saveToBuffer('garbage=yes').asUint8Array().slice();
 	} finally {
 		closeDoc(doc);
 	}

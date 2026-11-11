@@ -405,6 +405,33 @@ function formComb() {
 	]);
 }
 
+
+/**
+ * form-shared.pdf: checkbox "tick" whose on and off appearance streams share one indirect
+ * /Resources dictionary, and a page image whose /ColorSpace is an indirect object shared
+ * with a second image. A save that renumbers objects read through MuPDF.js
+ * (garbage=compact) wrote such streams without their data.
+ */
+function formShared() {
+	const px = Buffer.alloc(4 * 4 * 3, 0x40);
+	return rawPdf([
+		[
+			[1, 0, '<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R] >> >>'],
+			[2, 0, '<< /Type /Pages /Kids [3 0 R] /Count 1 >>'],
+			[3, 0, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> /XObject << /Im1 10 0 R /Im2 11 0 R >> >> /Annots [6 0 R] >>'],
+			[4, 0, '<< /Length %LEN% >>', stream(text(72, 700, 'form-shared p1') + '\nq 100 0 0 100 72 450 cm /Im1 Do Q q 100 0 0 100 200 450 cm /Im2 Do Q')],
+			[5, 0, FONT],
+			[6, 0, '<< /Type /Annot /Subtype /Widget /FT /Btn /T (tick) /P 3 0 R /F 4 /Rect [72 600 90 618] /AS /Off /AP << /N << /Yes 7 0 R /Off 8 0 R >> >> >>'],
+			[7, 0, '<< /Type /XObject /Subtype /Form /BBox [0 0 18 18] /Resources 9 0 R /Length %LEN% >>', stream('0 g 4 4 10 10 re f')],
+			[8, 0, '<< /Type /XObject /Subtype /Form /BBox [0 0 18 18] /Resources 9 0 R /Length %LEN% >>', stream('0 G 1 1 16 16 re S')],
+			[9, 0, '<< /ProcSet [/PDF] >>'],
+			[10, 0, '<< /Type /XObject /Subtype /Image /Width 4 /Height 4 /BitsPerComponent 8 /ColorSpace 12 0 R /Length %LEN% >>', px],
+			[11, 0, '<< /Type /XObject /Subtype /Image /Width 4 /Height 4 /BitsPerComponent 8 /ColorSpace 12 0 R /Length %LEN% >>', px],
+			[12, 0, '[/CalRGB << /WhitePoint [0.9505 1 1.089] >>]']
+		]
+	]);
+}
+
 export default async function generateIntake(write) {
 	write('layers.pdf', layers(), { pages: 1, note: 'layer "Hidden" (6 0 R) default OFF via /D /OFF; layer "Shown" (8 0 R) ON; indirect /OCProperties' });
 	write('layers-base-off.pdf', layersBaseOff(), { pages: 2, note: 'direct /OCProperties, /BaseState /OFF, /ON [On]: layer "Off" hidden by base state' });
@@ -420,6 +447,7 @@ export default async function generateIntake(write) {
 	write('form-buttons.pdf', formButtons(), { pages: 1, note: 'radio "pick" (A, B) without /Off appearances; checkbox "broken" with /null appearances (not fillable); checkbox "zero": on-state /1, value /0 (clear)' });
 	write('form-autosize.pdf', formAutosize(), { pages: 1, note: 'multiline fields 10 pt high: "short" auto size (0 Tf, inherited), "fixed" 12 pt' });
 	write('form-comb.pdf', formComb(), { pages: 1, note: 'comb text field "code", 8 cells (MaxLen 8)' });
+	write('form-shared.pdf', formShared(), { pages: 1, note: 'checkbox "tick": on/off appearances share indirect /Resources; two images share an indirect /ColorSpace' });
 	write('gen-reuse.pdf', genReuse(), { pages: 1, note: 'object 6 reused with generation 1 (legitimate); opens; text "gen-reuse p1"' });
 }
 

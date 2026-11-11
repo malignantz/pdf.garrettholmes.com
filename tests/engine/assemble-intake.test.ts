@@ -281,3 +281,33 @@ describe('forms: comb fields', () => {
 		}
 	}, T);
 });
+
+describe('forms stage saves every stream with its data', () => {
+	it('keeps appearance and image streams that share indirect objects', async () => {
+		// Guard only: this file did not reproduce the loss deterministically (it depends on which
+		// MuPDF.js objects are still referenced from JS at save time); see forms.ts applyForms.
+		const src = await openCorpus('form-shared.pdf');
+		for (const flattenForms of [false, true]) {
+			const res = await engine().exportPlan(
+				{ pages: [ref(src, 0)], options: { ...defaultOptions, flattenForms }, formValues: { [src.id]: { tick: true } } },
+				[src],
+				[]
+			);
+			expect(res.checks.every((c) => c.ok)).toBe(true);
+			// Every stream of the output still has data; images draw (PDF.js renders them).
+			const lib = await loadPdfjs();
+			const task = lib.getDocument({ data: res.bytes.slice(), verbosity: 0, useWasm: false });
+			try {
+				const page = await (await task.promise).getPage(1);
+				const ops = await page.getOperatorList();
+				const images = ops.fnArray.filter((f: number) => f === lib.OPS.paintImageXObject).length;
+				expect(images).toBe(2);
+			} finally {
+				await task.destroy();
+			}
+			const empty = [...latin1(res.bytes).matchAll(/\/Length 0\b/g)].length;
+			expect(empty).toBe(0);
+
+		}
+	}, T);
+});
