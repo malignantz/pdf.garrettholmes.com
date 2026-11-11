@@ -21,7 +21,12 @@ export async function runCommand(args: Args) {
 
 	const done = new Set(readJsonl<RunResult>(resultsFile).map((r) => `${r.sha256}\0${r.scenario}`));
 	const only = args.get('only');
-	let files = sample.files.filter((f) => !only || f.sha256.startsWith(only));
+	// --files FILE: one sha256 prefix or file path per line (e.g. the failures of an earlier run).
+	const listed = args.get('files');
+	const wanted = listed ? fs.readFileSync(listed, 'utf8').split('\n').map((l) => l.trim()).filter(Boolean) : null;
+	let files = sample.files.filter(
+		(f) => (!only || f.sha256.startsWith(only)) && (!wanted || wanted.some((w) => f.path === w || f.sha256.startsWith(w)))
+	);
 	const limit = args.num('limit', Infinity);
 	if (files.length > limit) files = files.slice(0, limit);
 	const knownGood = path.join(repoRoot, 'tests/corpus/files/multi.pdf');

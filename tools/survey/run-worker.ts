@@ -12,6 +12,8 @@ import { shortError, tool } from './lib/common';
 import { engine, loadPdfjs } from './lib/engine';
 import { serveJobs } from './lib/pool';
 import {
+	INK_LUMA,
+	MIN_DIFF_PIXELS,
 	LOSSY_MEAN_SUSPECT,
 	SUSPECT_FRACTION,
 	WRONG_FRACTION,
@@ -220,32 +222,46 @@ function firstLine(s: string) {
 	return (s.split('\n').find((l) => l.trim()) ?? 'failed').slice(0, 200);
 }
 
-/** Renders input page `i` (the original bytes, else the normalized ones) and output page `j` at the same scale. */
-function renderPair(c: Ctx, out: Uint8Array, i: number, j: number, password?: string): { before: Raster; after: Raster } {
+/**
+ * Renders input page `i` from the original bytes and from the engine's normalized copy
+ * (`norm`; null when it renders the same as the original) and output page `j`, at one scale.
+ * When MuPDF cannot render the original, `before` is the normalized copy.
+ */
+function renderPair(c: Ctx, out: Uint8Array, i: number, j: number, password?: string): { before: Raster; after: Raster; norm: Raster | null } {
 	const size = c.src.pages[i];
 	const scale = renderScale(size.width, size.height);
+	const render = (bytes: Uint8Array) => {
+		const d = openDoc(mupdf, bytes);
+		try {
+			return renderPage(mupdf, d, i, scale);
+		} finally {
+			d.destroy();
+		}
+	};
+	const norm = render(c.src.bytes);
 	let before: Raster;
 	try {
-		const d = openDoc(mupdf, c.bytes);
-		try {
-			before = renderPage(mupdf, d, i, scale);
-		} finally {
-			d.destroy();
-		}
+		before = render(c.bytes);
 	} catch {
-		const d = openDoc(mupdf, c.src.bytes);
-		try {
-			before = renderPage(mupdf, d, i, scale);
-		} finally {
-			d.destroy();
-		}
+		before = norm;
 	}
 	const d2 = openDoc(mupdf, out, password);
 	try {
-		return { before, after: renderPage(mupdf, d2, j, scale) };
+		const same = before === norm || (() => {
+			const d = compare(before, norm);
+			return d.sameSize && d.fraction <= SUSPECT_FRACTION;
+		})();
+		return { before, after: renderPage(mupdf, d2, j, scale), norm: same ? null : norm };
 	} finally {
 		d2.destroy();
 	}
+}
+
+/** Pixels darker than the ink threshold. */
+function inkPixels(r: Raster): number {
+	let n = 0;
+	for (let k = 0; k < r.px.length; k += 3) if (0.299 * r.px[k] + 0.587 * r.px[k + 1] + 0.114 * r.px[k + 2] < INK_LUMA) n++;
+	return n;
 }
 
 function saveEvidence(c: Ctx, scenario: string, label: string, pair: { before: Raster; after: Raster }, diff: Diff | null, pdf?: string): string[] {
@@ -293,8 +309,14 @@ function pixelCheck(
 		return { problems: [{ level: 'suspect', text: `could not render page ${i + 1} for comparison: ${shortError(e, 120)}` }], evidence: [] };
 	}
 	const inside = [...(opts.mustChange ?? []), ...(opts.mustBeBlack ?? [])];
-	const d = compare(pair.before, pair.after, opts.allowed ?? [], inside);
 	const where = `page ${i + 1}→${j + 1}`;
+	if (pair.norm && inkPixels(pair.before) < MIN_DIFF_PIXELS) {
+		// MuPDF draws the original blank but the engine's opened copy is not (e.g. qpdf decrypts a
+		// file MuPDF cannot): there is no independent "before"; compare with the opened copy.
+		problems.push({ level: 'suspect', text: `${where}: MuPDF renders the original blank; compared with the engine's opened copy` });
+		pair.before = pair.norm;
+	}
+	const d = compare(pair.before, pair.after, opts.allowed ?? [], inside);
 	if (!d.sameSize) {
 		problems.push({ level: 'wrong', text: `${where}: rendered size ${pair.before.w}×${pair.before.h} became ${pair.after.w}×${pair.after.h}` });
 	} else if (opts.lossy) {
@@ -352,19 +374,32 @@ async function arrangeScenario(c: Ctx): Promise<Partial2> {
 	pages.push(ref(good, 0), ref(good, Math.min(1, good.pages.length - 1)));
 	const res = await exportPlan(c, { pages, options: { ...baseOptions, compress: true } }, [good]);
 	const { problems, file } = await reopenChecks(c, res.bytes, pages.length, 'arrange');
-	// Independent page sizes (MuPDF) against what the plan asked for.
+	// Independent page sizes: MuPDF's size of each output page against MuPDF's size of the
+	// source page it shows (rotated as planned). The plan's sizes come from PDF.js; on pages
+	// with degenerate boxes the two readers disagree about the original already.
 	try {
 		const doc = openDoc(mupdf, res.bytes);
+		const srcDoc = (() => {
+			try {
+				return openDoc(mupdf, c.bytes);
+			} catch {
+				return openDoc(mupdf, c.src.bytes);
+			}
+		})();
+		const goodDoc = openDoc(mupdf, good.bytes);
 		const bad: string[] = [];
 		pages.forEach((p, k) => {
 			if (k >= doc.countPages()) return;
-			const s = (p.sourceId === good.id ? good : c.src).pages[p.pageIndex];
+			const sb = (p.sourceId === good.id ? goodDoc : srcDoc).loadPage(p.pageIndex).getBounds();
+			const s = { width: sb[2] - sb[0], height: sb[3] - sb[1] };
 			const [w, h] = p.rotation % 180 ? [s.height, s.width] : [s.width, s.height];
 			const b = doc.loadPage(k).getBounds();
 			if (Math.abs(b[2] - b[0] - w) > 1 || Math.abs(b[3] - b[1] - h) > 1) bad.push(`page ${k + 1}: ${(b[2] - b[0]).toFixed(1)}×${(b[3] - b[1]).toFixed(1)}, planned ${w.toFixed(1)}×${h.toFixed(1)}`);
 		});
 		doc.destroy();
-		if (bad.length) problems.push({ level: 'wrong', text: `MuPDF page sizes differ from the plan: ${bad.slice(0, 3).join('; ')}` });
+		srcDoc.destroy();
+		goodDoc.destroy();
+		if (bad.length) problems.push({ level: 'wrong', text: `MuPDF page sizes differ from the source pages: ${bad.slice(0, 3).join('; ')}` });
 	} catch (e) {
 		problems.push({ level: 'suspect', text: `MuPDF size check failed: ${shortError(e, 120)}` });
 	}
