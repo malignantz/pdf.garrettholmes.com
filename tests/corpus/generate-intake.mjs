@@ -389,6 +389,22 @@ function formAutosize() {
 	]);
 }
 
+
+/** form-comb.pdf: a comb field of 8 cells ("code", MaxLen 8), Courier 10 pt. */
+function formComb() {
+	return rawPdf([
+		[
+			[1, 0, '<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R] /DA (/Cour 10 Tf 0 g) /DR << /Font << /Cour 7 0 R >> >> >> >>'],
+			[2, 0, '<< /Type /Pages /Kids [3 0 R] /Count 1 >>'],
+			[3, 0, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> /Annots [6 0 R] >>'],
+			[4, 0, '<< /Length %LEN% >>', stream(text(72, 700, 'form-comb p1'))],
+			[5, 0, FONT],
+			[6, 0, '<< /Type /Annot /Subtype /Widget /FT /Tx /Ff 16777216 /MaxLen 8 /T (code) /P 3 0 R /F 4 /Rect [72 600 232 620] >>'],
+			[7, 0, '<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>']
+		]
+	]);
+}
+
 export default async function generateIntake(write) {
 	write('layers.pdf', layers(), { pages: 1, note: 'layer "Hidden" (6 0 R) default OFF via /D /OFF; layer "Shown" (8 0 R) ON; indirect /OCProperties' });
 	write('layers-base-off.pdf', layersBaseOff(), { pages: 2, note: 'direct /OCProperties, /BaseState /OFF, /ON [On]: layer "Off" hidden by base state' });
@@ -403,6 +419,7 @@ export default async function generateIntake(write) {
 	write('form-catalog.pdf', formCatalog(), { pages: 2, note: 'form + outline, structure element (/Alt), OpenAction to page 2, Info, XFA; page 2 text SECRETPAGE2; markers SECRETOUTLINE/ALT/INFO/XFA' });
 	write('form-buttons.pdf', formButtons(), { pages: 1, note: 'radio "pick" (A, B) without /Off appearances; checkbox "broken" with /null appearances (not fillable); checkbox "zero": on-state /1, value /0 (clear)' });
 	write('form-autosize.pdf', formAutosize(), { pages: 1, note: 'multiline fields 10 pt high: "short" auto size (0 Tf, inherited), "fixed" 12 pt' });
+	write('form-comb.pdf', formComb(), { pages: 1, note: 'comb text field "code", 8 cells (MaxLen 8)' });
 	write('gen-reuse.pdf', genReuse(), { pages: 1, note: 'object 6 reused with generation 1 (legitimate); opens; text "gen-reuse p1"' });
 }
 

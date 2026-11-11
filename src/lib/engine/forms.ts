@@ -824,8 +824,12 @@ function appearanceProblem(w: MWidget, want: string, comb: number | null): 'does
 			const hi = Math.floor((Math.max(...vs) - start - 0.5) / cell);
 			return lo === hi ? lo : -1;
 		});
+		// Each drawn character sits in the cell of its position in the answer (spaces take a
+		// cell but draw nothing).
+		const pos = [...want].flatMap((ch, i) => (ch.trim() !== '' ? [i] : []));
 		const dir = cells.length > 1 && cells[1] < cells[0] ? -1 : 1;
-		if (cells.some((c, i) => c < 0 || c >= comb || (i > 0 && c !== cells[i - 1] + dir))) return 'comb';
+		if (pos.length !== cells.length) return 'comb';
+		if (cells.some((c, i) => c < 0 || c >= comb || c - cells[0] !== dir * (pos[i] - pos[0]))) return 'comb';
 	}
 	return null;
 }

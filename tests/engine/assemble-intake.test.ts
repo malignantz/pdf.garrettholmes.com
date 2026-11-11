@@ -271,3 +271,13 @@ describe('forms: automatic font size', () => {
 		).rejects.toThrow(/does not fit/);
 	}, T);
 });
+
+describe('forms: comb fields', () => {
+	it('fills a comb field with an answer containing spaces', async () => {
+		const src = await openCorpus('form-comb.pdf');
+		for (const code of ['AB 12', 'A1B2C3D4', 'X']) {
+			const res = await engine().exportPlan({ pages: [ref(src, 0)], options: defaultOptions, formValues: { [src.id]: { code } } }, [src], []);
+			expect(res.checks.every((c) => c.ok)).toBe(true);
+		}
+	}, T);
+});

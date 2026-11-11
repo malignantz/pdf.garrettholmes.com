@@ -1114,5 +1114,9 @@
 	"form-autosize.pdf": {
 		"pages": 1,
 		"note": "multiline fields 10 pt high: \"short\" auto size (0 Tf, inherited), \"fixed\" 12 pt"
+	},
+	"form-comb.pdf": {
+		"pages": 1,
+		"note": "comb text field \"code\", 8 cells (MaxLen 8)"
 	}
 }
