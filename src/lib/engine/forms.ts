@@ -202,6 +202,29 @@ function sameBox(a: Box, b: Box): boolean {
 	);
 }
 
+type MPage = ReturnType<MDoc['loadPage']>;
+const loadedPages = new WeakMap<MDoc, MPage[]>();
+
+/**
+ * Page i of a MuPDF document, loaded once and kept for the document's lifetime. A widget
+ * stays usable only while its page object is alive: MuPDF.js frees a page whose JS object
+ * was garbage-collected, and the page's widgets then fail ("annotation not bound to any
+ * page"), depending on when the collector runs.
+ */
+function pageOf(doc: MDoc, i: number): MPage {
+	let pages = loadedPages.get(doc);
+	if (!pages) loadedPages.set(doc, (pages = []));
+	return (pages[i] ??= doc.loadPage(i));
+}
+
+/** Frees a document and the pages pageOf kept for it (pages first). */
+function closeDoc(doc: MDoc | null) {
+	if (!doc) return;
+	for (const p of loadedPages.get(doc) ?? []) destroy(p);
+	loadedPages.delete(doc);
+	destroy(doc);
+}
+
 function destroy(x: { destroy?: () => void } | null | undefined) {
 	try {
 		x?.destroy?.();
@@ -318,7 +341,7 @@ function analyzeDoc(doc: MDoc): FormAnalysis {
 	const groups = new Map<string, RawWidget[]>();
 	const n = doc.countPages();
 	for (let i = 0; i < n; i++) {
-		const page = doc.loadPage(i);
+		const page = pageOf(doc, i);
 		const pobj = page.getObject();
 		const box = visibleBox(numbers(pobj.getInheritable('MediaBox')), numbers(pobj.getInheritable('CropBox')));
 		const rot = pobj.getInheritable('Rotate');
@@ -505,7 +528,7 @@ function analyzeSource(deps: EngineDeps, bytes: Uint8Array): Promise<FormAnalysi
 			try {
 				return analyzeDoc(doc);
 			} finally {
-				destroy(doc);
+				closeDoc(doc);
 			}
 		})();
 		p.catch(() => analyses.delete(bytes));
@@ -690,7 +713,7 @@ function mapTargets(doc: MDoc, ctx: FormsContext, answers: Map<Source, SourceAns
 		const src = job.an.pages[p.pageIndex] ?? [];
 		const wanted = (r: WidgetRec) => (r.field !== null && job.answers.get(r.field)?.write === true ? job.answers.get(r.field)! : null);
 		if (!src.some(wanted)) return;
-		const widgets = doc.loadPage(i).getWidgets();
+		const widgets = pageOf(doc, i).getWidgets();
 		if (!sameWidgets(widgets, src)) {
 			throw new EngineError(
 				'internal',
@@ -725,7 +748,7 @@ function byTerminal(doc: MDoc, targets: Target[]): Target[][] {
 	}
 	const onPages = new Set<number>();
 	for (let i = 0; i < doc.countPages(); i++) {
-		for (const w of doc.loadPage(i).getWidgets()) onPages.add(objId(w.getObject()));
+		for (const w of pageOf(doc, i).getWidgets()) onPages.add(objId(w.getObject()));
 	}
 	for (const list of groups.values()) {
 		const ours = new Set(list.map((t) => objId(t.widget.getObject())));
@@ -924,7 +947,7 @@ export async function applyForms(
 		}
 		return doc.saveToBuffer('garbage=compact').asUint8Array().slice();
 	} finally {
-		destroy(doc);
+		closeDoc(doc);
 	}
 }
 
@@ -953,7 +976,7 @@ function syncOffPageCopies(doc: MDoc, groups: Target[][]) {
 	if (!fields || !fields.isArray() || groups.length === 0) return;
 	const onPages = new Set<number>();
 	for (let i = 0; i < doc.countPages(); i++) {
-		for (const a of arrayItems(get(doc.loadPage(i).getObject(), 'Annots'))) onPages.add(objId(a));
+		for (const a of arrayItems(get(pageOf(doc, i).getObject(), 'Annots'))) onPages.add(objId(a));
 	}
 	// Answers by source field name; a name answered differently by two sources is left alone.
 	const byName = new Map<string, Target[] | null>();
@@ -1016,7 +1039,7 @@ function syncOffPageCopies(doc: MDoc, groups: Target[][]) {
  */
 function drawRequested(doc: MDoc, done: Set<number>) {
 	for (let i = 0; i < doc.countPages(); i++) {
-		for (const w of doc.loadPage(i).getWidgets()) {
+		for (const w of pageOf(doc, i).getWidgets()) {
 			if (done.has(objId(w.getObject()))) continue;
 			const type = w.getFieldType();
 			const value = w.getValue();
@@ -1037,7 +1060,7 @@ function drawRequested(doc: MDoc, done: Set<number>) {
 /** Bake every shown widget into its page; drop the others and the form itself. */
 function flattenAll(doc: MDoc) {
 	for (let i = 0; i < doc.countPages(); i++) {
-		const page = doc.loadPage(i);
+		const page = pageOf(doc, i);
 		for (const w of page.getWidgets()) {
 			// Hidden widgets and widgets without a usable appearance show nothing. Left in, MuPDF
 			// would draw its own for the first and scale an empty /BBox to infinity for the second.
@@ -1049,7 +1072,7 @@ function flattenAll(doc: MDoc) {
 	if (get(root, 'AcroForm')) root!.delete('AcroForm');
 	// (MuPDF's loaded pages still list the baked widgets; the page objects are what is saved.)
 	for (let i = 0; i < doc.countPages(); i++) {
-		const annots = arrayItems(get(doc.loadPage(i).getObject(), 'Annots'));
+		const annots = arrayItems(get(pageOf(doc, i).getObject(), 'Annots'));
 		if (annots.some((a) => text(get(a, 'Subtype')) === 'Widget')) {
 			throw new EngineError('internal', 'Some form fields could not be turned into page content.');
 		}
@@ -1070,7 +1093,7 @@ interface PdfjsAnnotation {
 function openFinal(m: M, bytes: Uint8Array, password?: string): MDoc {
 	const doc = new m.PDFDocument(bytes);
 	if (doc.needsPassword() && (password === undefined || doc.authenticatePassword(password) === 0)) {
-		destroy(doc);
+		closeDoc(doc);
 		throw new EngineError('internal', 'MuPDF could not open the exported file.');
 	}
 	return doc;
@@ -1161,7 +1184,7 @@ export async function verifyForms(
 		if (ctx.flatten) {
 			if (get(doc.getTrailer(), 'Root', 'AcroForm')) problems.push('the file still has a form');
 			for (let i = 0; i < doc.countPages(); i++) {
-				if (doc.loadPage(i).getWidgets().length) problems.push(`page ${i + 1} still has form fields (MuPDF)`);
+				if (pageOf(doc, i).getWidgets().length) problems.push(`page ${i + 1} still has form fields (MuPDF)`);
 			}
 			for (let i = 0; i < pdf.numPages; i++) {
 				const page = await pdf.getPage(i + 1);
@@ -1171,7 +1194,7 @@ export async function verifyForms(
 				const boxes = ctx.redactions?.[i] ?? [];
 				let frame: { box: Box; rotation: Rotation } | null = null;
 				if (boxes.length) {
-					const pobj = doc.loadPage(i).getObject();
+					const pobj = pageOf(doc, i).getObject();
 					const rot = pobj.getInheritable('Rotate');
 					frame = {
 						box: visibleBox(numbers(pobj.getInheritable('MediaBox')), numbers(pobj.getInheritable('CropBox'))),
@@ -1204,7 +1227,7 @@ export async function verifyForms(
 			for (const i of pages) {
 				const p = ctx.pages[i];
 				const src = answers.get(p.source)!.an.pages[p.pageIndex];
-				const widgets = doc.loadPage(i).getWidgets();
+				const widgets = pageOf(doc, i).getWidgets();
 				if (!sameWidgets(widgets, src)) {
 					problems.push(`page ${i + 1}: the form fields do not match the original page (MuPDF)`);
 					continue;
@@ -1225,7 +1248,7 @@ export async function verifyForms(
 	} catch (e) {
 		problems.push(`the file could not be read back (${e instanceof Error ? e.message : String(e)})`);
 	} finally {
-		destroy(doc);
+		closeDoc(doc);
 		await task?.destroy().catch(() => undefined);
 	}
 	if (problems.length) {
