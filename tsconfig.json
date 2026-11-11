@@ -3,6 +3,6 @@
 	"compilerOptions": {
 		"strict": true
 	},
-	"include": ["src", "tests", "vite.config.ts", "vitest.config.ts", "playwright.config.ts"],
+	"include": ["src", "tests", "tools/survey", "vite.config.ts", "vitest.config.ts", "playwright.config.ts"],
 	"exclude": ["src/service-worker", "tests/corpus/generate.mjs"]
 }
