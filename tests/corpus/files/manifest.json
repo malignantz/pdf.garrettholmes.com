@@ -1198,5 +1198,9 @@
 	"stray-hash-name.pdf": {
 		"pages": 1,
 		"note": "font /Differences glyph name \"/#\" (stray #): qpdf JSON dump exits 3 (warnings); Info /Author SECRETAUTHOR; text \"stray-hash p1\""
+	},
+	"objstm-metadata.pdf": {
+		"pages": 3,
+		"note": "empty /AcroForm; pages in object stream 21; page 3 /PieceInfo SECRETPIECE and /Metadata (XMP SECRETXMP); Info /Author SECRETAUTHOR; text \"objstm-metadata p<N>\""
 	}
 }

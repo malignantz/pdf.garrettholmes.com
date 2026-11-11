@@ -285,6 +285,19 @@ describe('exportPlan: options', () => {
 		expect(await pageTexts(res.bytes, 'pw')).toEqual(['stray-hash p1']);
 	}, T);
 
+	it('strips metadata from pages kept in object streams (qpdf loses JSON updates there)', async () => {
+		const src = await openCorpus('objstm-metadata.pdf');
+		for (const compress of [false, true]) {
+			const res = await exportPages([ref(src, 2), ref(src, 0)], [src], { stripMetadata: true, compress });
+			allOk(res);
+			expect(metadataLeft(await qpdfJson(res.bytes))).toEqual([]);
+			const qdf = await qpdf.run({ args: ['--qdf', '--object-streams=disable', '/i.pdf', '/o.pdf'], inputs: { '/i.pdf': res.bytes }, outputs: ['/o.pdf'] });
+			const raw = Buffer.from(qdf.files.get('/o.pdf')!).toString('latin1');
+			expect(raw).toContain('objstm-metadata p3');
+			for (const secret of ['SECRETPIECE', 'SECRETXMP', 'SECRETAUTHOR']) expect(raw).not.toContain(secret);
+		}
+	}, T);
+
 	it('the metadata check also sees metadata keys nested in direct dictionaries', () => {
 		const json = { header: {}, objects: { 'obj:1 0 R': { value: { '/Properties': { '/MC0': { '/Metadata': 'obj:2 0 R' } } } } } };
 		expect(metadataLeft(json)).toEqual(['obj:1 0 R nested /Metadata']);
