@@ -8,6 +8,7 @@
 		"html_handling": "auto-trailing-slash",
 		"not_found_handling": "404-page"
 	},
-	"workers_dev": true,
+	"workers_dev": false,
+	"routes": [{ "pattern": "pdf.garrettholmes.com", "custom_domain": true }],
 	"preview_urls": false
 }
