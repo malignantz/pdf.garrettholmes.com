@@ -27,6 +27,8 @@ const meta = manifest['redact-survey.pdf'] as unknown as {
 	image: UserRect;
 	shading: UserRect;
 	keep: string[];
+	tight: { line: string; keep: string[] };
+	times: { line: string; keep: string[] };
 };
 
 function frac([x0, y0, x1, y1]: UserRect, w = 612, h = 792): StampBox {
@@ -104,6 +106,52 @@ describe('MuPDF: constructs from the survey (redact-survey.pdf)', () => {
 		// No trap anywhere: the instance was never replaced.
 		expect(await mupdf()).toBe(before);
 		expect(isRetired(before)).toBe(false);
+	}, T);
+});
+
+/** The box a person (and the survey) draws over a line: its MuPDF line box plus 1 pt. */
+async function lineBox(src: Source, pageIndex: number, line: string): Promise<StampBox> {
+	const m = await mupdf();
+	const doc = new m.PDFDocument(src.bytes);
+	try {
+		const page = doc.loadPage(pageIndex);
+		const st = JSON.parse(page.toStructuredText('preserve-whitespace').asJSON()) as {
+			blocks: { lines?: { text: string; bbox: { x: number; y: number; w: number; h: number } }[] }[];
+		};
+		for (const b of st.blocks) {
+			for (const l of b.lines ?? []) {
+				if (l.text.includes(line)) return { x: (l.bbox.x - 1) / 612, y: (l.bbox.y - 1) / 792, w: (l.bbox.w + 2) / 612, h: (l.bbox.h + 2) / 792 };
+			}
+		}
+	} finally {
+		doc.destroy();
+	}
+	throw new Error(`no line ${line}`);
+}
+
+describe('redaction: text next to the box (redact-survey.pdf page 2)', () => {
+	it('keeps the lines above and below whose nominal boxes, not their ink, reach into the box', async () => {
+		// The 36 pt title above and the next line have ascent/descent boxes that reach into
+		// the box. Redacting with the box (or growing it over touched glyphs) took in whole
+		// neighbouring lines: text outside the box vanished.
+		const src = await openCorpus('redact-survey.pdf');
+		const box = await lineBox(src, 1, meta.tight.line);
+		const res = await engine().exportPlan({ pages: [ref(src, 1, 0, [redact(box)])], options: defaultOptions }, [src], []);
+		expect(res.checks.every((c) => c.ok)).toBe(true);
+		const text = (await pageTexts(res.bytes))[0];
+		expect(text).not.toContain(meta.tight.line);
+		for (const k of [...meta.tight.keep, ...meta.times.keep]) expect(text).toContain(k);
+	}, T);
+
+	it('is not refused when only the PDF.js band above the capitals of the next line reaches the box', async () => {
+		// Times capitals are 0.66 em tall; the box ends 0.7 em above the next baseline.
+		const src = await openCorpus('redact-survey.pdf');
+		const box = await lineBox(src, 1, meta.times.line);
+		const res = await engine().exportPlan({ pages: [ref(src, 1, 0, [redact(box)])], options: defaultOptions }, [src], []);
+		expect(res.checks.every((c) => c.ok)).toBe(true);
+		const text = (await pageTexts(res.bytes))[0];
+		expect(text).not.toContain(meta.times.line);
+		for (const k of [...meta.tight.keep, ...meta.times.keep]) expect(text).toContain(k);
 	}, T);
 });
 

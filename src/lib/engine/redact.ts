@@ -11,21 +11,24 @@
  *     is `bounds.x0 + f.x·W` etc. The page's displayed size must match the plan's
  *     expected size or the stage refuses (a box on the wrong frame would miss).
  *
- *  2. Glyph granularity. MuPDF removes a glyph when (roughly) its centre is under the
- *     redaction rectangle, so a partly covered character would survive (seen in
- *     tests). Before applying, each box is grown to the union of the boxes of every
- *     glyph that touches it: MuPDF structured-text quads (font ascent/descent and,
- *     separately, exact outlines) plus an em box per glyph from a device pass (which
- *     also sees clipped and invisible text). The grown rectangles are applied to text
- *     only (pictures, drawings and annotations are judged against the boxes the user
- *     drew, so one huge glyph cannot widen what else is removed), and only the boxes
- *     the user drew are painted black (a neighbouring glyph that was only touched
- *     disappears and leaves a gap; it is not painted over).
+ *  2. Which glyphs go. Every glyph whose ink touches a box, by any amount: its
+ *     structured-text outline box ("accurate-bboxes"; the font's ascent/descent quad
+ *     for a visible character without an outline), or the core of its em box in a
+ *     device pass (which also sees clipped and invisible text). A glyph whose nominal
+ *     box merely reaches into a box (the next line, the descent of a big title above)
+ *     while its ink stays outside is not under the box and stays. MuPDF removes a
+ *     glyph when its nominal box (ascent to descent, shrunk by a tenth) meets a
+ *     redaction area, so the text pass redacts a small area in the middle of each
+ *     chosen glyph (a second pass takes the whole nominal and em box of any chosen
+ *     glyph still there). Redacting text with the box itself, or with the box grown
+ *     over touched glyphs, removed whole neighbouring lines. Only the boxes the user
+ *     drew are painted black (a partly covered glyph disappears and leaves a gap).
  *
- *  3. MuPDF `applyRedactions(black=false, IMAGE_PIXELS, LINE_ART_NONE, TEXT_REMOVE)`
- *     (after a text-only pass over the grown rectangles). MuPDF rewrites the page content into a new stream, copies every
+ *  3. MuPDF `applyRedactions(black=false, IMAGE_PIXELS, LINE_ART_NONE, TEXT_NONE)`
+ *     over the boxes (after the text passes of 2). MuPDF rewrites the page content into
+ *     a new stream, copies every
  *     Form XObject the page uses (so pages sharing streams, forms or images with this
- *     page are not changed), removes text under the rectangles (including invisible
+ *     page are not changed), removes the chosen text (including invisible
  *     OCR text, Type 3 text, text in hidden layers and in forms), blanks image pixels
  *     in a new copy of the image (blanked pixels become opaque white in the stored
  *     data, soft-mask values opaque, image-mask bits unpainted; the black is the
@@ -104,13 +107,13 @@
  * The check (any failure refuses the export):
  *  - Optional content: hidden layers are made visible for the check (the file is
  *    re-opened without /OCProperties), so hidden text and drawings are seen.
- *  - Text, MuPDF: no structured-text character other than whitespace (default quads
- *    and, separately, exact outlines) touches a box, except characters of
- *    `allowedText`.
+ *  - Text, MuPDF: no structured-text character other than whitespace has ink (its
+ *    outline box; its ascent/descent quad when it has no outline) touching a box,
+ *    except characters of `allowedText`.
  *  - Text, PDF.js: no text item touches a box, in PDF.js's own displayed-page
- *    geometry. An item is taken from its baseline to 75% of its height along its
- *    advance (a little inside MuPDF's quads, so both engines agree on neighbours
- *    that only touch a box edge), except allowed strings.
+ *    geometry. An item is taken from its baseline to 60% of its height along its
+ *    advance (the band of the device pass's glyph core; the ink above it is the
+ *    outline check's), except allowed strings.
  *  - Device pass (MuPDF interpreter, contents and annotations): no glyph core, no
  *    painted path (other than a kept drawing, same rule as above), no shading
  *    inside its clip, no tiling pattern touches a box, except the axis-aligned black
@@ -240,19 +243,27 @@ function redactDocument(m: Mupdf, doc: Doc, jobs: RedactJob[]): Uint8Array {
 			const probePage = probe ? probe.loadPage(job.pageIndex) : null;
 			try {
 				const boxes = pageBoxes(page, job);
-				const grown = growToGlyphs(m, probePage ?? page, boxes);
-				// Text first, over the grown rectangles; then everything, over the boxes themselves.
-				const mark = (rects: Rect[]) => {
-					for (const r of rects) {
-						const a = page.createAnnotation('Redact');
-						a.setRect(r);
-						destroy(a);
-					}
+				// Text first: exactly the glyphs whose ink touches a box (see glyphMarks). Then
+				// pictures under the boxes themselves, text left alone (MuPDF's own test would
+				// also take every glyph whose nominal box merely overlaps a box).
+				const removeText = (marks: Rect[]) => {
+					if (!marks.length) return;
+					const a = page.createAnnotation('Redact');
+					a.setQuadPoints(marks.map(([x0, y0, x1, y1]) => [x0, y0, x1, y0, x0, y1, x1, y1]));
+					destroy(a);
+					page.applyRedactions(false, m.PDFPage.REDACT_IMAGE_NONE, m.PDFPage.REDACT_LINE_ART_NONE, m.PDFPage.REDACT_TEXT_REMOVE);
 				};
-				mark(grown);
-				page.applyRedactions(false, m.PDFPage.REDACT_IMAGE_NONE, m.PDFPage.REDACT_LINE_ART_NONE, m.PDFPage.REDACT_TEXT_REMOVE);
-				mark(boxes);
-				page.applyRedactions(false, m.PDFPage.REDACT_IMAGE_PIXELS, m.PDFPage.REDACT_LINE_ART_NONE, m.PDFPage.REDACT_TEXT_REMOVE);
+				removeText(glyphMarks(m, probePage ?? page, boxes, false));
+				// A glyph whose metrics disagree between text extraction and MuPDF's redaction
+				// (a Type 3 glyph with no width in one and some in the other) can survive its
+				// small area: once more over its whole em box.
+				removeText(glyphMarks(m, page, boxes, true));
+				for (const r of boxes) {
+					const a = page.createAnnotation('Redact');
+					a.setRect(r);
+					destroy(a);
+				}
+				page.applyRedactions(false, m.PDFPage.REDACT_IMAGE_PIXELS, m.PDFPage.REDACT_LINE_ART_NONE, m.PDFPage.REDACT_TEXT_NONE);
 				const pageObj = page.getObject();
 				const pageTf = page.getTransform() as Matrix;
 				cleanContent(m, doc, pageObj, pageTf, boxes, preCount, pageNo, page.getBounds() as Rect);
@@ -297,25 +308,91 @@ function fractionRect(b: Rect, s: StampBox): Rect {
 	return [b[0] + s.x * w, b[1] + s.y * h, b[0] + (s.x + s.w) * w, b[1] + (s.y + s.h) * h];
 }
 
-/** Each box grown to cover every glyph that touches it (any amount). */
-function growToGlyphs(m: Mupdf, page: MU.PDFPage, boxes: Rect[]): Rect[] {
-	const grown = boxes.map((b) => [...b] as Rect);
-	const touch = (r: Rect) => {
-		boxes.forEach((b, i) => {
-			if (touches(r, b, 0)) grown[i] = union(grown[i], r);
-		});
-	};
-	for (const opts of ['preserve-whitespace', 'preserve-whitespace,accurate-bboxes']) {
-		const st = page.toStructuredText(opts);
-		st.walk({
-			onChar(_c, _origin, _font, _size, quad) {
-				touch(quadRect(quad as number[]));
-			}
-		});
-		destroy(st);
+/**
+ * Glyphs to remove: every glyph whose ink touches a box (any amount), by its
+ * structured-text outline box, or by the core of its em box in a device pass (which
+ * also sees clipped and invisible text). Each comes back as a small area in page space
+ * in the middle of the glyph's nominal box. MuPDF removes a glyph when its nominal box
+ * (font descent to ascent along its advance, shrunk by a tenth) meets a redaction
+ * area, so these areas remove the chosen glyphs and not their neighbours. Redacting
+ * text with the box itself also removed glyphs of the next line, or of a big title
+ * above, whose nominal boxes reach into the box while their ink is outside it: text
+ * visibly outside the box disappeared. (A glyph with no advance has a zero-width
+ * nominal box; its area is zero-width too, at its origin.) With `whole`, the areas are
+ * the glyphs' whole nominal and em boxes: the second pass, for glyphs still there.
+ */
+function glyphMarks(m: Mupdf, page: MU.PDFPage, boxes: Rect[], whole: boolean): Rect[] {
+	const marks: Rect[] = [];
+	const hit = (r: Rect) => boxes.some((b) => touches(r, b, 0));
+	for (const ch of readChars(page)) {
+		if (!ch.ink || !hit(ch.ink)) continue;
+		const [x0, y0, x1, y1] = ch.nominal;
+		const w = x1 - x0;
+		const h = y1 - y0;
+		marks.push(whole ? ch.nominal : [x0 + w * 0.25, y0 + h * 0.3, x1 - w * 0.25, y1 - h * 0.3]);
 	}
-	runDevice(m, page, { glyph: (g) => touch(g.em) });
-	return grown;
+	runDevice(m, page, {
+		glyph: (g) => {
+			if (hit(g.core)) marks.push(whole ? g.em : g.mark);
+		}
+	});
+	return marks;
+}
+
+interface CharBox {
+	c: string;
+	/** Index of its structured-text line (for allowed strings). */
+	line: number;
+	/** Font ascent/descent quad. */
+	nominal: Rect;
+	/**
+	 * Where the glyph has ink: its outline box ("accurate-bboxes"); the nominal quad
+	 * when MuPDF found no outline for a visible character; null for whitespace without
+	 * ink.
+	 */
+	ink: Rect | null;
+}
+
+/**
+ * The page's characters, each with its nominal quad and its ink box. Both come from
+ * two structured-text passes that list the same characters in the same order; if they
+ * ever do not, every character of both passes is returned with its quad as its ink
+ * (the stricter rule: a nominal quad that touches a box counts).
+ */
+function readChars(page: MU.PDFPage): CharBox[] {
+	const read = (opts: string) => {
+		const out: { c: string; line: number; r: Rect }[] = [];
+		let line = -1;
+		const st = page.toStructuredText(opts);
+		try {
+			st.walk({
+				beginLine() {
+					line++;
+				},
+				onChar(c, _o, _f, _s, quad) {
+					out.push({ c, line, r: quadRect(quad as number[]) });
+				}
+			});
+		} finally {
+			destroy(st);
+		}
+		return out;
+	};
+	const nominal = read('preserve-whitespace');
+	const ink = read('preserve-whitespace,accurate-bboxes');
+	const blank = (c: string) => c.trim() === '';
+	if (ink.length === nominal.length && ink.every((x, i) => x.c === nominal[i].c)) {
+		return nominal.map((n, i) => {
+			const r = ink[i].r;
+			const hasInk = r[2] > r[0] && r[3] > r[1];
+			return { c: n.c, line: n.line, nominal: n.r, ink: hasInk ? r : blank(n.c) ? null : n.r };
+		});
+	}
+	const offset = nominal.length ? nominal[nominal.length - 1].line + 1 : 0;
+	return [
+		...nominal.map((n) => ({ c: n.c, line: n.line, nominal: n.r, ink: n.r })),
+		...ink.map((n) => ({ c: n.c, line: n.line + offset, nominal: n.r, ink: n.r }))
+	];
 }
 
 // ---------------------------------------------------------------------------
@@ -994,38 +1071,31 @@ function checkPageMupdf(
 	const problems: string[] = [];
 	const allowedRegions: Rect[] = [...overlays];
 
-	// Text (MuPDF structured text), with our own stamp text allowed.
+	// Text (MuPDF structured text), with our own stamp text allowed. A character is under
+	// a box when its ink touches the box (see readChars; a nominal quad that only reaches
+	// in from the next line hides nothing).
 	let textHits = 0;
-	for (const opts of ['preserve-whitespace', 'preserve-whitespace,accurate-bboxes']) {
-		const st = page.toStructuredText(opts);
-		const lines: { c: string; r: Rect }[][] = [];
-		let line: { c: string; r: Rect }[] = [];
-		st.walk({
-			beginLine() {
-				line = [];
-			},
-			onChar(c, _o, _f, _s, quad) {
-				line.push({ c, r: quadRect(quad as number[]) });
-			},
-			endLine() {
-				lines.push(line);
+	const lines = new Map<number, CharBox[]>();
+	for (const ch of readChars(page)) {
+		const l = lines.get(ch.line);
+		if (l) l.push(ch);
+		else lines.set(ch.line, [ch]);
+	}
+	for (const chars of lines.values()) {
+		const ok = allowedMask(
+			chars.map((x) => x.c),
+			allowedText
+		);
+		chars.forEach((ch, i) => {
+			if (ok[i]) {
+				allowedRegions.push(pad(ch.nominal, 1.5));
+				if (ch.ink) allowedRegions.push(pad(ch.ink, 1.5));
+				return;
 			}
+			if (ch.c.trim() === '' || !ch.ink) return;
+			const ink = ch.ink;
+			if (boxes.some((b) => touches(ink, b, 0.01))) textHits++;
 		});
-		destroy(st);
-		for (const chars of lines) {
-			const ok = allowedMask(
-				chars.map((x) => x.c),
-				allowedText
-			);
-			chars.forEach((ch, i) => {
-				if (ok[i]) {
-					allowedRegions.push(pad(ch.r, 1.5));
-					return;
-				}
-				if (ch.c.trim() === '') return;
-				if (boxes.some((b) => touches(ch.r, b, 0.01))) textHits++;
-			});
-		}
 	}
 	if (textHits) problems.push(`Page ${pageNo}: MuPDF still reads text under a redaction box.`);
 
@@ -1253,7 +1323,7 @@ async function checkPdfjs(lib: PdfjsLib, bytes: Uint8Array, jobs: RedactJob[], a
 				const height = it.height || Math.hypot(t[2], t[3]);
 				const pts: [number, number][] = [];
 				for (const along of [0, it.width]) {
-					for (const across of [0, 0.75 * height]) {
+					for (const across of [0, PDFJS_CORE * height]) {
 						pts.push(applyMatrix(vp.transform as Matrix, t[4] + dir[0] * along + up[0] * across, t[5] + dir[1] * along + up[1] * across));
 					}
 				}
@@ -1278,8 +1348,10 @@ async function checkPdfjs(lib: PdfjsLib, bytes: Uint8Array, jobs: RedactJob[], a
 // MuPDF device pass
 
 interface GlyphInfo {
-	/** Advance × [-0.25, 1] em: for growing boxes. */
+	/** Advance × [-0.25, 1] em. */
 	em: Rect;
+	/** The middle of the glyph's nominal box (its true advance, which may be 0): what to redact to remove it. */
+	mark: Rect;
 	/** Middle 80% of the advance × [0, 0.6] em: for the check. */
 	core: Rect;
 	space: boolean;
@@ -1293,6 +1365,14 @@ interface DeviceHandlers {
 }
 
 const INFINITE: Rect = [-1e9, -1e9, 1e9, 1e9];
+/**
+ * PDF.js check: a text item counts from its baseline up to this share of its height
+ * (the same band as the device pass's glyph core). Ink above it (the top of capitals,
+ * at 0.66 to 0.72 em) is MuPDF's outline check's job; at 0.75 the PDF.js band reached
+ * into a box drawn tightly over the line above while no ink of the item did, and the
+ * export was refused.
+ */
+const PDFJS_CORE = 0.6;
 /** Image pixels next to a box edge not compared on the final file (see imageBlankUnder). */
 const FINAL_IMAGE_INSET = 16;
 const SPACES = new Set([9, 10, 13, 32, 0xa0]);
@@ -1307,11 +1387,13 @@ function runDevice(m: Mupdf, page: MU.PDFPage, h: DeviceHandlers) {
 		if (!on) return;
 		text.walk({
 			showGlyph(font, trm, glyph, unicode, wmode) {
-				const adv = font.advanceGlyph(glyph, wmode) || 0.5;
+				const advance = font.advanceGlyph(glyph, wmode) || 0;
+				const adv = advance || 0.5;
 				const full = multiply(trm as Matrix, ctm);
 				const em: Rect = wmode ? [-0.5, -adv, 0.5, 0] : [0, -0.25, adv, 1];
 				const core: Rect = wmode ? [-0.3, -adv * 0.9, 0.3, -adv * 0.1] : [adv * 0.1, 0, adv * 0.9, 0.6];
-				on({ em: transformRect(full, em), core: transformRect(full, core), space: SPACES.has(unicode) });
+				const mark: Rect = wmode ? [-0.2, -advance * 0.75, 0.2, -advance * 0.25] : [advance * 0.25, 0.15, advance * 0.75, 0.45];
+				on({ em: transformRect(full, em), core: transformRect(full, core), mark: transformRect(full, mark), space: SPACES.has(unicode) });
 			}
 		});
 	};

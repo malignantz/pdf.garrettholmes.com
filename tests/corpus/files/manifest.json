@@ -1061,7 +1061,7 @@
 	},
 	"redact-survey.pdf": {
 		"label": null,
-		"pages": 1,
+		"pages": 2,
 		"box": {
 			"rect": [
 				70,
@@ -1071,6 +1071,20 @@
 			],
 			"hides": [
 				"SECRET-SURVEY-LINE"
+			]
+		},
+		"tight": {
+			"line": "SECRET-TIGHT-LINE",
+			"keep": [
+				"KEEP-BIG-TITLE",
+				"KEEP-NEXT-LINE",
+				"KEEP-FAR-LINE"
+			]
+		},
+		"times": {
+			"line": "SECRET-TIMES-LINE",
+			"keep": [
+				"KEEP-TIMES-NEXT"
 			]
 		},
 		"image": [

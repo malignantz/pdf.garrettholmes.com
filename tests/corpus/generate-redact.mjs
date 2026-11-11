@@ -528,7 +528,7 @@ function table() {
 
 // ---------------------------------------------------------------------------------------
 // redact-survey.pdf: ordinary constructs that broke the redact stage on real files
-// (survey of 2026-11-10). One page; the box covers SECRET-SURVEY-LINE only, and
+// (survey of 2026-11-10). Page 1: the box covers SECRET-SURVEY-LINE only, and
 // everything else is away from it and must come through unchanged:
 //  - an image whose /ColorSpace is an indirect object (MuPDF's garbage=compact save
 //    dropped the stream data of such an image once it had been read through mupdf.js);
@@ -563,13 +563,36 @@ function survey() {
 	const page = pdf.add(
 		`<< /Type /Page /Parent ${pages} 0 R /MediaBox [0 0 612 792] /Contents ${c} 0 R /Annots [null ${link} 0 R] /Resources << /Font << /F1 ${font} 0 R >> /XObject << /I1 ${img} 0 R /Fm1 ${form} 0 R >> /Shading << /Sh1 ${sh} 0 R >> >> >>`
 	);
-	pdf.set(pages, `<< /Type /Pages /Kids [${page} 0 R] /Count 1 >>`);
+	// Page 2: tightly set lines. The box over SECRET-TIGHT-LINE (its line box plus 1 pt, as
+	// a person draws it) reaches into the nominal (ascent/descent) boxes of the big title
+	// above and of the next line, but not into their ink. Both must stay.
+	const c2 = pdf.stream(
+		'<< >>',
+		[
+			text(72, 520, 'KEEP-BIG-TITLE', 36),
+			text(72, 505, 'SECRET-TIGHT-LINE'),
+			text(72, 490, 'KEEP-NEXT-LINE'),
+			text(72, 400, 'KEEP-FAR-LINE'),
+			// Times, 20 pt: the box over SECRET-TIMES-LINE ends just above the capitals of
+			// the next line (0.7 em above its baseline; Times capitals are 0.66 em tall).
+			'BT /F2 20 Tf 0 0 0 rg 1 0 0 1 72 300 Tm (SECRET-TIMES-LINE) Tj ET',
+			'BT /F2 20 Tf 0 0 0 rg 1 0 0 1 72 281 Tm (KEEP-TIMES-NEXT) Tj ET'
+		].join('\n'),
+		{ flate: true }
+	);
+	const times = pdf.add('<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman /Encoding /WinAnsiEncoding >>');
+	const page2 = pdf.add(
+		`<< /Type /Page /Parent ${pages} 0 R /MediaBox [0 0 612 792] /Contents ${c2} 0 R /Resources << /Font << /F1 ${font} 0 R /F2 ${times} 0 R >> >> >>`
+	);
+	pdf.set(pages, `<< /Type /Pages /Kids [${page} 0 R ${page2} 0 R] /Count 2 >>`);
 	const catalog = pdf.add(`<< /Type /Catalog /Pages ${pages} 0 R >>`);
 	return {
 		bytes: pdf.bytes(catalog),
 		meta: {
-			pages: 1,
+			pages: 2,
 			box: { rect: [70, 695, 72 + secretW + 2, 712], hides: ['SECRET-SURVEY-LINE'] },
+			tight: { line: 'SECRET-TIGHT-LINE', keep: ['KEEP-BIG-TITLE', 'KEEP-NEXT-LINE', 'KEEP-FAR-LINE'] },
+			times: { line: 'SECRET-TIMES-LINE', keep: ['KEEP-TIMES-NEXT'] },
 			image: [300, 400, 500, 500],
 			shading: [72, 200, 372, 260],
 			keep: ['KEEP-SURVEY-TEXT', 'KEEP-FORM-TEXT']
