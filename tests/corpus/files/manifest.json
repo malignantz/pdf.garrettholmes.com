@@ -1074,5 +1074,9 @@
 	"gen-reuse.pdf": {
 		"pages": 1,
 		"note": "object 6 reused with generation 1 (legitimate); opens; text \"gen-reuse p1\""
+	},
+	"form-split.pdf": {
+		"pages": 2,
+		"note": "field \"Fine\": text kid \"Note\" (p1, value \"old\"), checkbox kid \"SA\" (p2); the assemble step leaves off-page copies"
 	}
 }

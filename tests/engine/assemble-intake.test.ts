@@ -67,3 +67,37 @@ describe('intake: files readers disagree about', () => {
 		expect(await pageTexts(s.bytes)).toEqual(['gen-reuse p1']);
 	}, T);
 });
+
+/** Every PDF.js field object per full name: [value, ...]. */
+async function fieldValues(bytes: Uint8Array): Promise<Record<string, unknown[]>> {
+	const lib = await loadPdfjs();
+	const task = lib.getDocument({ data: bytes.slice(), verbosity: 0, useWasm: false });
+	try {
+		const doc = await task.promise;
+		const raw = (await doc.getFieldObjects()) as unknown;
+		const objs = (raw instanceof Map ? Object.fromEntries(raw) : (raw ?? {})) as Record<string, { value?: unknown }[]>;
+		return Object.fromEntries(Object.entries(objs).map(([k, v]) => [k, v.map((x) => x.value)]));
+	} finally {
+		await task.destroy();
+	}
+}
+
+describe('forms: fields with widgets on several pages', () => {
+	it('gives the off-page copies the same answer', async () => {
+		const src = await openCorpus('form-split.pdf');
+		const fields = await engine().formFields(src);
+		expect(fields.map((f) => f.name).sort()).toEqual(['Fine.Note', 'Fine.SA']);
+		const res = await engine().exportPlan(
+			{ pages: [ref(src, 0), ref(src, 1)], options: defaultOptions, formValues: { [src.id]: { 'Fine.SA': true, 'Fine.Note': 'new answer' } } },
+			[src],
+			[]
+		);
+		const values = await fieldValues(res.bytes);
+		// The assemble step renames the per-page copies; whatever the name, no copy keeps the old answer.
+		const all = (base: string) => Object.entries(values).filter(([k]) => k.replace(/\+\d+/g, '') === base).flatMap(([, v]) => v);
+		expect(all('Fine.SA').length).toBeGreaterThan(1);
+		expect(new Set(all('Fine.SA'))).toEqual(new Set(['Yes']));
+		expect(all('Fine.Note').length).toBeGreaterThan(1);
+		expect(new Set(all('Fine.Note'))).toEqual(new Set(['new answer']));
+	}, T);
+});

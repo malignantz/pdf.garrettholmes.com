@@ -590,7 +590,11 @@ async function formsScenario(c: Ctx, flatten: boolean): Promise<Partial2> {
 		if (!flatten) {
 			// PDF.js 6 returns a Map (older versions a plain object).
 			const raw = (await doc.getFieldObjects()) as unknown;
-			const objs = (raw instanceof Map ? Object.fromEntries(raw) : (raw ?? {})) as Record<string, { value?: unknown }[]>;
+			const byName = (raw instanceof Map ? Object.fromEntries(raw) : (raw ?? {})) as Record<string, { value?: unknown }[]>;
+			// The assemble step copies a field with widgets on several pages once per page and
+			// renames the copies ("name+1"); every copy must hold the answer.
+			const objs: Record<string, { value?: unknown }[]> = {};
+			for (const [k, v] of Object.entries(byName)) (objs[k.replace(/\+\d+(?=\.|$)/g, '')] ??= []).push(...v);
 			let missing = 0;
 			const mismatches: string[] = [];
 			for (const [name, want] of Object.entries(values)) {
@@ -602,10 +606,10 @@ async function formsScenario(c: Ctx, flatten: boolean): Promise<Partial2> {
 				const vals = got.map((g) => g.value);
 				const ok =
 					typeof want === 'string'
-						? vals.some((v) => v === want || (Array.isArray(v) && v.includes(want)))
+						? vals.every((v) => v === want || (Array.isArray(v) && v.includes(want)))
 						: want === true
-							? vals.some((v) => typeof v === 'string' && v !== 'Off' && v !== '')
-							: Array.isArray(want) && vals.some((v) => v === want[0] || (Array.isArray(v) && v.includes(want[0])));
+							? vals.every((v) => typeof v === 'string' && v !== 'Off' && v !== '')
+							: Array.isArray(want) && vals.every((v) => v === want[0] || (Array.isArray(v) && v.includes(want[0])));
 				if (!ok) mismatches.push(`${name}: wanted ${JSON.stringify(want)}, PDF.js reads ${JSON.stringify(vals.slice(0, 3)).slice(0, 60)}`);
 			}
 			if (mismatches.length) problems.push({ level: 'wrong', text: `${mismatches.length} field(s) read back differently: ${mismatches.slice(0, 3).join('; ')}` });

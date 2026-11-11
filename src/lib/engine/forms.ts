@@ -871,6 +871,8 @@ export async function applyForms(
 			for (const t of list) updated.add(objId(t.widget.getObject()));
 		}
 
+		syncOffPageCopies(doc, groups);
+
 		// Every drawn text appearance must show the whole answer.
 		for (const list of groups) {
 			const { rec } = list[0].answer;
@@ -906,6 +908,88 @@ export async function applyForms(
 	} finally {
 		destroy(doc);
 	}
+}
+
+/** Fully qualified field name of a field node, with qpdf's "+N" copy suffixes removed. */
+function sourceName(o: MObj): string {
+	const parts: string[] = [];
+	let t: MObj | null = o;
+	for (let depth = 0; t && depth < 32; depth++) {
+		const name = text(get(t, 'T'));
+		if (name !== null) parts.unshift(name.replace(/\+\d+$/, ''));
+		t = get(t, 'Parent');
+	}
+	return parts.join('.');
+}
+
+/**
+ * When a field has widgets on several pages, the assemble step gives each page its own
+ * copy of the field ("name", "name+1"), and every copy keeps all the field's widgets: the
+ * ones of other pages stay in the field tree, on no page. They are invisible, but a form
+ * reader that looks fields up by name finds them, still holding the old answer. Give those
+ * off-page copies of an answered field the same answer.
+ */
+function syncOffPageCopies(doc: MDoc, groups: Target[][]) {
+	const af = get(doc.getTrailer(), 'Root', 'AcroForm');
+	const fields = get(af, 'Fields');
+	if (!fields || !fields.isArray() || groups.length === 0) return;
+	const onPages = new Set<number>();
+	for (let i = 0; i < doc.countPages(); i++) {
+		for (const a of arrayItems(get(doc.loadPage(i).getObject(), 'Annots'))) onPages.add(objId(a));
+	}
+	// Answers by source field name; a name answered differently by two sources is left alone.
+	const byName = new Map<string, Target[] | null>();
+	const written = new Set<number>();
+	for (const list of groups) {
+		const term = terminalOf(list[0].widget.getObject());
+		written.add(objId(term));
+		const name = sourceName(term);
+		const prev = byName.get(name);
+		byName.set(name, prev === undefined || (prev !== null && sameValue(prev[0].answer.value, list[0].answer.value)) ? list : null);
+	}
+	const isWidget = (o: MObj) => text(get(o, 'Subtype')) === 'Widget';
+	const visit = (node: MObj, depth: number) => {
+		if (depth > 32 || !node.isDictionary()) return;
+		const kids = arrayItems(get(node, 'Kids'));
+		const fieldKids = kids.filter((k) => get(k, 'T') !== null);
+		if (fieldKids.length) {
+			for (const k of fieldKids) visit(k, depth + 1);
+			return;
+		}
+		// A terminal field: its widgets are its kids, or the node itself.
+		const widgets = kids.length ? kids : isWidget(node) ? [node] : [];
+		if (written.has(objId(node)) || widgets.length === 0 || widgets.some((w) => onPages.has(objId(w)))) return;
+		const list = byName.get(sourceName(node));
+		if (!list) return;
+		const { rec, value } = list[0].answer;
+		const f = rec.field;
+		if (f.kind === 'text') {
+			node.put('V', doc.newString(value as string));
+		} else if (f.kind === 'choice') {
+			const v = value as string[];
+			if (v.length) node.put('V', doc.newString(v[0]));
+			else node.delete('V');
+			node.delete('I');
+		} else if (f.kind === 'checkbox') {
+			const on = value === true;
+			let state = 'Off';
+			for (const w of widgets) {
+				const s = apStates(w)?.filter((x) => x !== 'Off') ?? [];
+				const ws = on && s.length === 1 ? s[0] : 'Off';
+				if (ws !== 'Off') state = ws;
+				w.put('AS', doc.newName(ws));
+			}
+			node.put('V', doc.newName(state));
+		} else {
+			const chosen = (value !== '' && rec.stateOf?.get(value as string)) || 'Off';
+			for (const w of widgets) {
+				const s = apStates(w)?.filter((x) => x !== 'Off') ?? [];
+				w.put('AS', doc.newName(s.length === 1 && s[0] === chosen ? chosen : 'Off'));
+			}
+			node.put('V', doc.newName(chosen));
+		}
+	};
+	for (const f of arrayItems(fields)) visit(f, 0);
 }
 
 /**

@@ -161,10 +161,38 @@ function genReuse() {
 	]);
 }
 
+
+/**
+ * form-split.pdf: field "Fine" has a text kid "Note" on page 1 and a checkbox kid "SA" on
+ * page 2. The assemble step copies "Fine" once per page, each copy keeping both kids, so
+ * each page's copy has an off-page widget.
+ */
+function formSplit() {
+	const box = (ops) => stream(ops);
+	return rawPdf([
+		[
+			[1, 0, '<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R] /DA (/Helv 0 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> >> >>'],
+			[2, 0, '<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>'],
+			[3, 0, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 14 0 R /Resources << /Font << /F1 5 0 R >> >> /Annots [8 0 R] >>'],
+			[4, 0, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 15 0 R /Resources << /Font << /F1 5 0 R >> >> /Annots [9 0 R] >>'],
+			[5, 0, FONT],
+			[6, 0, '<< /T (Fine) /Kids [8 0 R 9 0 R] >>'],
+			[8, 0, '<< /Type /Annot /Subtype /Widget /FT /Tx /T (Note) /Parent 6 0 R /P 3 0 R /F 4 /Rect [72 600 372 624] /DA (/Helv 12 Tf 0 g) /V (old) /AP << /N 13 0 R >> >>'],
+			[9, 0, '<< /Type /Annot /Subtype /Widget /FT /Btn /T (SA) /Parent 6 0 R /P 4 0 R /F 4 /Rect [72 600 90 618] /MK << /CA (4) >> /DA (/ZaDb 0 Tf 0 g) /AS /Off /AP << /N << /Yes 11 0 R /Off 12 0 R >> >> >>'],
+			[11, 0, '<< /Type /XObject /Subtype /Form /BBox [0 0 18 18] /Length %LEN% >>', box('0 g 3 3 12 12 re f')],
+			[12, 0, '<< /Type /XObject /Subtype /Form /BBox [0 0 18 18] /Length %LEN% >>', box('')],
+			[13, 0, '<< /Type /XObject /Subtype /Form /BBox [0 0 300 24] /Resources << /Font << /Helv 5 0 R >> >> /Length %LEN% >>', box('/Tx BMC BT /Helv 12 Tf 0 g 2 7 Td (old) Tj ET EMC')],
+			[14, 0, '<< /Length %LEN% >>', stream(text(72, 700, 'form-split p1'))],
+			[15, 0, '<< /Length %LEN% >>', stream(text(72, 700, 'form-split p2'))]
+		]
+	]);
+}
+
 export default async function generateIntake(write) {
 	write('layers.pdf', layers(), { pages: 1, note: 'layer "Hidden" (6 0 R) default OFF via /D /OFF; layer "Shown" (8 0 R) ON; indirect /OCProperties' });
 	write('layers-base-off.pdf', layersBaseOff(), { pages: 2, note: 'direct /OCProperties, /BaseState /OFF, /ON [On]: layer "Off" hidden by base state' });
 	write('gen-conflict.pdf', genConflict(), { pages: 1, note: 'page 3 1 R redefined as 3 0 obj with an annotation in an update: readers disagree; intake refuses' });
+	write('form-split.pdf', formSplit(), { pages: 2, note: 'field "Fine": text kid "Note" (p1, value "old"), checkbox kid "SA" (p2); the assemble step leaves off-page copies' });
 	write('gen-reuse.pdf', genReuse(), { pages: 1, note: 'object 6 reused with generation 1 (legitimate); opens; text "gen-reuse p1"' });
 }
 
