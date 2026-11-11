@@ -221,3 +221,15 @@ describe('assemble: one source with a form is edited in place', () => {
 		}
 	}, T);
 });
+
+describe('forms: buttons and their appearances', () => {
+	it('fills a radio group whose widgets have no off appearance', async () => {
+		const src = await openCorpus('form-buttons.pdf');
+		const fields = await engine().formFields(src);
+		// The checkbox whose appearances are not streams cannot be shown ticked: not offered.
+		expect(fields.map((f) => f.name)).toEqual(['pick']);
+		const res = await engine().exportPlan({ pages: [ref(src, 0)], options: defaultOptions, formValues: { [src.id]: { pick: 'B' } } }, [src], []);
+		expect(res.checks.find((c) => c.name === 'forms')?.ok).toBe(true);
+		expect((await fieldValues(res.bytes)).pick.filter((v) => v !== null)).toContain('B');
+	}, T);
+});

@@ -566,13 +566,46 @@ async function redactScenario(c: Ctx): Promise<Partial2> {
 	return judge([...problems, ...r.problems], r.evidence, { outcome: 'verified', message: note, warnings: res.warnings });
 }
 
+/** Field names or labels that ask for a number (dates, amounts, codes). */
+const NUMERIC = /date|year|\byr\b|month|\bmo\b|day|\bdd\b|\bmm\b|yyyy|zip|postal|phone|tel|fax|ssn|social security|\bno\b|\bno\.|number|num\b|#|amount|\$|total|qty|quantity|count|age\b|percent|%|code|digit|routing|account|ein|tin\b/i;
+
+/**
+ * An answer a person could type into this text field: digits for number-like fields, and no
+ * longer than the box shows at the form's usual 10-12 pt (or its MaxLen), down to 2-3
+ * characters for small boxes. (One fixed string for every field made most refusals mean
+ * "the survey typed too much".)
+ */
+function textAnswer(c: Ctx, f: { name: string; label?: string; maxLength?: number; multiline?: boolean; widgets: { pageIndex: number; box: StampBox }[] }): string {
+	const numeric = NUMERIC.test(`${f.name} ${f.label ?? ''}`);
+	const full = numeric ? '4242424242' : FORM_TEXT;
+	// Narrowest visible widget, in points.
+	let width = Infinity;
+	let height = Infinity;
+	for (const w of f.widgets) {
+		const page = c.src.pages[w.pageIndex];
+		if (!page) continue;
+		width = Math.min(width, w.box.w * page.width);
+		height = Math.min(height, w.box.h * page.height);
+	}
+	let fit = full.length;
+	if (Number.isFinite(width) && !f.multiline) {
+		const size = Math.min(12, Math.max(6, height * 0.7));
+		fit = Math.floor((width - 4) / (size * 0.6));
+	}
+	if (f.maxLength) fit = Math.min(fit, f.maxLength);
+	fit = Math.max(1, Math.min(fit, full.length));
+	if (fit >= full.length) return full;
+	if (numeric) return full.slice(0, fit);
+	return fit >= 3 ? 'S42'.slice(0, fit) : 'S4'.slice(0, fit);
+}
+
 async function formsScenario(c: Ctx, flatten: boolean): Promise<Partial2> {
 	if (!c.src.hasForm) return { outcome: 'skipped', message: 'No fillable form.' };
 	const fields = await c.eng.formFields(c.src);
 	const values: Record<string, FormValue> = {};
 	for (const f of fields) {
 		if (f.readOnly) continue;
-		if (f.kind === 'text') values[f.name] = f.maxLength ? FORM_TEXT.slice(0, f.maxLength) : FORM_TEXT;
+		if (f.kind === 'text') values[f.name] = textAnswer(c, f);
 		else if (f.kind === 'checkbox') values[f.name] = true;
 		else if (f.kind === 'radio') {
 			const opt = f.widgets.find((w) => w.option)?.option;
@@ -603,7 +636,9 @@ async function formsScenario(c: Ctx, flatten: boolean): Promise<Partial2> {
 					missing++;
 					continue;
 				}
-				const vals = got.map((g) => g.value);
+				// Parent (container) fields are listed too, with a null value.
+				const all = got.map((g) => g.value);
+				const vals = all.some((v) => v !== null && v !== undefined) ? all.filter((v) => v !== null && v !== undefined) : all;
 				const ok =
 					typeof want === 'string'
 						? vals.every((v) => v === want || (Array.isArray(v) && v.includes(want)))
@@ -621,10 +656,12 @@ async function formsScenario(c: Ctx, flatten: boolean): Promise<Partial2> {
 				widgets += annots.filter((a: { subtype?: string }) => a.subtype === 'Widget').length;
 			}
 			if (widgets) problems.push({ level: 'wrong', text: `${widgets} form widget(s) left after flattening` });
-			if (Object.values(values).some((v) => v === FORM_TEXT)) {
+			const longText = fields.find((f) => f.kind === 'text' && String(values[f.name] ?? '').length >= 6);
+			const long = longText ? (values[longText.name] as string) : undefined;
+			if (long) {
 				const t = await tool('pdftotext', ['-enc', 'UTF-8', file, '-'], 60_000);
-				if (t.code === 0 && !squash(t.stdout).includes(squash(FORM_TEXT))) {
-					problems.push({ level: 'wrong', text: `poppler does not find the flattened answer "${FORM_TEXT}" anywhere` });
+				if (t.code === 0 && !squash(t.stdout).includes(squash(long))) {
+					problems.push({ level: 'wrong', text: `poppler does not find the flattened answer "${long}" anywhere` });
 				}
 			}
 		}

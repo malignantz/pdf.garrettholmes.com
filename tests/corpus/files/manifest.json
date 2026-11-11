@@ -1106,5 +1106,9 @@
 	"form-catalog.pdf": {
 		"pages": 2,
 		"note": "form + outline, structure element (/Alt), OpenAction to page 2, Info, XFA; page 2 text SECRETPAGE2; markers SECRETOUTLINE/ALT/INFO/XFA"
+	},
+	"form-buttons.pdf": {
+		"pages": 1,
+		"note": "radio \"pick\" (A, B) without /Off appearances; checkbox \"broken\" with /null appearances (not fillable)"
 	}
 }

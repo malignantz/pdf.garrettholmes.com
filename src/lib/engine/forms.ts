@@ -25,7 +25,7 @@
  * - not listed: signature fields, push buttons, password, file-select and rich-text
  *   fields, fields whose widgets are all hidden, NoView, zero-size or off the page, fields
  *   whose widgets disagree about type or field object, buttons without exactly one
- *   on-state appearance per widget. XFA forms list nothing (hasForm false, intake note).
+ *   on-state appearance stream per widget. XFA forms list nothing (hasForm false, intake note).
  *
  * The assemble step (assemble.ts) edits a single source with a form in place when each
  * page is used at most once: the field tree and names stay as they are (/XFA and document
@@ -160,6 +160,12 @@ function apStates(o: MObj): string[] | null {
 	const keys: string[] = [];
 	n.forEach((_v, k) => keys.push(String(k)));
 	return keys;
+}
+
+/** The widget's normal appearance for `state` is a stream (not missing, null or a name). */
+function stateDrawn(o: MObj, state: string): boolean {
+	const s = get(o, 'AP', 'N', state);
+	return s !== null && s.isStream();
 }
 
 /** The normal appearance stream a widget currently shows, or null. */
@@ -410,7 +416,7 @@ function fieldOf(name: string, ws: RawWidget[], co: Set<number>): FieldRec | nul
 		const on = new Set<string>();
 		for (const x of ws) {
 			const states = apStates(x.o)?.filter((s) => s !== 'Off') ?? [];
-			if (states.length !== 1) return null;
+			if (states.length !== 1 || !stateDrawn(x.o, states[0])) return null;
 			on.add(states[0]);
 			x.rec.state = states[0];
 		}
@@ -425,7 +431,7 @@ function fieldOf(name: string, ws: RawWidget[], co: Set<number>): FieldRec | nul
 	if (kind === 'radio') {
 		for (const x of ws) {
 			const states = apStates(x.o)?.filter((s) => s !== 'Off') ?? [];
-			if (states.length !== 1) return null;
+			if (states.length !== 1 || !stateDrawn(x.o, states[0])) return null;
 			x.rec.state = states[0];
 		}
 		// Export values by the rules of PDF.js (ButtonWidgetAnnotation._getExportValue), so the
@@ -1262,7 +1268,9 @@ function checkWidget(m: M, w: MWidget, pj: PdfjsAnnotation | undefined, e: Expec
 	// Appearances are checked where this export drew them; an unchanged answer keeps the file's own.
 	if (!e.rec.visible || !e.answer.write) return;
 	if (!hasNormalStream(o)) {
-		problem(`${name} has no appearance`);
+		// A button's off state may have no appearance at all: it then shows nothing, as meant.
+		const off = (f.kind === 'checkbox' && v === false) || (f.kind === 'radio' && e.rec.option !== v);
+		if (!off) problem(`${name} has no appearance`);
 		return;
 	}
 	if (f.kind === 'text' || f.kind === 'choice') {
