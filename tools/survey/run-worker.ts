@@ -506,8 +506,8 @@ interface Line {
 }
 
 /** First line of text on page 1 with at least three letters or digits, from MuPDF's text extraction. */
-function firstTextLine(c: Ctx): Line | null {
-	const doc = openDoc(mupdf, c.src.bytes);
+function firstTextLine(bytes: Uint8Array): Line | null {
+	const doc = openDoc(mupdf, bytes);
 	try {
 		const page = doc.loadPage(0);
 		const b = page.getBounds();
@@ -566,8 +566,31 @@ export async function popplerWordsIn(file: string, box: StampBox, password?: str
 	return words;
 }
 
+/**
+ * The line to redact: found in the engine's opened copy, else in the original, else (MuPDF
+ * reads neither page 1) in a plain export of the file, whose pages are the same. When MuPDF
+ * reads none of them, a fixed box near the top of page 1, so the engine is still tried.
+ */
+async function lineToRedact(c: Ctx): Promise<{ line: Line | null; via?: string }> {
+	let first: unknown;
+	for (const bytes of [c.src.bytes, c.bytes]) {
+		try {
+			return { line: firstTextLine(bytes) };
+		} catch (e) {
+			first ??= e;
+		}
+	}
+	const why = `MuPDF cannot read page 1 of the file: ${shortError(first, 60)}`;
+	try {
+		const plain = await exportPlan(c, { pages: allPages(c), options: baseOptions });
+		return { line: firstTextLine(plain.bytes), via: `line found in a plain export (${why})` };
+	} catch {
+		return { line: { text: '(fixed box)', box: { x: 0.1, y: 0.08, w: 0.6, h: 0.04 } }, via: `fixed box (${why})` };
+	}
+}
+
 async function redactScenario(c: Ctx): Promise<Partial2> {
-	const line = firstTextLine(c);
+	const { line, via } = await lineToRedact(c);
 	if (!line) return { outcome: 'skipped', message: 'No text line found on page 1.' };
 	const pages = allPages(c);
 	pages[0].stamps = [{ id: 'r', kind: 'redact', box: line.box }];
@@ -578,7 +601,7 @@ async function redactScenario(c: Ctx): Promise<Partial2> {
 	fs.writeFileSync(srcFile, c.src.bytes);
 	const before = await popplerWordsIn(srcFile, line.box);
 	const after = await popplerWordsIn(file, line.box);
-	let note = `line "${line.text.trim().slice(0, 40)}"`;
+	let note = `line "${line.text.trim().slice(0, 40)}"${via ? `; ${via}` : ''}`;
 	if (after === null) problems.push({ level: 'suspect', text: 'poppler could not extract text from the output page 1' });
 	else if (after.length) problems.push({ level: 'wrong', text: `poppler still reads ${after.length} word(s) under the box: ${after.slice(0, 5).join(' ').slice(0, 80)}` });
 	if (before !== null && before.length === 0) note += '; poppler saw no words in the box on the input either (text check vacuous)';

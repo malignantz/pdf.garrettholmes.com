@@ -1190,5 +1190,17 @@
 		"pages": 7,
 		"label": "quirks",
 		"note": "p1 empty FlateDecode content stream; p2 /Contents is a reference to an array; p3 unclosed BT; p4 footer text on the page-number baseline; p5 Square annotation over the top-left quarter; p6 20x20 pt page; p7 push button over the top half, text field (no background) over the bottom half"
+	},
+	"form-objstm-extends.pdf": {
+		"pages": 3,
+		"note": "form; object stream 41 /Extends stale object stream 40 (numbers 1-39, superseded by the xref stream); text \"objstm-extends p<N>\""
+	},
+	"stray-hash-name.pdf": {
+		"pages": 1,
+		"note": "font /Differences glyph name \"/#\" (stray #): qpdf JSON dump exits 3 (warnings); Info /Author SECRETAUTHOR; text \"stray-hash p1\""
+	},
+	"objstm-metadata.pdf": {
+		"pages": 3,
+		"note": "empty /AcroForm; pages in object stream 21; page 3 /PieceInfo SECRETPIECE and /Metadata (XMP SECRETXMP); Info /Author SECRETAUTHOR; text \"objstm-metadata p<N>\""
 	}
 }

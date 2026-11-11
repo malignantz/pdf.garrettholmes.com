@@ -154,7 +154,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			return null;
 		}
 		const res = await qpdf.run({
-			args: ['--decrypt', '/r.pdf', '/out.pdf'],
+			args: ['--decrypt', '--object-streams=disable', '/r.pdf', '/out.pdf'],
 			inputs: { '/r.pdf': rebuilt },
 			outputs: ['/out.pdf']
 		});
@@ -186,8 +186,12 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 				if (bytes.length === 0) throw new EngineError('unreadable', 'This file is empty.');
 				const pw = password !== undefined && password !== '' ? [`--password=${password}`] : [];
 
+				// No object streams in the opened copy: qpdf's --update-from-json (layers, the
+				// in-place assemble, metadata removal) misses some objects that sit in object
+				// streams, and preserving them can carry stale ones along (/Extends) that pdf-lib,
+				// which ignores the xref, would read. Exports regenerate them when compressing.
 				const res = await qpdf.run({
-					args: [...pw, '--decrypt', '/in.pdf', '/out.pdf'],
+					args: [...pw, '--decrypt', '--object-streams=disable', '/in.pdf', '/out.pdf'],
 					inputs: { '/in.pdf': bytes },
 					outputs: ['/out.pdf']
 				});
@@ -581,7 +585,11 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			outputs: ['/j.json']
 		});
 		const file = res.files.get('/j.json');
-		if (res.code !== QPDF_OK || !file) throw new EngineError('internal', 'The PDF engine could not inspect the file.');
+		// Warnings (exit 3) still give the whole dump: they report damage qpdf read past, such
+		// as a name with a stray "#", which the original already has.
+		if ((res.code !== QPDF_OK && res.code !== QPDF_WARNINGS) || !file) {
+			throw new EngineError('internal', 'The PDF engine could not inspect the file.');
+		}
 		const parsed = JSON.parse(new TextDecoder().decode(file)) as { qpdf: [Record<string, unknown>, Record<string, QpdfJsonObject>] };
 		return { header: parsed.qpdf[0], objects: parsed.qpdf[1] };
 	}

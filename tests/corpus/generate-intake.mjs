@@ -432,6 +432,160 @@ function formShared() {
 	]);
 }
 
+/**
+ * A one-revision PDF with a cross-reference stream. `items` are written in order:
+ * [num, body] (a plain object), [num, dict, Buffer] (a stream; %LEN% in dict), or
+ * { objstm: num, objs: [[num, body], …], extends? } (an object stream; its members are
+ * current only if no later item defines the same number: the xref keeps the last).
+ * `info` is the trailer's /Info reference.
+ */
+function xrefStreamPdf(items, { root = '1 0 R', info } = {}) {
+	const parts = [enc('%PDF-1.7\n%\xe2\xe3\xcf\xd3\n')];
+	let offset = parts[0].length;
+	const xref = new Map(); // num -> [type, field2, field3]
+	const put = (num, chunks) => {
+		xref.set(num, [1, offset, 0]);
+		for (const c of chunks) {
+			parts.push(c);
+			offset += c.length;
+		}
+	};
+	const putStream = (num, dict, data) =>
+		put(num, [enc(`${num} 0 obj\n${dict.replace('%LEN%', String(data.length))}\nstream\n`), data, enc('\nendstream\nendobj\n')]);
+	for (const item of items) {
+		if (Array.isArray(item)) {
+			const [num, body, data] = item;
+			if (data) putStream(num, body, data);
+			else put(num, [enc(`${num} 0 obj\n${body}\nendobj\n`)]);
+			continue;
+		}
+		let head = '';
+		let body = '';
+		for (const [num, text] of item.objs) {
+			head += `${num} ${body.length} `;
+			body += text + '\n';
+		}
+		const z = zlib.deflateSync(Buffer.from(head + body, 'latin1'));
+		const ext = item.extends ? ` /Extends ${item.extends} 0 R` : '';
+		putStream(item.objstm, `<< /Type /ObjStm /N ${item.objs.length} /First ${head.length}${ext} /Filter /FlateDecode /Length %LEN% >>`, z);
+		item.objs.forEach(([num], i) => xref.set(num, [2, item.objstm, i]));
+	}
+	const xrefNum = Math.max(...xref.keys()) + 1;
+	const size = xrefNum + 1;
+	xref.set(xrefNum, [1, offset, 0]);
+	const rows = [];
+	for (let n = 0; n < size; n++) {
+		const [t, a, b] = xref.get(n) ?? [0, 0, n === 0 ? 65535 : 0];
+		const row = Buffer.alloc(7);
+		row.writeUInt8(t, 0);
+		row.writeUIntBE(a, 1, 4);
+		row.writeUInt16BE(b & 0xffff, 5);
+		rows.push(row);
+	}
+	const xrefAt = offset;
+	putStream(xrefNum, `<< /Type /XRef /Size ${size} /W [1 4 2] /Root ${root}${info ? ` /Info ${info}` : ''} /Length %LEN% >>`, Buffer.concat(rows));
+	parts.push(enc(`startxref\n${xrefAt}\n%%EOF\n`));
+	return new Uint8Array(Buffer.concat(parts));
+}
+
+/**
+ * form-objstm-extends.pdf: a 3-page form whose objects sit in object streams with a
+ * cross-reference stream, as incremental saves by form software leave them. Object stream
+ * 41 holds the live field and fonts and points with /Extends to object stream 40, whose
+ * members are stale: the xref gives numbers 1-39 to other objects (the pages are direct
+ * objects), but stream 40 still holds dictionaries under those numbers. Viewers follow the
+ * xref. qpdf's default "preserve" mode writes stream 40 again (through /Extends), and a
+ * reader that ignores the xref (pdf-lib) took a stale dictionary for a page.
+ */
+function formObjstmExtends() {
+	const pageIds = [3, 7, 8];
+	return xrefStreamPdf([
+		// The stale stream first: the later definitions are the current ones.
+		{ objstm: 40, objs: Array.from({ length: 39 }, (_, i) => [i + 1, `<< /S /Document /K [] /Stale ${i + 1} >>`]) },
+		[1, '<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R] /DA (/Helv 0 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> >> >>'],
+		[2, `<< /Type /Pages /Kids [${pageIds.map((n) => `${n} 0 R`).join(' ')}] /Count 3 >>`],
+		...pageIds.map((n, i) => [
+			n,
+			`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ${10 + i} 0 R /Resources << /Font << /F1 5 0 R >> >>${i === 0 ? ' /Annots [6 0 R]' : ''} >>`
+		]),
+		...pageIds.map((_, i) => [10 + i, '<< /Length %LEN% >>', stream(text(72, 700, `objstm-extends p${i + 1}`))]),
+		{
+			objstm: 41,
+			extends: 40,
+			objs: [
+				[5, FONT],
+				[6, '<< /Type /Annot /Subtype /Widget /FT /Tx /T (name) /P 3 0 R /F 4 /Rect [72 600 372 624] /DA (/Helv 12 Tf 0 g) /V (old) >>']
+			]
+		}
+	]);
+}
+
+/**
+ * objstm-metadata.pdf: catalog (with an empty form, so a single-source export edits the
+ * file in place), page tree and font in object stream 20; the three pages in
+ * object stream 21, page 3 with /PieceInfo (SECRETPIECE) and /Metadata (an XMP stream with
+ * SECRETXMP); Info with /Author SECRETAUTHOR. qpdf's --update-from-json loses an update to
+ * an object in an object stream that qpdf has not read yet (here page 3), so metadata
+ * removal must not run on object streams. Page 1 has 120 graphics states (object stream 22).
+ */
+function objstmMetadata() {
+	const xmp = '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description dc:creator="SECRETXMP" xmlns:dc="http://purl.org/dc/elements/1.1/"/></rdf:RDF></x:xmpmeta>';
+	// Page 1 uses 120 small graphics states, so a rewrite that numbers objects in reading order
+	// and packs 100 per object stream puts page 3 in a later stream than the catalog.
+	const gs = Array.from({ length: 120 }, (_, k) => `/G${k} ${100 + k} 0 R`).join(' ');
+	const page = (i, extra = '') =>
+		`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ${10 + i} 0 R /Resources << /Font << /F1 3 0 R >>${i === 0 ? ` /ExtGState << ${gs} >>` : ''} >>${extra} >>`;
+	return xrefStreamPdf(
+		[
+			{
+				objstm: 20,
+				objs: [
+					[1, '<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [] >> >>'],
+					[2, '<< /Type /Pages /Kids [4 0 R 5 0 R 6 0 R] /Count 3 >>'],
+					[3, FONT],
+					[7, '<< /Author (SECRETAUTHOR) /Title (Object streams) >>']
+				]
+			},
+			{
+				objstm: 21,
+				objs: [
+					[4, page(0)],
+					[5, page(1)],
+					[6, page(2, ' /PieceInfo << /App << /Private (SECRETPIECE) /LastModified (D:20250101) >> >> /Metadata 8 0 R')]
+				]
+			},
+			{ objstm: 22, objs: Array.from({ length: 120 }, (_, k) => [100 + k, `<< /Type /ExtGState /CA 1 /ca ${(k / 1000).toFixed(3)} >>`]) },
+			[8, '<< /Type /Metadata /Subtype /XML /Length %LEN% >>', Buffer.from(xmp, 'latin1')],
+			...[0, 1, 2].map((i) => [10 + i, '<< /Length %LEN% >>', stream(text(72, 700, `objstm-metadata p${i + 1}`))])
+		],
+		{ info: '7 0 R' }
+	);
+}
+
+/**
+ * stray-hash-name.pdf: the page font's /Differences names a glyph "/#" (a "#" not
+ * followed by two hex digits), as Type 3 fonts from some generators do. qpdf reads the
+ * font with a warning ("name with stray #", exit 3), so its whole-file JSON dump exits 3;
+ * listing the pages does not read the font. Also an Info dictionary with an author, so
+ * stripping metadata has work to do.
+ */
+function strayHashName() {
+	return rawPdf(
+		[
+			[
+				[1, 0, '<< /Type /Catalog /Pages 2 0 R >>'],
+				[2, 0, '<< /Type /Pages /Kids [3 0 R] /Count 1 >>'],
+				[3, 0, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>'],
+				[4, 0, '<< /Length %LEN% >>', stream(text(72, 700, 'stray-hash p1'))],
+				[5, 0, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding 7 0 R >>'],
+				[7, 0, '<< /Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences [35 /# 36 /dollar] >>'],
+				[6, 0, '<< /Author (SECRETAUTHOR) /Title (Stray hash) >>']
+			]
+		],
+		{ info: '6 0 R' }
+	);
+}
+
 export default async function generateIntake(write) {
 	write('layers.pdf', layers(), { pages: 1, note: 'layer "Hidden" (6 0 R) default OFF via /D /OFF; layer "Shown" (8 0 R) ON; indirect /OCProperties' });
 	write('layers-base-off.pdf', layersBaseOff(), { pages: 2, note: 'direct /OCProperties, /BaseState /OFF, /ON [On]: layer "Off" hidden by base state' });
@@ -449,6 +603,9 @@ export default async function generateIntake(write) {
 	write('form-comb.pdf', formComb(), { pages: 1, note: 'comb text field "code", 8 cells (MaxLen 8)' });
 	write('form-shared.pdf', formShared(), { pages: 1, note: 'checkbox "tick": on/off appearances share indirect /Resources; two images share an indirect /ColorSpace' });
 	write('gen-reuse.pdf', genReuse(), { pages: 1, note: 'object 6 reused with generation 1 (legitimate); opens; text "gen-reuse p1"' });
+	write('stray-hash-name.pdf', strayHashName(), { pages: 1, note: 'font /Differences glyph name "/#" (stray #): qpdf JSON dump exits 3 (warnings); Info /Author SECRETAUTHOR; text "stray-hash p1"' });
+	write('objstm-metadata.pdf', objstmMetadata(), { pages: 3, note: 'empty /AcroForm; pages in object stream 21; page 3 /PieceInfo SECRETPIECE and /Metadata (XMP SECRETXMP); Info /Author SECRETAUTHOR; text "objstm-metadata p<N>"' });
+	write('form-objstm-extends.pdf', formObjstmExtends(), { pages: 3, note: 'form; object stream 41 /Extends stale object stream 40 (numbers 1-39, superseded by the xref stream); text "objstm-extends p<N>"' });
 }
 
 // Standalone: write only these files and merge into manifest.json.
