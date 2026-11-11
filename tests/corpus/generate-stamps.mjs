@@ -72,17 +72,14 @@ async function stampsQuirks() {
 		p.node.set(PDFName.of('Annots'), doc.context.obj([annot]));
 	}
 
-	// p6: damaged content that ends inside a literal string, so anything appended
-	// after it would be read as part of the string.
-	appendContent(doc, page(400, 400, 6), 'BT 1 0 0 1 50 50 Tm (unfinished Tj ET');
+	// p6: a page too small for a page number (20 × 20 pt). (Damaged content that ends
+	// inside a string is built in the test itself: every corpus file must export plain.)
+	page(20, 20, 6);
 
-	// p7: a page too small for a page number (20 × 20 pt).
-	page(20, 20, 7);
-
-	// p8: a push button over the top half (as IRS forms put a full-page notice in front
+	// p7: a push button over the top half (as IRS forms put a full-page notice in front
 	// of the form), and a plain text field over the bottom half.
 	{
-		const p = page(400, 400, 8);
+		const p = page(400, 400, 7);
 		const ap = (w, h) =>
 			doc.context.register(doc.context.stream(`0.9 0.9 0.9 rg 0 0 ${w} ${h} re f`, { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, w, h] }));
 		const button = doc.context.register(
@@ -99,9 +96,9 @@ async function stampsQuirks() {
 
 export default async function generateStampsCorpus(write) {
 	write('stamps-quirks.pdf', await stampsQuirks(), {
-		pages: 8,
+		pages: 7,
 		label: 'quirks',
-		note: 'p1 empty FlateDecode content stream; p2 /Contents is a reference to an array; p3 unclosed BT; p4 footer text on the page-number baseline; p5 Square annotation over the top-left quarter; p6 content ends inside a string (damaged); p7 20x20 pt page; p8 push button over the top half, text field (no background) over the bottom half'
+		note: 'p1 empty FlateDecode content stream; p2 /Contents is a reference to an array; p3 unclosed BT; p4 footer text on the page-number baseline; p5 Square annotation over the top-left quarter; p6 20x20 pt page; p7 push button over the top half, text field (no background) over the bottom half'
 	});
 }
 

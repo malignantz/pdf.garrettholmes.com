@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { execFileSync } from 'node:child_process';
+import { PDFArray, PDFDocument, PDFName } from '@cantoo/pdf-lib';
 import type { Asset, EngineErrorShape, PageRef, Rotation, Source, Stamp, StampBox } from '../../src/lib/core/types';
 import {
 	STAMP_BASELINE_EM,
@@ -437,7 +438,7 @@ describe('stamps on unusual page content', () => {
 		const at = async (y: number) =>
 			(
 				await engine().exportPlan(
-					{ pages: [ref(src, 7, 0, [{ id: 'm', kind: 'mark', mark: 'check', box: { x: 0.4, y, w: 0.1, h: 0.1 } }])], options: defaultOptions },
+					{ pages: [ref(src, 6, 0, [{ id: 'm', kind: 'mark', mark: 'check', box: { x: 0.4, y, w: 0.1, h: 0.1 } }])], options: defaultOptions },
 					[src],
 					[]
 				)
@@ -447,15 +448,33 @@ describe('stamps on unusual page content', () => {
 	}, T);
 
 	it('refuse a page whose content ends inside a string, with or without page numbers', async () => {
+		// Built here, not in the corpus: a plain export refuses it too (qpdf --check).
+		const doc = await PDFDocument.create({ updateMetadata: false });
+		const page = doc.addPage([400, 400]);
+		page.drawRectangle({ x: 10, y: 10, width: 20, height: 20 });
+		const extra = doc.context.register(doc.context.stream('BT 1 0 0 1 50 50 Tm (unfinished Tj ET'));
+		const contents = page.node.get(PDFName.of('Contents'));
+		if (contents instanceof PDFArray) contents.push(extra);
+		else page.node.set(PDFName.of('Contents'), doc.context.obj([contents!, extra]));
+		const src = await engine().openPdf(await doc.save(), 'damaged.pdf');
 		for (const withNumbers of [true, false]) {
-			const e = await refusal([5], withNumbers);
-			expect(e.code).toBe('unsupported');
-			expect(e.message).toBe('Page 1 has damaged content, so stamps cannot be added to it safely.');
+			try {
+				await engine().exportPlan(
+					{ pages: [ref(src, 0, 0, [text(1)])], options: { ...defaultOptions, ...(withNumbers ? { numbering } : {}) } },
+					[src],
+					[]
+				);
+				throw new Error('expected a refusal');
+			} catch (e) {
+				expect(e).toBeInstanceOf(EngineError);
+				expect((e as EngineErrorShape).code).toBe('unsupported');
+				expect((e as EngineErrorShape).message).toBe('Page 1 has damaged content, so stamps cannot be added to it safely.');
+			}
 		}
 	}, T);
 
 	it('refuse a page number that does not fit on the page', async () => {
-		const e = await refusal([6]);
+		const e = await refusal([5]);
 		expect(e.code).toBe('unsupported');
 		expect(e.message).toMatch(/^Page 1 is too small for a page number/);
 	}, T);
