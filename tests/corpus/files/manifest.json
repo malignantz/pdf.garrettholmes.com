@@ -1078,5 +1078,21 @@
 	"form-split.pdf": {
 		"pages": 2,
 		"note": "field \"Fine\": text kid \"Note\" (p1, value \"old\"), checkbox kid \"SA\" (p2); the assemble step leaves off-page copies"
+	},
+	"damage-content.pdf": {
+		"pages": 1,
+		"note": "stray \")\" in the content stream: qpdf --check warns; exports keep the same warning"
+	},
+	"damage-flate.pdf": {
+		"pages": 1,
+		"note": "an unused Flate stream with a bad zlib header: --recompress-flate fails on it"
+	},
+	"damage-jpeg.pdf": {
+		"pages": 2,
+		"note": "page 2 draws a DCT image whose data is not JPEG: qpdf --check stops (exit 2)"
+	},
+	"null-contents.pdf": {
+		"pages": 2,
+		"note": "page 2 /Contents [null 6 0 R 99 0 R]: qpdf cannot copy the page until the non-streams are removed"
 	}
 }

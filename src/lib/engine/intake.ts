@@ -87,3 +87,65 @@ export async function hasGenerationConflict(qpdf: Qpdf, bytes: Uint8Array, passw
 		return [...gens].some(([gen, offset]) => gen !== c.gen && offset > c.offset);
 	});
 }
+
+const NON_STREAM = /page object (\d+) (\d+): item index \d+ \(from \d+\): ignoring non-stream in an array of streams/;
+/** Most pages repaired in one file before giving up. */
+const MAX_CONTENT_FIXES = 20;
+
+/**
+ * The page count from `qpdf --show-pages`, which also resolves every page's content list.
+ * A content list holding something other than a stream (a null left by a missing object)
+ * is drawn as if the item were not there by PDF.js and MuPDF, but stops qpdf from copying
+ * the page: such items are removed here, page by page. Returns null when qpdf cannot
+ * list the pages for any other reason.
+ */
+export async function listPages(qpdf: Qpdf, bytes: Uint8Array): Promise<{ bytes: Uint8Array; pages: number; fixedPages: number } | null> {
+	let fixedPages = 0;
+	for (;;) {
+		const res = await qpdf.run({ args: ['--show-pages', '/p.pdf'], inputs: { '/p.pdf': bytes } });
+		if (res.code === QPDF_OK) {
+			return { bytes, pages: (res.stdout.match(/^page \d+: /gm) ?? []).length, fixedPages };
+		}
+		const bad = NON_STREAM.exec(res.stderr);
+		if (!bad || fixedPages >= MAX_CONTENT_FIXES) return null;
+		const fixed = await dropNonStreams(qpdf, bytes, `${bad[1]} ${bad[2]} R`);
+		if (!fixed) return null;
+		bytes = fixed;
+		fixedPages++;
+	}
+}
+
+type JsonObj = { value?: unknown; stream?: unknown };
+
+async function jsonObjects(qpdf: Qpdf, bytes: Uint8Array, refs: string[]) {
+	const res = await qpdf.run({
+		args: ['--json=2', '--json-key=qpdf', ...refs.map((r) => `--json-object=${r.replace(/^(\d+) (\d+) R$/, '$1,$2')}`), '--json-stream-data=none', '/j.pdf', '/j.json'],
+		inputs: { '/j.pdf': bytes },
+		outputs: ['/j.json']
+	});
+	const file = res.files.get('/j.json');
+	if ((res.code !== QPDF_OK && res.code !== QPDF_WARNINGS) || !file) return null;
+	const parsed = JSON.parse(new TextDecoder().decode(file)) as { qpdf: [Record<string, unknown>, Record<string, JsonObj>] };
+	return { header: parsed.qpdf[0], objects: parsed.qpdf[1] };
+}
+
+/** `bytes` with the page's /Contents array reduced to its streams, or null. */
+async function dropNonStreams(qpdf: Qpdf, bytes: Uint8Array, page: string): Promise<Uint8Array | null> {
+	const first = await jsonObjects(qpdf, bytes, [page]);
+	const dict = first?.objects[`obj:${page}`]?.value as Record<string, unknown> | undefined;
+	const contents = dict?.['/Contents'];
+	if (!first || !dict || !Array.isArray(contents)) return null;
+	const refs = contents.filter((c): c is string => typeof c === 'string' && /^\d+ \d+ R$/.test(c));
+	const resolved = refs.length ? await jsonObjects(qpdf, bytes, refs) : { objects: {} as Record<string, JsonObj> };
+	if (!resolved) return null;
+	const kept = refs.filter((r) => resolved.objects[`obj:${r}`]?.stream !== undefined);
+	if (kept.length === contents.length) return null;
+	const update = { qpdf: [first.header, { [`obj:${page}`]: { value: { ...dict, '/Contents': kept } } }] };
+	const res = await qpdf.run({
+		args: ['/p.pdf', '--update-from-json=/p.json', '/p-out.pdf'],
+		inputs: { '/p.pdf': bytes, '/p.json': new TextEncoder().encode(JSON.stringify(update)) },
+		outputs: ['/p-out.pdf']
+	});
+	const out = res.files.get('/p-out.pdf');
+	return (res.code === QPDF_OK || res.code === QPDF_WARNINGS) && out ? out : null;
+}

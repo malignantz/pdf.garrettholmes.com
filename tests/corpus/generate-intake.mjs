@@ -12,6 +12,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 const enc = (s) => Buffer.from(s, 'latin1');
@@ -188,11 +189,86 @@ function formSplit() {
 	]);
 }
 
+
+/**
+ * damage-content.pdf: page 1's content stream has a stray ")" after its text (qpdf --check
+ * warns "unexpected )"; viewers ignore it). Every export carries the same warning.
+ */
+function damageContent() {
+	return rawPdf([
+		[
+			[1, 0, '<< /Type /Catalog /Pages 2 0 R >>'],
+			[2, 0, '<< /Type /Pages /Kids [3 0 R] /Count 1 >>'],
+			[3, 0, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>'],
+			[4, 0, '<< /Length %LEN% >>', stream(text(72, 700, 'damage-content p1') + '\n)\n')],
+			[5, 0, FONT]
+		]
+	]);
+}
+
+/**
+ * damage-flate.pdf: a Flate stream zlib cannot decode (wrong header), hung off the page as
+ * an unused piece of data, as in files whose embedded data is broken. Viewers never read it;
+ * qpdf --recompress-flate stops at it.
+ */
+function damageFlate() {
+	const bad = Buffer.concat([Buffer.from([0x12, 0x34]), zlib.deflateRawSync(Buffer.from('not a zlib header'))]);
+	return rawPdf([
+		[
+			[1, 0, '<< /Type /Catalog /Pages 2 0 R >>'],
+			[2, 0, '<< /Type /Pages /Kids [3 0 R] /Count 1 >>'],
+			[3, 0, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> /PieceInfo << /App << /Private 6 0 R >> >> >>'],
+			[4, 0, '<< /Length %LEN% >>', stream(text(72, 700, 'damage-flate p1'))],
+			[5, 0, FONT],
+			[6, 0, '<< /Filter /FlateDecode /Length %LEN% >>', bad]
+		]
+	]);
+}
+
+/**
+ * damage-jpeg.pdf: page 2 draws a "JPEG" image whose data is not JPEG. Viewers draw nothing
+ * for it; qpdf --check stops at it, so no export of this file can be checked.
+ */
+function damageJpeg() {
+	const res = '/Resources << /Font << /F1 5 0 R >> /XObject << /Im 7 0 R >> >>';
+	return rawPdf([
+		[
+			[1, 0, '<< /Type /Catalog /Pages 2 0 R >>'],
+			[2, 0, '<< /Type /Pages /Kids [3 0 R 8 0 R] /Count 2 >>'],
+			[3, 0, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>'],
+			[4, 0, '<< /Length %LEN% >>', stream(text(72, 700, 'damage-jpeg p1'))],
+			[5, 0, FONT],
+			[6, 0, '<< /Length %LEN% >>', stream(text(72, 700, 'damage-jpeg p2') + '\nq 100 0 0 100 72 400 cm /Im Do Q')],
+			[7, 0, '<< /Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode /Length %LEN% >>', Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0, 3, 1, 2, 3, 4, 5, 6, 7, 8, 0xff, 0xd9])],
+			[8, 0, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 6 0 R ${res} >>`]
+		]
+	]);
+}
+
+/** null-contents.pdf: page 2's /Contents is [null 6 0 R 99 0 R] (99 does not exist). */
+function nullContents() {
+	return rawPdf([
+		[
+			[1, 0, '<< /Type /Catalog /Pages 2 0 R >>'],
+			[2, 0, '<< /Type /Pages /Kids [3 0 R 7 0 R] /Count 2 >>'],
+			[3, 0, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>'],
+			[4, 0, '<< /Length %LEN% >>', stream(text(72, 700, 'null-contents p1'))],
+			[5, 0, FONT],
+			[6, 0, '<< /Length %LEN% >>', stream(text(72, 700, 'null-contents p2'))],
+			[7, 0, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents [null 6 0 R 99 0 R] /Resources << /Font << /F1 5 0 R >> >> >>']
+		]
+	]);
+}
+
 export default async function generateIntake(write) {
 	write('layers.pdf', layers(), { pages: 1, note: 'layer "Hidden" (6 0 R) default OFF via /D /OFF; layer "Shown" (8 0 R) ON; indirect /OCProperties' });
 	write('layers-base-off.pdf', layersBaseOff(), { pages: 2, note: 'direct /OCProperties, /BaseState /OFF, /ON [On]: layer "Off" hidden by base state' });
 	write('gen-conflict.pdf', genConflict(), { pages: 1, note: 'page 3 1 R redefined as 3 0 obj with an annotation in an update: readers disagree; intake refuses' });
 	write('form-split.pdf', formSplit(), { pages: 2, note: 'field "Fine": text kid "Note" (p1, value "old"), checkbox kid "SA" (p2); the assemble step leaves off-page copies' });
+	write('damage-content.pdf', damageContent(), { pages: 1, note: 'stray ")" in the content stream: qpdf --check warns; exports keep the same warning' });
+	write('damage-flate.pdf', damageFlate(), { pages: 1, note: 'an unused Flate stream with a bad zlib header: --recompress-flate fails on it' });
+	write('damage-jpeg.pdf', damageJpeg(), { pages: 2, note: 'page 2 draws a DCT image whose data is not JPEG: qpdf --check stops (exit 2)' });
+	write('null-contents.pdf', nullContents(), { pages: 2, note: 'page 2 /Contents [null 6 0 R 99 0 R]: qpdf cannot copy the page until the non-streams are removed' });
 	write('gen-reuse.pdf', genReuse(), { pages: 1, note: 'object 6 reused with generation 1 (legitimate); opens; text "gen-reuse p1"' });
 }
 
