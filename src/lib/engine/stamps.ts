@@ -360,8 +360,8 @@ const ANNOT_UNSEEN = 2 | 32;
 /**
  * Whether a visible annotation with an appearance overlaps any of `rects`.
  * Annotations are painted above page content, so such an annotation can hide a stamp.
- * Links and popups paint nothing; a form field counts only when it has a background
- * colour (otherwise its appearance is text and borders over the page).
+ * Links and popups paint nothing; a form field counts only when it is likely to be
+ * opaque (see opaqueWidget); otherwise its appearance is text and borders over the page.
  */
 function coveredByAnnotation(lib: typeof PdfLib, leaf: PdfLib.PDFPageLeaf, rects: Box[]): boolean {
 	const { PDFArray, PDFDict, PDFName, PDFNumber, PDFStream } = lib;
@@ -389,11 +389,7 @@ function coveredByAnnotation(lib: typeof PdfLib, leaf: PdfLib.PDFPageLeaf, rects
 		const ap = a.lookup(PDFName.of('AP'));
 		const normal = ap instanceof PDFDict ? ap.lookup(PDFName.of('N')) : undefined;
 		if (!(normal instanceof PDFStream) && !(normal instanceof PDFDict)) continue;
-		if (kind === 'Widget') {
-			const mk = a.lookup(PDFName.of('MK'));
-			const bg = mk instanceof PDFDict ? mk.lookup(PDFName.of('BG')) : undefined;
-			if (!(bg instanceof PDFArray) || bg.size() === 0) continue;
-		}
+		if (kind === 'Widget' && !opaqueWidget(lib, a)) continue;
 		const r = a.lookup(PDFName.of('Rect'));
 		if (!(r instanceof PDFArray) || r.size() !== 4) continue;
 		const v = [0, 1, 2, 3].map((i) => r.lookup(i));
@@ -404,6 +400,28 @@ function coveredByAnnotation(lib: typeof PdfLib, leaf: PdfLib.PDFPageLeaf, rects
 		const ay0 = Math.min(y0, y1);
 		const ay1 = Math.max(y0, y1);
 		if (rects.some((b) => Math.min(b.x1, ax1) - Math.max(b.x0, ax0) > 0.5 && Math.min(b.y1, ay1) - Math.max(b.y0, ay0) > 0.5)) return true;
+	}
+	return false;
+}
+
+/** Pushbutton flag in a field's /Ff. */
+const FF_PUSHBUTTON = 1 << 16;
+
+/** A form widget with a background colour or an icon, or a push button (usually drawn as a picture). */
+function opaqueWidget(lib: typeof PdfLib, a: PdfLib.PDFDict): boolean {
+	const { PDFArray, PDFDict, PDFName, PDFNumber } = lib;
+	const mk = a.lookup(PDFName.of('MK'));
+	if (mk instanceof PDFDict) {
+		const bg = mk.lookup(PDFName.of('BG'));
+		if (bg instanceof PDFArray && bg.size() > 0) return true;
+		if (mk.has(PDFName.of('I'))) return true;
+	}
+	let field: PdfLib.PDFDict | undefined = a;
+	for (let depth = 0; field && depth < 8; depth++) {
+		const ff = field.lookup(PDFName.of('Ff'));
+		if (ff instanceof PDFNumber) return (ff.asNumber() & FF_PUSHBUTTON) !== 0;
+		const parent = field.lookup(PDFName.of('Parent'));
+		field = parent instanceof PDFDict ? parent : undefined;
 	}
 	return false;
 }

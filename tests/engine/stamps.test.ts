@@ -432,6 +432,20 @@ describe('stamps on unusual page content', () => {
 		expect(free.warnings.join(' ')).not.toMatch(/annotation/);
 	}, T);
 
+	it('count a push button as covering, a text field without background as not', async () => {
+		const src = await openCorpus('stamps-quirks.pdf');
+		const at = async (y: number) =>
+			(
+				await engine().exportPlan(
+					{ pages: [ref(src, 7, 0, [{ id: 'm', kind: 'mark', mark: 'check', box: { x: 0.4, y, w: 0.1, h: 0.1 } }])], options: defaultOptions },
+					[src],
+					[]
+				)
+			).warnings.join(' ');
+		expect(await at(0.2)).toMatch(/annotation/);
+		expect(await at(0.7)).not.toMatch(/annotation/);
+	}, T);
+
 	it('refuse a page whose content ends inside a string, with or without page numbers', async () => {
 		for (const withNumbers of [true, false]) {
 			const e = await refusal([5], withNumbers);

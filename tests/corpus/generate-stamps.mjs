@@ -79,14 +79,29 @@ async function stampsQuirks() {
 	// p7: a page too small for a page number (20 × 20 pt).
 	page(20, 20, 7);
 
+	// p8: a push button over the top half (as IRS forms put a full-page notice in front
+	// of the form), and a plain text field over the bottom half.
+	{
+		const p = page(400, 400, 8);
+		const ap = (w, h) =>
+			doc.context.register(doc.context.stream(`0.9 0.9 0.9 rg 0 0 ${w} ${h} re f`, { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, w, h] }));
+		const button = doc.context.register(
+			doc.context.obj({ Type: 'Annot', Subtype: 'Widget', FT: 'Btn', Ff: 65536, T: doc.context.obj('notice'), Rect: [0, 200, 400, 400], F: 4, AP: { N: ap(400, 200) } })
+		);
+		const text = doc.context.register(
+			doc.context.obj({ Type: 'Annot', Subtype: 'Widget', FT: 'Tx', T: doc.context.obj('name'), Rect: [0, 0, 400, 200], F: 4, MK: {}, AP: { N: ap(400, 200) } })
+		);
+		p.node.set(PDFName.of('Annots'), doc.context.obj([button, text]));
+	}
+
 	return doc.save({ useObjectStreams: false, addDefaultPage: false });
 }
 
 export default async function generateStampsCorpus(write) {
 	write('stamps-quirks.pdf', await stampsQuirks(), {
-		pages: 7,
+		pages: 8,
 		label: 'quirks',
-		note: 'p1 empty FlateDecode content stream; p2 /Contents is a reference to an array; p3 unclosed BT; p4 footer text on the page-number baseline; p5 Square annotation over the top-left quarter; p6 content ends inside a string (damaged); p7 20x20 pt page'
+		note: 'p1 empty FlateDecode content stream; p2 /Contents is a reference to an array; p3 unclosed BT; p4 footer text on the page-number baseline; p5 Square annotation over the top-left quarter; p6 content ends inside a string (damaged); p7 20x20 pt page; p8 push button over the top half, text field (no background) over the bottom half'
 	});
 }
 
