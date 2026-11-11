@@ -67,6 +67,7 @@ export interface FormsContext {
 	redactions?: StampBox[][];
 }
 
+export const FORM_UNREADABLE_NOTE = 'This file’s form fields are malformed, so they cannot be filled here.';
 export const XFA_NOTE = 'This is an XFA form. Its fields cannot be filled here.';
 export const CALC_WARNING = 'This form calculates some fields itself. Totals were not recalculated; check them.';
 export const FORMAT_WARNING =
@@ -537,7 +538,15 @@ async function mayHaveForm(deps: EngineDeps, bytes: Uint8Array): Promise<boolean
  */
 export async function detectForm(deps: EngineDeps, bytes: Uint8Array): Promise<{ hasForm: boolean; notes: string[] }> {
 	if (!(await mayHaveForm(deps, bytes))) return { hasForm: false, notes: [] };
-	const an = await analyzeSource(deps, bytes);
+	let an: FormAnalysis;
+	try {
+		an = await analyzeSource(deps, bytes);
+	} catch (e) {
+		if (e instanceof EngineError) throw e;
+		// MuPDF cannot read the form's pages (malformed field or page objects). The pages
+		// themselves may still open and export; the form is just not offered for filling.
+		return { hasForm: false, notes: [FORM_UNREADABLE_NOTE] };
+	}
 	if (an.xfa) return { hasForm: false, notes: [XFA_NOTE] };
 	return { hasForm: an.fields.some((f) => !f.field.readOnly), notes: [] };
 }

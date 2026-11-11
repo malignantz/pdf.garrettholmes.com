@@ -260,6 +260,23 @@ function nullContents() {
 	]);
 }
 
+
+/** form-as-string.pdf: a checkbox whose /AS is a string, not a name; MuPDF refuses to load the page. */
+function formAsString() {
+	return rawPdf([
+		[
+			[1, 0, '<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R] >> >>'],
+			[2, 0, '<< /Type /Pages /Kids [3 0 R] /Count 1 >>'],
+			[3, 0, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> /Annots [6 0 R] >>'],
+			[4, 0, '<< /Length %LEN% >>', stream(text(72, 700, 'form-as-string p1'))],
+			[5, 0, FONT],
+			[6, 0, '<< /Type /Annot /Subtype /Widget /FT /Btn /T (box) /P 3 0 R /F 4 /Rect [72 600 90 618] /AS (Off) /AP << /N << /Yes 7 0 R /Off 8 0 R >> >> >>'],
+			[7, 0, '<< /Type /XObject /Subtype /Form /BBox [0 0 18 18] /Length %LEN% >>', stream('0 g 3 3 12 12 re f')],
+			[8, 0, '<< /Type /XObject /Subtype /Form /BBox [0 0 18 18] /Length %LEN% >>', stream('')]
+		]
+	]);
+}
+
 export default async function generateIntake(write) {
 	write('layers.pdf', layers(), { pages: 1, note: 'layer "Hidden" (6 0 R) default OFF via /D /OFF; layer "Shown" (8 0 R) ON; indirect /OCProperties' });
 	write('layers-base-off.pdf', layersBaseOff(), { pages: 2, note: 'direct /OCProperties, /BaseState /OFF, /ON [On]: layer "Off" hidden by base state' });
@@ -269,6 +286,7 @@ export default async function generateIntake(write) {
 	write('damage-flate.pdf', damageFlate(), { pages: 1, note: 'an unused Flate stream with a bad zlib header: --recompress-flate fails on it' });
 	write('damage-jpeg.pdf', damageJpeg(), { pages: 2, note: 'page 2 draws a DCT image whose data is not JPEG: qpdf --check stops (exit 2)' });
 	write('null-contents.pdf', nullContents(), { pages: 2, note: 'page 2 /Contents [null 6 0 R 99 0 R]: qpdf cannot copy the page until the non-streams are removed' });
+	write('form-as-string.pdf', formAsString(), { pages: 1, note: 'checkbox /AS (Off) is a string: MuPDF cannot load the page; opens without a fillable form' });
 	write('gen-reuse.pdf', genReuse(), { pages: 1, note: 'object 6 reused with generation 1 (legitimate); opens; text "gen-reuse p1"' });
 }
 

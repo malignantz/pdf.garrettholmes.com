@@ -162,3 +162,13 @@ describe('damaged sources: export or refuse clearly, never crash', () => {
 		});
 	});
 });
+
+describe('intake: a form MuPDF cannot read', () => {
+	it('opens without a fillable form and exports', async () => {
+		const src = await openCorpus('form-as-string.pdf');
+		expect(src.hasForm).toBeUndefined();
+		expect(src.notes.join(' ')).toMatch(/form fields are malformed/);
+		const res = await exportAll('form-as-string.pdf', true);
+		expect(await pageTexts(res.bytes)).toEqual(['form-as-string p1']);
+	}, T);
+});

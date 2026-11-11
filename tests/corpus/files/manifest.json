@@ -1094,5 +1094,9 @@
 	"null-contents.pdf": {
 		"pages": 2,
 		"note": "page 2 /Contents [null 6 0 R 99 0 R]: qpdf cannot copy the page until the non-streams are removed"
+	},
+	"form-as-string.pdf": {
+		"pages": 1,
+		"note": "checkbox /AS (Off) is a string: MuPDF cannot load the page; opens without a fillable form"
 	}
 }
