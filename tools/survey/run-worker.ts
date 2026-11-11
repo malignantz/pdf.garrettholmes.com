@@ -309,7 +309,13 @@ function pixelCheck(
 	} else if (d.fraction > SUSPECT_FRACTION) {
 		problems.push({ level: 'suspect', text: `${where}: ${(d.fraction * 100).toFixed(2)}% of inked pixels differ outside the edited areas` });
 	}
-	(opts.mustChange ?? []).forEach((_, k) => {
+	(opts.mustChange ?? []).forEach((r, k) => {
+		const pxW = (r.x1 - r.x0) * pair.before.w;
+		const pxH = (r.y1 - r.y0) * pair.before.h;
+		if (pxW < 3 || pxH < 3) {
+			problems.push({ level: 'note', text: `${where}: edit ${k + 1} not checked (${pxW.toFixed(1)}×${pxH.toFixed(1)} px at this resolution)` });
+			return;
+		}
 		// Judged on the pixels that were light before: a multiply highlight cannot show
 		// over dark content, and a region of a few pixels says nothing.
 		if (d.insideLight[k] < MIN_LIGHT_PIXELS) {
