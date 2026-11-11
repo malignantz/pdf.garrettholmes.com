@@ -451,7 +451,8 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 				bytes,
 				jobs,
 				assetList,
-				numbering ?? undefined
+				numbering ?? undefined,
+				warnings
 			);
 		}
 

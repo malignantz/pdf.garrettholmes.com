@@ -88,17 +88,38 @@ describe('stamp geometry (hand-calculated)', () => {
 
 describe('content q/Q scanner', () => {
 	const enc = (s: string) => new TextEncoder().encode(s);
+	const nest = (...parts: string[]) => {
+		const r = graphicsNesting(parts.map(enc));
+		return { minDepth: r.minDepth, finalDepth: r.finalDepth };
+	};
 	it('counts nesting, ignoring strings, comments, names and inline images', () => {
-		expect(graphicsNesting([enc('q 1 0 0 1 0 0 cm Q')])).toEqual({ minDepth: 0, finalDepth: 0 });
-		expect(graphicsNesting([enc('q q'), enc('Q')])).toEqual({ minDepth: 0, finalDepth: 1 });
-		expect(graphicsNesting([enc('Q Q q')])).toEqual({ minDepth: -2, finalDepth: -1 });
-		expect(graphicsNesting([enc('(q \\) Q (Q)) Tj % q q q\n /Q /q <71> q')])).toEqual({ minDepth: 0, finalDepth: 1 });
-		expect(graphicsNesting([enc('BI /W 1 /H 1 ID \x00Q q Q\x01 EI Q')])).toEqual({ minDepth: -1, finalDepth: -1 });
-		expect(graphicsNesting([enc('qQ')])).toEqual({ minDepth: 0, finalDepth: 0 }); // "qQ" is one unknown token
-		expect(graphicsNesting([enc('<< /A (q) >> q')])).toEqual({ minDepth: 0, finalDepth: 1 });
+		expect(nest('q 1 0 0 1 0 0 cm Q')).toEqual({ minDepth: 0, finalDepth: 0 });
+		expect(nest('q q', 'Q')).toEqual({ minDepth: 0, finalDepth: 1 });
+		expect(nest('Q Q q')).toEqual({ minDepth: -2, finalDepth: -1 });
+		expect(nest('(q \\) Q (Q)) Tj % q q q\n /Q /q <71> q')).toEqual({ minDepth: 0, finalDepth: 1 });
+		expect(nest('BI /W 1 /H 1 ID \x00Q q Q\x01 EI Q')).toEqual({ minDepth: -1, finalDepth: -1 });
+		expect(nest('qQ')).toEqual({ minDepth: 0, finalDepth: 0 }); // "qQ" is one unknown token
+		expect(nest('<< /A (q) >> q')).toEqual({ minDepth: 0, finalDepth: 1 });
 	});
 	it('treats stream boundaries as whitespace', () => {
-		expect(graphicsNesting([enc('q'), enc('q')])).toEqual({ minDepth: 0, finalDepth: 2 });
+		expect(nest('q', 'q')).toEqual({ minDepth: 0, finalDepth: 2 });
+	});
+	it('reports content that would swallow what is appended after it', () => {
+		const end = (s: string) => graphicsNesting([enc(s)]).unterminated;
+		expect(end('BT (abc) Tj ET [(a) 3 (b)] TJ << /MCID 1 >> BDC EMC <00ff> Tj')).toBeNull();
+		expect(end('BT (abc) Tj ET')).toBeNull();
+		expect(end('BT (ab\\) Tj ET')).toBe('string');
+		expect(end('BT (a(b) Tj ET')).toBe('string');
+		expect(end('BT <00ff Tj ET')).toBe('hex string');
+		expect(end('BT [(a) 3 (b) TJ ET')).toBe('array');
+		expect(end('/P << /MCID 3 BDC')).toBe('dictionary');
+		expect(end('BI /W 1 /H 1 ID \x00\x01 Q q')).toBe('inline image');
+		expect(end('] >> ) q Q')).toBeNull(); // stray closers do not hide what follows
+	});
+	it('reports an unclosed text object', () => {
+		expect(graphicsNesting([enc('BT /F1 9 Tf (a) Tj')]).inText).toBe(true);
+		expect(graphicsNesting([enc('BT (ET) Tj ET')]).inText).toBe(false);
+		expect(graphicsNesting([enc('BT ET ET BT')]).inText).toBe(true);
 	});
 });
 
@@ -334,6 +355,83 @@ describe('stamps in exported files', () => {
 		expect(await attempt({ id: 'a', kind: 'text', text: 'x', x: 0.1, y: 0.1, size: 0, color: 'black' })).toBe('unsupported');
 		expect(await attempt({ id: 'a', kind: 'image', assetId: 'nope', box: { x: 0.1, y: 0.1, w: 0.1, h: 0.1 } })).toBe('internal');
 		expect(await attempt({ id: 'a', kind: 'text', text: '', x: 0.1, y: 0.1, size: 0.02, color: 'black' })).toBe('ok');
+	}, T);
+});
+
+// ---------------------------------------------------------------------------
+// Page content shapes from real files (tests/corpus/generate-stamps.mjs).
+
+describe('stamps on unusual page content', () => {
+	const numbering = { style: 'page-n-of-total', position: 'bottom-center', start: 1, skip: 0, size: 10 } as const;
+	const text = (k: number): Stamp => ({ id: `t${k}`, kind: 'text', text: `Signed ${k}`, x: 0.1, y: 0.3, size: 0.04, color: 'black' });
+	const exportQuirks = async (pageIndexes: number[], withNumbers = true) => {
+		const src = await openCorpus('stamps-quirks.pdf');
+		const pages = pageIndexes.map((i) => ref(src, i, 0, [text(i + 1), { id: `m${i}`, kind: 'mark', mark: 'check', box: { x: 0.1, y: 0.1, w: 0.1, h: 0.1 } }]));
+		return engine().exportPlan(
+			{ pages, options: { ...defaultOptions, ...(withNumbers ? { numbering } : {}) } },
+			[src],
+			[]
+		);
+	};
+	const refusal = async (pageIndexes: number[], withNumbers = true) => {
+		try {
+			await exportQuirks(pageIndexes, withNumbers);
+		} catch (e) {
+			expect(e).toBeInstanceOf(EngineError);
+			return e as EngineErrorShape;
+		}
+		throw new Error('expected a refusal');
+	};
+
+	it('handle an empty Flate stream, /Contents by reference, an open BT and page text under the number', async () => {
+		const res = await exportQuirks([0, 1, 2, 3]);
+		for (const c of res.checks) expect(c.ok, `${c.name}: ${c.detail}`).toBe(true);
+		const seen = await inspect(res.bytes);
+		seen.forEach((page, n) => {
+			const item = page.text.find((t) => t.str === `Signed ${[0, 1, 2, 3][n] + 1}`);
+			expect(item, `stamp text on page ${n + 1}`).toBeTruthy();
+			const [a, b, , , e, f] = item!.transform;
+			const W = page.viewport.width;
+			const H = page.viewport.height;
+			const size = 0.04 * H;
+			// Upright, at the user's spot: the open BT on p3 must not shift it.
+			expectNear(page.viewport.toDisplay(e, f), [0.1 * W, 0.3 * H + STAMP_BASELINE_EM * size], 0.05);
+			expect(page.viewport.toDisplay(e + a, f + b)[1] - page.viewport.toDisplay(e, f)[1]).toBeCloseTo(0, 3);
+			expect(page.text.some((t) => t.str.replace(/\s/g, '') === `Page${n + 1}of4`), `number on page ${n + 1}`).toBe(true);
+		});
+		// The original content is still there.
+		const texts = await pageTexts(res.bytes);
+		expect(texts[1]).toContain('quirks p2');
+		expect(texts[2]).toContain('open text');
+		expect(texts[3]).toContain('Footer text');
+		expect(res.warnings.join(' ')).not.toMatch(/annotation/);
+	}, T);
+
+	it('warn when an annotation lies over a stamp', async () => {
+		const res = await exportQuirks([4], false);
+		expect(res.warnings.some((w) => /page 1, an annotation/.test(w))).toBe(true);
+		const src = await openCorpus('stamps-quirks.pdf');
+		// The same annotation, with the stamp in the free bottom-right quarter: no warning.
+		const free = await engine().exportPlan(
+			{ pages: [ref(src, 4, 0, [{ id: 'm', kind: 'mark', mark: 'check', box: { x: 0.7, y: 0.7, w: 0.1, h: 0.1 } }])], options: defaultOptions },
+			[src],
+			[]
+		);
+		expect(free.warnings.join(' ')).not.toMatch(/annotation/);
+	}, T);
+
+	it('refuse a page whose content ends inside a string, with or without page numbers', async () => {
+		for (const withNumbers of [true, false]) {
+			const e = await refusal([5], withNumbers);
+			expect(e.code).toBe('unsupported');
+			expect(e.message).toBe('Page 1 has damaged content, so stamps cannot be added to it safely.');
+		}
+	}, T);
+
+	it('refuse a page number that does not fit on the page', async () => {
+		const e = await refusal([6]);
+		expect(e.code).toBe('unsupported');
+		expect(e.message).toMatch(/^Page 1 is too small for a page number/);
 	}, T);
 });
 

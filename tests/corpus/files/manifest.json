@@ -1058,5 +1058,10 @@
 			"dvboth": "DEFAULT-SECRET-ONE",
 			"dvonly": "DEFAULT-SECRET-TWO"
 		}
+	},
+	"stamps-quirks.pdf": {
+		"pages": 7,
+		"label": "quirks",
+		"note": "p1 empty FlateDecode content stream; p2 /Contents is a reference to an array; p3 unclosed BT; p4 footer text on the page-number baseline; p5 Square annotation over the top-left quarter; p6 content ends inside a string (damaged); p7 20x20 pt page"
 	}
 }
