@@ -53,7 +53,10 @@
  *       outline drawn as one path) and REMOVE_IF_COVERED keeps a path only partly
  *       under the box, whose data under the black paint would still be in the file
  *       (text converted to outlines is exactly that). Rule: a painted path whose
- *       geometry touches a box is removed whole, unless it is "kept":
+ *       geometry, within its clip (the bounding boxes of the clips in force), touches
+ *       a box is removed whole, unless it is "kept". A path clipped away from every box
+ *       paints nothing there and stays, also where its outline runs on under a box
+ *       (rings clipped to a garment drawing were removed whole).
  *
  *       KEPT DRAWINGS. A path may stay (whole, painted over by the black box) only
  *       if what lies under every box is the straight continuation of what is
@@ -1042,8 +1045,10 @@ function walkStream(ctx: PassCtx, ref: Obj, res: Obj, usage: Usage, state: GStat
 					const fill = !/^[Ss]$/.test(op.op);
 					const stroke = /^([Ss]|[Bb]\*?)$/.test(op.op);
 					const pattern = (fill && top().fillPat !== null) || (stroke && top().strokePat !== null);
-					// Removed unless it is a plain rule/border/background (see the header).
-					if (p && ctx.boxes.some((b) => touches(p, b, 0)) && (pattern || !path.keepable(ctx.boxes, fill))) {
+					// Removed unless it is a plain rule/border/background (see the header), or
+					// what it paints (its geometry within the clip) stays clear of every box.
+					const painted = p && (top().clip ? intersect(p, top().clip!) : p);
+					if (painted && ctx.boxes.some((b) => touches(painted, b, 0)) && (pattern || !path.keepable(ctx.boxes, fill))) {
 						if (pattern) refuseLargeFill(ctx, intersect(p, top().clip ?? p));
 						if (visibleOutside(ctx.boxes, intersect(p, top().clip ?? p))) ctx.notes.drawings++;
 						edit(op.s, op.e, 'n');
@@ -1845,13 +1850,16 @@ function runDevice(m: Mupdf, page: MU.PDFPage, h: DeviceHandlers) {
 	const dev = new m.Device({
 		fillPath(path, _eo, ctm, cs, color, alpha) {
 			if (!h.path) return;
-			const b = pathBounds(path, ctm as Matrix);
+			const g = pathBounds(path, ctm as Matrix);
+			// What it paints: its geometry within the clip (nothing when clipped away).
+			const b = g && intersect(g, clip());
 			const rec = recordPath(path, ctm as Matrix);
 			if (b) h.path(b, { blackRect: alpha === 1 && isBlack(cs, color) && isAxisRect(path, ctm as Matrix), keep: (boxes) => rec.keepable(boxes, true) });
 		},
 		strokePath(path, _s, ctm) {
 			if (!h.path) return;
-			const b = pathBounds(path, ctm as Matrix);
+			const g = pathBounds(path, ctm as Matrix);
+			const b = g && intersect(g, clip());
 			const rec = recordPath(path, ctm as Matrix);
 			if (b) h.path(b, { blackRect: false, keep: (boxes) => rec.keepable(boxes, false) });
 		},

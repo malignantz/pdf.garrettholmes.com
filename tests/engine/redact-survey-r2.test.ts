@@ -4,7 +4,8 @@
  * - a very large map page ran out of memory: refused up front by a size guard;
  * - redact-survey-2.pdf: text next to a box removed (a lone space's em box, the glyph core
  *   band), scaled text moved by a second MuPDF rewrite after the check, and annotations and
- *   gradients removed whole without a warning (see generate-redact.mjs, survey2).
+ *   gradients removed whole without a warning, and a drawing removed whole although its
+ *   clip kept it far from the box (see generate-redact.mjs, survey2).
  */
 
 import { describe, expect, it } from 'vitest';
@@ -21,6 +22,7 @@ interface Case {
 	noImage?: number[];
 	keep?: string[];
 	scaled?: string;
+	clip?: number[];
 }
 const cases = (manifest['redact-survey-2.pdf'] as unknown as { cases: Case[] }).cases;
 
@@ -157,5 +159,52 @@ describe('redaction: what goes whole is announced (redact-survey-2.pdf pages 4-5
 		const res = await exportRedacted(src, [frac(cases[4].box, 612, 792, 0)], 4);
 		expect(res.checks.every((c) => c.ok)).toBe(true);
 		expect(res.warnings.join(' ')).toMatch(/A drawing \(lines, shapes, gradients or outlined text\) touching a redaction box was removed whole/);
+	}, T);
+});
+
+/** Mean RGB of a user-space rect of a page, rendered by MuPDF at 1 px/pt (inset 2 px). */
+async function meanColour(bytes: Uint8Array, pageIndex: number, [x0, y0, x1, y1]: number[]): Promise<number[]> {
+	const m = await mupdf();
+	const doc = new m.PDFDocument(bytes);
+	const pix = doc.loadPage(pageIndex).toPixmap(m.Matrix.identity, m.ColorSpace.DeviceRGB, false, true);
+	try {
+		const stride = pix.getStride();
+		const px = pix.getPixels();
+		const sum = [0, 0, 0];
+		let n = 0;
+		for (let y = Math.ceil(792 - y1) + 2; y < Math.floor(792 - y0) - 2; y++) {
+			for (let x = Math.ceil(x0) + 2; x < Math.floor(x1) - 2; x++) {
+				for (let k = 0; k < 3; k++) sum[k] += px[y * stride + x * 3 + k];
+				n++;
+			}
+		}
+		return sum.map((v) => v / n);
+	} finally {
+		pix.destroy();
+		doc.destroy();
+	}
+}
+
+describe('redaction: a clipped drawing (redact-survey-2.pdf page 6)', () => {
+	it('keeps a drawing whose outline runs under the box but whose clip keeps it away', async () => {
+		const src = await survey2();
+		const before = await meanColour(src.bytes, 5, cases[5].clip!);
+		const res = await exportRedacted(src, [frac(cases[5].box, 612, 792, 0)], 5);
+		expect(res.checks.every((c) => c.ok)).toBe(true);
+		expect((await pageTexts(res.bytes))[5]).not.toContain('SECRET');
+		expect(res.warnings.join(' ')).not.toMatch(/removed whole/);
+		const after = await meanColour(res.bytes, 5, cases[5].clip!);
+		after.forEach((v, i) => expect(Math.abs(v - before[i])).toBeLessThan(1));
+	}, T);
+
+	it('still removes it when the box reaches into what it paints', async () => {
+		const src = await survey2();
+		// A box over the label and up into the clipped area.
+		const [x0, y0, x1] = cases[5].box;
+		const res = await exportRedacted(src, [frac([x0, y0, Math.max(x1, 160), 420], 612, 792, 0)], 5);
+		expect(res.checks.every((c) => c.ok)).toBe(true);
+		expect(res.warnings.join(' ')).toMatch(/A drawing .* was removed whole/);
+		const after = await meanColour(res.bytes, 5, [200, 500, 290, 590]);
+		expect(Math.min(...after)).toBeGreaterThan(250);
 	}, T);
 });

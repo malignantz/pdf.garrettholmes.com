@@ -650,6 +650,9 @@ function survey() {
  * 4. A highlight annotation over two lines and a note icon next to the box (pdf.js tests):
  *    both are removed whole, which the export did not say.
  * 5. A small colour gradient next to a label (axis legend): removed whole, unannounced.
+ * 6. A filled circle clipped to a rectangle above the box; the circle's own outline runs
+ *    under the box (garment drawing, rings clipped to a shirt): it was removed whole
+ *    although nothing of it is painted near the box.
  */
 function survey2() {
 	const pdf = new Pdf();
@@ -701,6 +704,15 @@ function survey2() {
 	// 5. A small gradient next to a label.
 	const sh = pdf.add('<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 600 0 720] /Function << /FunctionType 2 /Domain [0 1] /C0 [0 1 1] /C1 [0 0 0.5] /N 1 >> >>');
 	page(['q 150 600 12 120 re W n /Sh1 sh Q', text(72, 700, 'SECRET-10-7')], { box: [71, 696, 72 + helvWidth('SECRET-10-7', 12) + 1 + 80, 712] }, '', `/Shading << /Sh1 ${sh} 0 R >>`);
+	// 6. A clipped circle.
+	const k = 0.5523 * 150;
+	const circle = (cx, cy, r) =>
+		`${cx + r} ${cy} m ${cx + r} ${cy + k} ${cx + k} ${cy + r} ${cx} ${cy + r} c ${cx - k} ${cy + r} ${cx - r} ${cy + k} ${cx - r} ${cy} c ` +
+		`${cx - r} ${cy - k} ${cx - k} ${cy - r} ${cx} ${cy - r} c ${cx + k} ${cy - r} ${cx + r} ${cy - k} ${cx + r} ${cy} c f`;
+	page(['q 100 400 200 200 re W n 0.9 0.5 0.1 rg ' + circle(200, 450, 150) + ' Q', text(72, 330, 'SECRET-UNDER-CLIPPED')], {
+		box: [71, 326, 72 + helvWidth('SECRET-UNDER-CLIPPED', 12) + 1, 342],
+		clip: [100, 400, 300, 600]
+	});
 	pdf.set(pagesRef, `<< /Type /Pages /Kids [${kids.map((k) => `${k} 0 R`).join(' ')}] /Count ${kids.length} >>`);
 	const catalog = pdf.add(`<< /Type /Catalog /Pages ${pagesRef} 0 R >>`);
 	return { bytes: pdf.bytes(catalog), meta: { pages: metas.length, cases: metas } };
