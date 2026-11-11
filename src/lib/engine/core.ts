@@ -547,7 +547,14 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			}
 			const value = obj.value;
 			const dict = obj.stream?.dict;
-			if (isDict(value) && hasMetadataKey(value)) {
+			if (isDict(dict) && dict['/Type'] === '/Metadata') {
+				// The XMP packet itself is emptied, so no reference to it (a marked-content
+				// property list can point straight at one) keeps the metadata alive.
+				updates[key] = { stream: { dict: {}, data: '' } };
+			} else if (isDict(value) && value['/Type'] === '/Metadata') {
+				// A metadata dictionary that lost its stream (damaged file): nothing to keep.
+				updates[key] = { value: {} };
+			} else if (isDict(value) && hasMetadataKey(value)) {
 				updates[key] = { value: withoutMetadata(value) };
 			} else if (isDict(dict) && hasMetadataKey(dict) && dict['/Type'] !== '/XRef' && dict['/Type'] !== '/ObjStm') {
 				updates[key] = { stream: { dict: withoutMetadata(dict) } };
@@ -698,13 +705,24 @@ function isDict(v: unknown): v is Record<string, unknown> {
 	return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 const META_KEYS = ['/Metadata', '/PieceInfo'];
-function hasMetadataKey(d: Record<string, unknown>) {
-	return META_KEYS.some((k) => k in d);
+/** True when the dictionary, or a dictionary or array nested in it directly, has a metadata key. */
+function hasMetadataKey(d: Record<string, unknown>, depth = 0): boolean {
+	if (META_KEYS.some((k) => k in d)) return true;
+	return depth < 32 && Object.values(d).some((v) => hasMetadataIn(v, depth + 1));
 }
-function withoutMetadata(d: Record<string, unknown>) {
+function hasMetadataIn(v: unknown, depth: number): boolean {
+	if (Array.isArray(v)) return depth < 32 && v.some((x) => hasMetadataIn(x, depth + 1));
+	return isDict(v) && hasMetadataKey(v, depth);
+}
+/** The dictionary without metadata keys, also in dictionaries and arrays nested in it directly. */
+function withoutMetadata(d: Record<string, unknown>): Record<string, unknown> {
 	const out: Record<string, unknown> = {};
-	for (const [k, v] of Object.entries(d)) if (!META_KEYS.includes(k)) out[k] = v;
+	for (const [k, v] of Object.entries(d)) if (!META_KEYS.includes(k)) out[k] = stripNested(v);
 	return out;
+}
+function stripNested(v: unknown): unknown {
+	if (Array.isArray(v)) return v.map(stripNested);
+	return isDict(v) ? withoutMetadata(v) : v;
 }
 
 /** Everything that still looks like document metadata in a qpdf JSON dump. */
@@ -716,6 +734,7 @@ export function metadataLeft(json: QpdfJson): string[] {
 		const isTrailer = key === 'trailer' || d['/Type'] === '/XRef';
 		if (isTrailer && '/Info' in d) left.push(`${key} /Info`);
 		for (const k of META_KEYS) if (k in d) left.push(`${key} ${k}`);
+		if (!META_KEYS.some((k) => k in d) && hasMetadataKey(d)) left.push(`${key} nested /Metadata`);
 		if (d['/Type'] === '/Metadata') left.push(`${key} XMP stream`);
 	}
 	return left;

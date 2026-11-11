@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PDFDocument } from '@cantoo/pdf-lib';
+import { PDFDocument, PDFName } from '@cantoo/pdf-lib';
 import type { EngineErrorShape, ExportOptions, ExportResult, PageRef, Source } from '../../src/lib/core/types';
 import { EngineError } from '../../src/lib/engine/errors';
 import { Qpdf } from '../../src/lib/engine/qpdf';
@@ -240,6 +240,40 @@ describe('exportPlan: options', () => {
 		await task.destroy();
 		expect(await pageTexts(res.bytes)).toEqual(['metadata p1', 'metadata p2', 'metadata p1']);
 	}, T);
+
+	it('strips XMP that is not under a top-level /Metadata key (survey: marked-content property lists)', async () => {
+		// As Office and Illustrator write it: page /Properties entries that are direct
+		// dictionaries with their own /Metadata, an XMP stream used as a property list
+		// itself, and (damaged) a metadata dictionary whose stream is missing.
+		const doc = await PDFDocument.create({ updateMetadata: false });
+		const page = doc.addPage([300, 300]);
+		const xmp = (who: string) =>
+			doc.context.register(
+				doc.context.stream(`<x:xmpmeta xmlns:x="adobe:ns:meta/"><dc:creator>${who}</dc:creator></x:xmpmeta>`, { Type: 'Metadata', Subtype: 'XML' })
+			);
+		const bare = doc.context.register(doc.context.obj({ Type: 'Metadata', Subtype: 'XML' }));
+		const props = doc.context.obj({
+			MC0: { Type: 'OCG', Name: 'Background', Metadata: xmp('Nested author') },
+			MC1: xmp('Property-list author'),
+			MC2: bare,
+			MC3: { Kids: [{ PieceInfo: { App: { Private: 'nested app data' } } }] }
+		});
+		page.node.set(PDFName.of('Resources'), doc.context.obj({ Properties: props }));
+		const src = await engine().openPdf(await doc.save(), 'nested-xmp.pdf');
+		expect(metadataLeft(await qpdfJson(src.bytes)).length).toBeGreaterThanOrEqual(3);
+
+		const res = await exportPages([ref(src, 0)], [src], { stripMetadata: true });
+		allOk(res);
+		expect(metadataLeft(await qpdfJson(res.bytes))).toEqual([]);
+		const qdf = await qpdf.run({ args: ['--qdf', '--object-streams=disable', '/i.pdf', '/o.pdf'], inputs: { '/i.pdf': res.bytes }, outputs: ['/o.pdf'] });
+		const raw = Buffer.from(qdf.files.get('/o.pdf')!).toString('latin1');
+		for (const secret of ['Nested author', 'Property-list author', 'nested app data', 'xmpmeta']) expect(raw).not.toContain(secret);
+	}, T);
+
+	it('the metadata check also sees metadata keys nested in direct dictionaries', () => {
+		const json = { header: {}, objects: { 'obj:1 0 R': { value: { '/Properties': { '/MC0': { '/Metadata': 'obj:2 0 R' } } } } } };
+		expect(metadataLeft(json)).toEqual(['obj:1 0 R nested /Metadata']);
+	});
 });
 
 describe('exportPlan: refusals', () => {
