@@ -147,7 +147,8 @@
  *  - anything the check finds (a glyph MuPDF kept, an image it did not blank, …).
  * Handled by removal, not refused: Type 3 fonts (as text), tiling patterns (the
  * painted path goes), smaller shadings (removed whole), clipped content, outlined text and
- * other drawings that are not kept (removed whole), image masks and soft-masked images (blanked by MuPDF, checked).
+ * other drawings that are not kept (removed whole; the export warns when one reached
+ * past the box), image masks and soft-masked images (blanked by MuPDF, checked).
  * Not covered: bookmarks, named destinations, document JavaScript or other pages
  * that quote the same text (search-and-redact is in the backlog).
  */
@@ -194,7 +195,7 @@ export async function applyRedactions(deps: EngineDeps, bytes: Uint8Array, jobs:
 	if (jobs.length === 0) return bytes;
 	const m = await deps.mupdf();
 	let out: Uint8Array;
-	const notes = { partly: 0 };
+	const notes = { partly: 0, drawings: 0 };
 	const doc = openDoc(m, bytes);
 	try {
 		out = redactDocument(m, doc, jobs, notes);
@@ -221,6 +222,11 @@ export async function applyRedactions(deps: EngineDeps, bytes: Uint8Array, jobs:
 			`${notes.partly === 1 ? 'A letter' : `${notes.partly} letters`} only partly under a redaction box ${notes.partly === 1 ? 'was' : 'were'} removed whole, so nothing of ${notes.partly === 1 ? 'it' : 'them'} is left in the file. Check the text around the boxes.`
 		);
 	}
+	if (notes.drawings) {
+		warnings.push(
+			`${notes.drawings === 1 ? 'A drawing' : `${notes.drawings} drawings`} (lines, shapes or outlined text) touching a redaction box ${notes.drawings === 1 ? 'was' : 'were'} removed whole, also where ${notes.drawings === 1 ? 'it extended' : 'they extended'} past the box. Check the page around the boxes.`
+		);
+	}
 	return out;
 }
 
@@ -244,7 +250,7 @@ export async function verifyRedactions(
 // ---------------------------------------------------------------------------
 // The stage
 
-function redactDocument(m: Mupdf, doc: Doc, jobs: RedactJob[], notes: { partly: number }): Uint8Array {
+function redactDocument(m: Mupdf, doc: Doc, jobs: RedactJob[], notes: { partly: number; drawings: number }): Uint8Array {
 	const preCount = doc.countObjects();
 	// Glyph boxes are measured with hidden layers visible, so hidden text is grown over too.
 	const probe = hasOptionalContent(doc) ? withoutOptionalContent(m, doc) : null;
@@ -300,7 +306,7 @@ function redactDocument(m: Mupdf, doc: Doc, jobs: RedactJob[], notes: { partly: 
 				page.applyRedactions(false, m.PDFPage.REDACT_IMAGE_PIXELS, m.PDFPage.REDACT_LINE_ART_NONE, m.PDFPage.REDACT_TEXT_NONE);
 				const pageObj = page.getObject();
 				const pageTf = page.getTransform() as Matrix;
-				cleanContent(m, doc, pageObj, pageTf, boxes, preCount, pageNo, page.getBounds() as Rect);
+				cleanContent(m, doc, pageObj, pageTf, boxes, preCount, pageNo, page.getBounds() as Rect, notes);
 				removeAnnotations(doc, pageObj, pageTf, boxes);
 				paintBlack(doc, pageObj, pageTf, boxes);
 				pageObj.delete('Thumb');
@@ -554,10 +560,21 @@ interface PassCtx {
 	active: Set<number>;
 	/** Area of the displayed page (pt²). */
 	pageArea: number;
+	/** Counts for the export's warnings. */
+	notes: { partly: number; drawings: number };
 }
 
 /** A gradient or pattern fill that goes whole may cover at most this share of the page outside the boxes. */
 const LARGE_FILL = 0.25;
+
+/** A drawing removed whole that also covered a noticeable area outside the boxes (more than 4 pt² and than a tenth of the box area it touches). */
+function visibleOutside(ctx: PassCtx, r: Rect | null): boolean {
+	if (!r) return false;
+	const area = (q: Rect) => Math.max(0, q[2] - q[0]) * Math.max(0, q[3] - q[1]);
+	const inside = ctx.boxes.reduce((n, b) => n + area(intersect(r, b) ?? [0, 0, 0, 0]), 0);
+	const outside = area(r) - inside;
+	return outside > 4 && outside > 0.1 * Math.max(inside, 1);
+}
 
 /**
  * A colour gradient (`sh`) or a pattern-filled shape that touches a box is removed
@@ -709,7 +726,8 @@ function cleanContent(
 	boxes: Rect[],
 	preCount: number,
 	pageNo: number,
-	bounds: Rect
+	bounds: Rect,
+	notes: { partly: number; drawings: number } = { partly: 0, drawings: 0 }
 ) {
 	void m;
 	const ctx: PassCtx = {
@@ -723,7 +741,8 @@ function cleanContent(
 		extGStates: [],
 		patterns: [],
 		active: new Set(),
-		pageArea: Math.max(1, (bounds[2] - bounds[0]) * (bounds[3] - bounds[1]))
+		pageArea: Math.max(1, (bounds[2] - bounds[0]) * (bounds[3] - bounds[1])),
+		notes
 	};
 	const res = localResources(doc, pageObj, pageObj.getInheritable('Resources'));
 	const usage = newUsage();
@@ -887,6 +906,7 @@ function walkStream(ctx: PassCtx, ref: Obj, res: Obj, usage: Usage, state: GStat
 					// Removed unless it is a plain rule/border/background (see the header).
 					if (p && ctx.boxes.some((b) => touches(p, b, 0)) && (pattern || !path.keepable(ctx.boxes, fill))) {
 						if (pattern) refuseLargeFill(ctx, intersect(p, top().clip ?? p));
+						else if (visibleOutside(ctx, intersect(p, top().clip ?? p))) ctx.notes.drawings++;
 						edit(op.s, op.e, 'n');
 					}
 					else paint(fill, stroke);

@@ -200,6 +200,17 @@ describe('redaction: the rest of the page stays as it was (redact-survey.pdf pag
 		expect((err as EngineError).message).toMatch(/gradient/);
 	}, T);
 
+	it('warns when a drawing touching a box is removed whole beyond it (redact-table.pdf diagonal)', async () => {
+		const table = manifest['redact-table.pdf'] as unknown as { boxes: Record<string, { rect: UserRect }> };
+		const src = await openCorpus('redact-table.pdf');
+		const res = await engine().exportPlan({ pages: [ref(src, 0, 0, [redact(frac(table.boxes.diagonal.rect))])], options: defaultOptions }, [src], []);
+		expect(res.checks.every((c) => c.ok)).toBe(true);
+		expect(res.warnings.join(' ')).toMatch(/removed whole, also where it extended past the box/);
+		// A grid line running through a box stays and gets no warning.
+		const kept = await engine().exportPlan({ pages: [ref(src, 0, 0, [redact(frac(table.boxes.rule.rect))])], options: defaultOptions }, [src], []);
+		expect(kept.warnings.join(' ')).not.toMatch(/removed whole/);
+	}, T);
+
 	it('warns when letters only partly under a box are removed whole', async () => {
 		const src = await openCorpus('redact-survey.pdf');
 		const box = await lineBox(src, 1, meta.times.line);
