@@ -1058,5 +1058,21 @@
 			"dvboth": "DEFAULT-SECRET-ONE",
 			"dvonly": "DEFAULT-SECRET-TWO"
 		}
+	},
+	"layers.pdf": {
+		"pages": 1,
+		"note": "layer \"Hidden\" (6 0 R) default OFF via /D /OFF; layer \"Shown\" (8 0 R) ON; indirect /OCProperties"
+	},
+	"layers-base-off.pdf": {
+		"pages": 2,
+		"note": "direct /OCProperties, /BaseState /OFF, /ON [On]: layer \"Off\" hidden by base state"
+	},
+	"gen-conflict.pdf": {
+		"pages": 1,
+		"note": "page 3 1 R redefined as 3 0 obj with an annotation in an update: readers disagree; intake refuses"
+	},
+	"gen-reuse.pdf": {
+		"pages": 1,
+		"note": "object 6 reused with generation 1 (legitimate); opens; text \"gen-reuse p1\""
 	}
 }

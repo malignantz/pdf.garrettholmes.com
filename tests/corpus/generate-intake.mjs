@@ -1,0 +1,183 @@
+#!/usr/bin/env node
+// @ts-nocheck -- plain Node script, like generate.mjs (which tsconfig excludes).
+/**
+ * Intake / assemble corpus: small hand-written PDFs with one structural trait each,
+ * reproducing what the real-world survey found (no third-party bytes are copied).
+ *
+ * Called by generate.mjs, or on its own: node tests/corpus/generate-intake.mjs
+ *
+ * Every file is written byte for byte by `rawPdf` below (objects, xref, trailer;
+ * optional incremental updates), so each trait is exactly as described.
+ */
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const enc = (s) => Buffer.from(s, 'latin1');
+
+/**
+ * A PDF from revisions. Each revision is a list of [num, gen, body] (body without
+ * "obj"/"endobj"; a Buffer body is a stream: [num, gen, dictString, Buffer]). The first
+ * revision gets a full xref; later ones are incremental updates with /Prev.
+ */
+export function rawPdf(revisions, { root = '1 0 R', size } = {}) {
+	const parts = [enc('%PDF-1.7\n%\xe2\xe3\xcf\xd3\n')];
+	let offset = parts[0].length;
+	let prev = null;
+	let maxNum = 0;
+	for (const rev of revisions) {
+		const offsets = [];
+		for (const obj of rev) {
+			const [num, gen, body, data] = obj;
+			maxNum = Math.max(maxNum, num);
+			offsets.push([num, gen, offset]);
+			const chunks = data
+				? [enc(`${num} ${gen} obj\n${body.replace('%LEN%', String(data.length))}\nstream\n`), data, enc('\nendstream\nendobj\n')]
+				: [enc(`${num} ${gen} obj\n${body}\nendobj\n`)];
+			for (const c of chunks) {
+				parts.push(c);
+				offset += c.length;
+			}
+		}
+		const xrefAt = offset;
+		let xref = 'xref\n';
+		if (prev === null) {
+			const byNum = new Map(offsets.map(([n, g, o]) => [n, [g, o]]));
+			xref += `0 ${maxNum + 1}\n0000000000 65535 f \n`;
+			for (let n = 1; n <= maxNum; n++) {
+				const e = byNum.get(n);
+				xref += e ? `${String(e[1]).padStart(10, '0')} ${String(e[0]).padStart(5, '0')} n \n` : '0000000000 00001 f \n';
+			}
+		} else {
+			for (const [n, g, o] of offsets) xref += `${n} 1\n${String(o).padStart(10, '0')} ${String(g).padStart(5, '0')} n \n`;
+		}
+		const trailer = `trailer\n<< /Size ${size ?? maxNum + 1} /Root ${root}${prev !== null ? ` /Prev ${prev}` : ''} >>\nstartxref\n${xrefAt}\n%%EOF\n`;
+		const tail = enc(xref + trailer);
+		parts.push(tail);
+		offset += tail.length;
+		prev = xrefAt;
+	}
+	return new Uint8Array(Buffer.concat(parts));
+}
+
+const FONT = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>';
+const text = (x, y, s, size = 24) => `BT /F1 ${size} Tf ${x} ${y} Td (${s}) Tj ET`;
+const stream = (s) => Buffer.from(s, 'latin1');
+
+/**
+ * layers.pdf: one page with three blocks of text: plain, in layer "Hidden" (default OFF)
+ * and in layer "Shown" (default ON). /OCProperties is an indirect object.
+ */
+function layers() {
+	const content = [
+		text(72, 700, 'layers p1'),
+		'/OC /L1 BDC',
+		text(72, 600, 'hidden layer text'),
+		'EMC',
+		'/OC /L2 BDC',
+		text(72, 500, 'shown layer text'),
+		'EMC'
+	].join('\n');
+	return rawPdf([
+		[
+			[1, 0, '<< /Type /Catalog /Pages 2 0 R /OCProperties 7 0 R >>'],
+			[2, 0, '<< /Type /Pages /Kids [3 0 R] /Count 1 >>'],
+			[3, 0, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> /Properties << /L1 6 0 R /L2 8 0 R >> >> >>'],
+			[4, 0, '<< /Length %LEN% >>', stream(content)],
+			[5, 0, FONT],
+			[6, 0, '<< /Type /OCG /Name (Hidden) >>'],
+			[7, 0, '<< /OCGs [6 0 R 8 0 R] /D << /Name (Default) /OFF [6 0 R] /Order [6 0 R 8 0 R] >> >>'],
+			[8, 0, '<< /Type /OCG /Name (Shown) >>']
+		]
+	]);
+}
+
+/**
+ * layers-base-off.pdf: two pages; /OCProperties direct in the catalog with /BaseState /OFF
+ * and only "On" listed in /ON, so layer "Off" is hidden without being listed in /OFF.
+ */
+function layersBaseOff() {
+	const page = (n) => [text(72, 700, `layers-base-off p${n}`), '/OC /A BDC', text(72, 600, 'base-off hidden'), 'EMC', '/OC /B BDC', text(72, 500, 'base-off shown'), 'EMC'].join('\n');
+	const res = '/Resources << /Font << /F1 5 0 R >> /Properties << /A 6 0 R /B 7 0 R >> >>';
+	return rawPdf([
+		[
+			[1, 0, '<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [6 0 R 7 0 R] /D << /BaseState /OFF /ON [7 0 R] >> >> >>'],
+			[2, 0, '<< /Type /Pages /Kids [3 0 R 8 0 R] /Count 2 >>'],
+			[3, 0, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R ${res} >>`],
+			[4, 0, '<< /Length %LEN% >>', stream(page(1))],
+			[5, 0, FONT],
+			[6, 0, '<< /Type /OCG /Name (Off) >>'],
+			[7, 0, '<< /Type /OCG /Name (On) >>'],
+			[8, 0, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 9 0 R ${res} >>`],
+			[9, 0, '<< /Length %LEN% >>', stream(page(2))]
+		]
+	]);
+}
+
+/**
+ * gen-conflict.pdf: the page is object 3 generation 1, referenced as "3 1 R". An
+ * incremental update redefines object 3 with generation 0 and adds an annotation (as some
+ * mobile annotation apps do). qpdf follows the reference's generation (old page, no
+ * annotation); PDF.js and MuPDF take the newest object 3 (with the annotation).
+ */
+function genConflict() {
+	const page = (annots) =>
+		`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >>${annots} >>`;
+	return rawPdf([
+		[
+			[1, 0, '<< /Type /Catalog /Pages 2 0 R >>'],
+			[2, 0, '<< /Type /Pages /Kids [3 1 R] /Count 1 >>'],
+			[3, 1, page('')],
+			[4, 0, '<< /Length %LEN% >>', stream(text(72, 700, 'gen-conflict p1'))],
+			[5, 0, FONT]
+		],
+		[
+			[3, 0, page(' /Annots [6 0 R]')],
+			[6, 0, '<< /Type /Annot /Subtype /Square /Rect [100 100 300 300] /C [1 0 0] /BS << /W 8 >> /F 4 >>']
+		]
+	]);
+}
+
+/**
+ * gen-reuse.pdf: legitimate reuse of an object number. Object 6 gen 0 is an unused
+ * leftover; an update frees it and defines object 6 generation 1 (the page's new content),
+ * referenced as "6 1 R". Every reader agrees.
+ */
+function genReuse() {
+	return rawPdf([
+		[
+			[1, 0, '<< /Type /Catalog /Pages 2 0 R >>'],
+			[2, 0, '<< /Type /Pages /Kids [3 0 R] /Count 1 >>'],
+			[3, 0, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>'],
+			[4, 0, '<< /Length %LEN% >>', stream(text(72, 700, 'gen-reuse old'))],
+			[5, 0, FONT],
+			[6, 0, '<< /Unused true >>']
+		],
+		[
+			[3, 0, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 6 1 R /Resources << /Font << /F1 5 0 R >> >> >>'],
+			[6, 1, '<< /Length %LEN% >>', stream(text(72, 700, 'gen-reuse p1'))]
+		]
+	]);
+}
+
+export default async function generateIntake(write) {
+	write('layers.pdf', layers(), { pages: 1, note: 'layer "Hidden" (6 0 R) default OFF via /D /OFF; layer "Shown" (8 0 R) ON; indirect /OCProperties' });
+	write('layers-base-off.pdf', layersBaseOff(), { pages: 2, note: 'direct /OCProperties, /BaseState /OFF, /ON [On]: layer "Off" hidden by base state' });
+	write('gen-conflict.pdf', genConflict(), { pages: 1, note: 'page 3 1 R redefined as 3 0 obj with an annotation in an update: readers disagree; intake refuses' });
+	write('gen-reuse.pdf', genReuse(), { pages: 1, note: 'object 6 reused with generation 1 (legitimate); opens; text "gen-reuse p1"' });
+}
+
+// Standalone: write only these files and merge into manifest.json.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+	const outDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'files');
+	const manifestPath = path.join(outDir, 'manifest.json');
+	const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+	await generateIntake((name, bytes, meta) => {
+		fs.writeFileSync(path.join(outDir, name), bytes);
+		manifest[name] = meta;
+		console.log(`${name}: ${(bytes.length / 1024).toFixed(1)} KiB`);
+	});
+	fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, '\t') + '\n');
+}
+

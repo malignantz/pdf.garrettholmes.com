@@ -43,6 +43,8 @@ import {
 	type Orientation
 } from './images';
 import { mupdf as loadMupdf, type Mupdf } from './mupdf';
+import { carryOptionalContent, restoreOptionalContent } from './oc';
+import { hasGenerationConflict } from './intake';
 import { numberingLabels, validateNumbering, verifyNumbering, type NumberingJob } from './numbering';
 import { PdfjsOpenError, inspectWithPdfjs, type PdfjsLib } from './pdfjs';
 import { QPDF_ERROR, QPDF_OK, QPDF_WARNINGS, Qpdf, type QpdfLoader, type QpdfResult } from './qpdf';
@@ -202,6 +204,12 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 					out = repaired.bytes;
 					notes = repaired.notes;
 				} else if (res.code === QPDF_OK || res.code === QPDF_WARNINGS) {
+					if (await hasGenerationConflict(qpdf, bytes, pw)) {
+						throw new EngineError(
+							'unreadable',
+							'This file was saved inconsistently: PDF readers disagree about what some pages contain, so it cannot be edited reliably.'
+						);
+					}
 					notes = res.code === QPDF_WARNINGS ? friendlyWarnings(res.stderr) : [];
 				} else {
 					throw new EngineError('internal', 'The PDF engine stopped unexpectedly while reading this file.');
@@ -400,7 +408,13 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 
 		// (a) Assemble.
 		const inputs: Record<string, Uint8Array> = {};
-		for (const s of used) inputs[fileOf.get(s.id)!] = s.bytes;
+		let layers = false;
+		for (const s of used) {
+			// Layers (optional content) live in the catalog, which the assemble step does not copy.
+			const carried = await carryOptionalContent(qpdf, s.bytes);
+			if (carried !== s.bytes) layers = true;
+			inputs[fileOf.get(s.id)!] = carried;
+		}
 		let bytes = await runOrFail(
 			{
 				args: ['--empty', '--pages', ...pageSelection(pages, fileOf), '--', ...rotateArgs(pages), '/out/assembled.pdf'],
@@ -410,6 +424,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			'/out/assembled.pdf',
 			warnings
 		);
+		if (layers) bytes = await restoreOptionalContent(qpdf, bytes);
 
 		// (b) Forms: answers, appearances, flatten.
 		const formsCtx: FormsContext = {
