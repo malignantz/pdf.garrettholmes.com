@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures';
+import { writeFile } from 'node:fs/promises';
 import { chooseTool, makeSignature, moreButton, openEditor, pageBox, stamps, tapPage, drawOnPad } from './editor-helpers';
 
 test.describe('page editor', () => {
@@ -391,8 +392,23 @@ interface Bbox {
 }
 
 /** Bounding boxes of blue ink in the top half and the bottom half of an image, as fractions. */
-async function blueBoxes(page: import('@playwright/test').Page, dataUrl: string): Promise<{ top: Bbox | null; bottom: Bbox | null }> {
-	return page.evaluate(async (url) => {
+// `baseUrl` is the same view before any stamp: pixels already blue there are not ink
+// (some machines draw black page text with coloured sub-pixel fringes).
+async function blueBoxes(page: import('@playwright/test').Page, dataUrl: string, baseUrl?: string): Promise<{ top: Bbox | null; bottom: Bbox | null }> {
+	return page.evaluate(async ({ url, baseUrl }) => {
+		const isBlue = (d: Uint8ClampedArray, i: number) => d[i + 2] - d[i] > 45 && d[i + 2] - d[i + 1] > 25;
+		let base: ImageData | null = null;
+		if (baseUrl) {
+			const bi = new Image();
+			bi.src = baseUrl;
+			await bi.decode();
+			const bc = document.createElement('canvas');
+			bc.width = bi.naturalWidth;
+			bc.height = bi.naturalHeight;
+			const bctx = bc.getContext('2d', { willReadFrequently: true })!;
+			bctx.drawImage(bi, 0, 0);
+			base = bctx.getImageData(0, 0, bc.width, bc.height);
+		}
 		const img = new Image();
 		img.src = url;
 		await img.decode();
@@ -406,10 +422,8 @@ async function blueBoxes(page: import('@playwright/test').Page, dataUrl: string)
 		for (let y = 0; y < height; y++)
 			for (let x = 0; x < width; x++) {
 				const i = (y * width + x) * 4;
-				const r = data[i];
-				const g = data[i + 1];
-				const b = data[i + 2];
-				if (!(b - r > 45 && b - g > 25)) continue;
+				if (!isBlue(data, i)) continue;
+				if (base && base.width === width && base.height === height && isBlue(base.data, i)) continue;
 				const k = y < height / 2 ? 0 : 1;
 				const bb = (boxes[k] ??= { x0: x, y0: y, x1: x, y1: y });
 				bb.x0 = Math.min(bb.x0, x);
@@ -420,7 +434,7 @@ async function blueBoxes(page: import('@playwright/test').Page, dataUrl: string)
 		const norm = (bb: (typeof boxes)[number]) =>
 			bb && { x0: bb.x0 / width, y0: bb.y0 / height, x1: bb.x1 / width, y1: bb.y1 / height };
 		return { top: norm(boxes[0]), bottom: norm(boxes[1]) };
-	}, dataUrl);
+	}, { url: dataUrl, baseUrl });
 }
 
 const CASES = [
@@ -435,6 +449,8 @@ for (const c of CASES) {
 	test(`preview matches export: ${c.name}`, async ({ page }, info) => {
 		const pageNo = Number(/page=(\d+)/.exec(c.query)![1]);
 		const sheet = await openEditor(page, c.query);
+		await page.waitForTimeout(400);
+		const before = await sheet.screenshot({ scale: 'css' });
 
 		await makeSignature(page, { ink: 'Blue', save: false });
 		await tapPage(page, 0.4, 0.25);
@@ -457,13 +473,17 @@ for (const c of CASES) {
 		await page.waitForTimeout(400);
 
 		const shot = await sheet.screenshot({ scale: 'css' });
-		const preview = await blueBoxes(page, `data:image/png;base64,${shot.toString('base64')}`);
+		const preview = await blueBoxes(page, `data:image/png;base64,${shot.toString('base64')}`, `data:image/png;base64,${before.toString('base64')}`);
 		const b = await pageBox(page);
 		const exported = await page.evaluate(
 			({ i, w }) => (window as unknown as { __editor: { exportPage: (i: number, w: number) => Promise<{ dataUrl: string }> } }).__editor.exportPage(i, w),
 			{ i: pageNo - 1, w: Math.round(b.width * 2) }
 		);
 		const out = await blueBoxes(page, exported.dataUrl);
+		// Kept with the test output, so a failure on another machine can be looked at.
+		await writeFile(info.outputPath('preview.png'), shot);
+		await writeFile(info.outputPath('export.png'), Buffer.from(exported.dataUrl.split(',')[1], 'base64'));
+		await writeFile(info.outputPath('boxes.json'), JSON.stringify({ preview, out }));
 
 		expect(preview.top, 'signature visible in preview').not.toBeNull();
 		expect(preview.bottom, 'text visible in preview').not.toBeNull();

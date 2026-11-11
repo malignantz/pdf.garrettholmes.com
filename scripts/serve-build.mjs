@@ -43,6 +43,12 @@ function loadRules() {
 				.replace(/:[A-Za-z]\w*/g, '[^/]+');
 			rules.push({ pattern: new RegExp(`^${re}$`), headers: [] });
 		} else {
+			// "! Name" detaches a header set by an earlier rule.
+			const detach = raw.trim().match(/^!\s*(\S+)$/);
+			if (detach) {
+				rules.at(-1)?.headers.push([detach[1], null]);
+				continue;
+			}
 			const i = raw.indexOf(':');
 			rules.at(-1)?.headers.push([raw.slice(0, i).trim(), raw.slice(i + 1).trim()]);
 		}
@@ -51,7 +57,7 @@ function loadRules() {
 }
 
 const rules = loadRules();
-if (rules.some((r) => r.headers.some(([, v]) => v.includes('__CSP__')))) {
+if (rules.some((r) => r.headers.some(([, v]) => v?.includes('__CSP__')))) {
 	console.error('serve-build: build/_headers still has __CSP__; run scripts/csp-headers.mjs after vite build');
 	process.exit(1);
 }
@@ -82,7 +88,10 @@ const server = createServer((req, res) => {
 	const headers = { 'Content-Type': types[extname(file)] ?? 'application/octet-stream' };
 	for (const rule of rules) {
 		if (!rule.pattern.test(url.pathname)) continue;
-		for (const [k, v] of rule.headers) headers[k] = v;
+		for (const [k, v] of rule.headers) {
+			if (v === null) delete headers[k];
+			else headers[k] = v;
+		}
 	}
 	if (!headers['Cache-Control']) headers['Cache-Control'] = 'no-cache';
 

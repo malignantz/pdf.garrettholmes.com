@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 concurrency:
@@ -10,14 +11,20 @@ concurrency:
 
 jobs:
   test:
-    # The Debian box runner: Node 22 and Chrome at /opt/google/chrome/chrome.
-    # No sudo and no `playwright install`; playwright.config.ts uses system Chrome.
-    runs-on: [self-hosted]
+    # GitHub's runner, not the Debian box: the repo is public, and a self-hosted
+    # runner would run code from anyone's pull request on the box.
+    # The image has Chrome at /opt/google/chrome/chrome, which playwright.config.ts uses.
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       CI: 'true'
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
 
       - name: Install
         run: npm ci
@@ -38,3 +45,11 @@ jobs:
         run: npm run test:e2e
         env:
           E2E_SKIP_BUILD: '1'
+
+      - name: Keep the test output when a test fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results
+          retention-days: 7
