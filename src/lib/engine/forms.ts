@@ -27,10 +27,12 @@
  *   whose widgets disagree about type or field object, buttons without exactly one
  *   on-state appearance per widget. XFA forms list nothing (hasForm false, intake note).
  *
- * qpdf `--empty --pages` (the assemble step) copies form fields page by page: a field with
- * widgets on several pages becomes one field per page ("shared", "shared+1"), a repeated
- * page or a second copy of the same file gets renamed copies, and /CO, /XFA and document
- * scripts are not carried over. So assembled widgets are mapped back to source fields by
+ * The assemble step (assemble.ts) edits a single source with a form in place when each
+ * page is used at most once: the field tree and names stay as they are (/XFA and document
+ * scripts are dropped). Otherwise qpdf `--empty --pages` copies form fields page by page: a
+ * field with widgets on several pages becomes one field per page ("shared", "shared+1"),
+ * a repeated page or a second copy of the same file gets renamed copies, and /CO, /XFA and
+ * document scripts are not carried over. Either way assembled widgets are mapped back to source fields by
  * position, never by name: output page i shows source page ctx.pages[i], and its widgets
  * must match that page's widgets one for one, in order, by field type and /Rect, or the
  * export stops (EngineError 'internal'). Every copy of a widget of an answered source

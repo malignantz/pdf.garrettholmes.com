@@ -23,8 +23,8 @@ import { QPDF_OK, QPDF_WARNINGS, type Qpdf } from './qpdf';
 export const OC_CARRIER = '/PdfgOptionalContent';
 
 type Json = unknown;
-type Dict = Record<string, Json>;
-interface JsonObject {
+export type Dict = Record<string, Json>;
+export interface JsonObject {
 	value?: Json;
 	stream?: { dict?: Json };
 }
@@ -34,26 +34,38 @@ interface Dump {
 	pages: string[];
 }
 
-const isDict = (v: Json): v is Dict => typeof v === 'object' && v !== null && !Array.isArray(v);
-const isRef = (v: Json): v is string => typeof v === 'string' && /^\d+ \d+ R$/.test(v);
-const objKey = (ref: string) => `obj:${ref}`;
-const objArg = (ref: string) => ref.replace(/^(\d+) (\d+) R$/, '$1,$2');
+export const isDict = (v: Json): v is Dict => typeof v === 'object' && v !== null && !Array.isArray(v);
+export const isRef = (v: Json): v is string => typeof v === 'string' && /^\d+ \d+ R$/.test(v);
+export const objKey = (ref: string) => `obj:${ref}`;
+export const objArg = (ref: string) => ref.replace(/^(\d+) (\d+) R$/, '$1,$2');
 
 async function show(qpdf: Qpdf, bytes: Uint8Array, what: string): Promise<string | null> {
 	const res = await qpdf.run({ args: [`--show-object=${what}`, '/oc.pdf'], inputs: { '/oc.pdf': bytes } });
 	return res.code === QPDF_OK || res.code === QPDF_WARNINGS ? res.stdout : null;
 }
 
-/** Root reference and whether the catalog names /OCProperties, from qpdf's text dump. */
-async function catalogHasOc(qpdf: Qpdf, bytes: Uint8Array): Promise<boolean> {
-	const trailer = await show(qpdf, bytes, 'trailer');
-	const root = trailer && /\/Root (\d+) (\d+) R/.exec(trailer);
-	if (!root) return false;
-	const catalog = await show(qpdf, bytes, `${root[1]},${root[2]}`);
-	return catalog !== null && /\/OCProperties[\s<\d]/.test(catalog);
+export interface CatalogText {
+	/** "N G R" of the catalog. */
+	root: string;
+	/** The catalog dictionary as qpdf prints it (PDF syntax; direct values inline). */
+	text: string;
 }
 
-async function dump(qpdf: Qpdf, bytes: Uint8Array, objects: string[], withPages: boolean): Promise<Dump> {
+/** The catalog of `bytes` in qpdf's text form: two cheap `--show-object` runs, even on huge files. */
+export async function catalogText(qpdf: Qpdf, bytes: Uint8Array): Promise<CatalogText | null> {
+	const trailer = await show(qpdf, bytes, 'trailer');
+	const root = trailer && /\/Root (\d+) (\d+) R/.exec(trailer);
+	if (!root) return null;
+	const text = await show(qpdf, bytes, `${root[1]},${root[2]}`);
+	return text === null ? null : { root: `${root[1]} ${root[2]} R`, text };
+}
+
+/** The catalog names `key` (a top-level key: printed as "/Key " followed by a value). */
+export function catalogHas(cat: CatalogText | null, key: string): boolean {
+	return cat !== null && new RegExp(`/${key}[\\s<\\[\\d(]`).test(cat.text);
+}
+
+export async function dump(qpdf: Qpdf, bytes: Uint8Array, objects: string[], withPages: boolean): Promise<Dump> {
 	const res = await qpdf.run({
 		args: [
 			'--json=2',
@@ -75,7 +87,7 @@ async function dump(qpdf: Qpdf, bytes: Uint8Array, objects: string[], withPages:
 	return { header: parsed.qpdf[0], objects: parsed.qpdf[1], pages: (parsed.pages ?? []).map((p) => p.object) };
 }
 
-async function update(qpdf: Qpdf, bytes: Uint8Array, header: Dict, objects: Record<string, JsonObject>): Promise<Uint8Array> {
+export async function update(qpdf: Qpdf, bytes: Uint8Array, header: Dict, objects: Record<string, JsonObject>): Promise<Uint8Array> {
 	const json = new TextEncoder().encode(JSON.stringify({ qpdf: [header, objects] }));
 	const res = await qpdf.run({
 		args: ['/oc.pdf', '--update-from-json=/oc-update.json', '/oc-out.pdf'],
@@ -114,8 +126,8 @@ async function pagesAndRoot(qpdf: Qpdf, bytes: Uint8Array) {
  * `bytes` with every page pointing at the catalog's /OCProperties under OC_CARRIER, or
  * `bytes` itself when the file has no layers.
  */
-export async function carryOptionalContent(qpdf: Qpdf, bytes: Uint8Array): Promise<Uint8Array> {
-	if (!(await catalogHasOc(qpdf, bytes))) return bytes;
+export async function carryOptionalContent(qpdf: Qpdf, bytes: Uint8Array, cat?: CatalogText | null): Promise<Uint8Array> {
+	if (!catalogHas(cat === undefined ? await catalogText(qpdf, bytes) : cat, 'OCProperties')) return bytes;
 	const { header, catalog, pages } = await pagesAndRoot(qpdf, bytes);
 	const oc = catalog['/OCProperties'];
 	const updates: Record<string, JsonObject> = {};

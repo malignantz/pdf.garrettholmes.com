@@ -84,17 +84,32 @@ async function fieldValues(bytes: Uint8Array): Promise<Record<string, unknown[]>
 }
 
 describe('forms: fields with widgets on several pages', () => {
-	it('gives the off-page copies the same answer', async () => {
+	const answers = { 'Fine.SA': true, 'Fine.Note': 'new answer' };
+
+	it('keeps one field tree and its names when the file is edited in place', async () => {
 		const src = await openCorpus('form-split.pdf');
-		const fields = await engine().formFields(src);
-		expect(fields.map((f) => f.name).sort()).toEqual(['Fine.Note', 'Fine.SA']);
+		expect((await engine().formFields(src)).map((f) => f.name).sort()).toEqual(['Fine.Note', 'Fine.SA']);
 		const res = await engine().exportPlan(
-			{ pages: [ref(src, 0), ref(src, 1)], options: defaultOptions, formValues: { [src.id]: { 'Fine.SA': true, 'Fine.Note': 'new answer' } } },
+			{ pages: [ref(src, 1, 90), ref(src, 0)], options: defaultOptions, formValues: { [src.id]: answers } },
 			[src],
 			[]
 		);
 		const values = await fieldValues(res.bytes);
-		// The assemble step renames the per-page copies; whatever the name, no copy keeps the old answer.
+		expect(Object.keys(values).filter((k) => k.includes('.')).sort()).toEqual(['Fine.Note', 'Fine.SA']);
+		expect(values).toMatchObject({ 'Fine.Note': ['new answer'], 'Fine.SA': ['Yes'] });
+		expect(await pageTexts(res.bytes)).toEqual(['form-split p2', 'form-split p1']);
+	}, T);
+
+	it('gives the off-page copies the same answer when pages are copied', async () => {
+		const src = await openCorpus('form-split.pdf');
+		// A repeated page makes the assemble step copy pages (and fields) one by one.
+		const res = await engine().exportPlan(
+			{ pages: [ref(src, 0), ref(src, 1), ref(src, 0)], options: defaultOptions, formValues: { [src.id]: answers } },
+			[src],
+			[]
+		);
+		const values = await fieldValues(res.bytes);
+		// The copies are renamed ("Fine+1"); whatever the name, no copy keeps the old answer.
 		const all = (base: string) => Object.entries(values).filter(([k]) => k.replace(/\+\d+/g, '') === base).flatMap(([, v]) => v);
 		expect(all('Fine.SA').length).toBeGreaterThan(1);
 		expect(new Set(all('Fine.SA'))).toEqual(new Set(['Yes']));
@@ -170,5 +185,39 @@ describe('intake: a form MuPDF cannot read', () => {
 		expect(src.notes.join(' ')).toMatch(/form fields are malformed/);
 		const res = await exportAll('form-as-string.pdf', true);
 		expect(await pageTexts(res.bytes)).toEqual(['form-as-string p1']);
+	}, T);
+});
+
+describe('assemble: one source with a form is edited in place', () => {
+	it('stays linear on a form with one root field over many pages', async () => {
+		const src = await openCorpus('form-tree.pdf');
+		const n = src.pages.length;
+		const order = src.pages.map((_, i) => n - 1 - i).filter((i) => i !== 5);
+		const res = await engine().exportPlan(
+			{
+				pages: order.map((i, k) => ref(src, i, k === 0 ? 90 : 0)),
+				options: defaultOptions,
+				formValues: { [src.id]: { 'form1[0].page3[0].f2[0]': 'filled' } }
+			},
+			[src],
+			[]
+		);
+		// Copying page by page would copy the 600-widget tree once per page (~23x the size).
+		expect(res.bytes.length).toBeLessThan(2 * src.bytes.length);
+		const values = await fieldValues(res.bytes);
+		expect(values['form1[0].page3[0].f2[0]']).toEqual(['filled']);
+		expect(values['form1[0].page4[0].f2[0]']).toEqual(['v3.2']);
+		expect((await pageTexts(res.bytes)).slice(0, 2)).toEqual([`form-tree p${n}`, `form-tree p${n - 1}`]);
+	}, T);
+
+	it('keeps nothing of a deleted page in the catalog, and drops XFA and Info like a copy', async () => {
+		const src = await openCorpus('form-catalog.pdf');
+		for (const pages of [[ref(src, 0)], [ref(src, 0), ref(src, 1)]]) {
+			const res = await engine().exportPlan({ pages, options: defaultOptions }, [src], []);
+			const text = latin1(res.bytes);
+			for (const secret of ['SECRETOUTLINE', 'SECRETALT', 'SECRETINFO', 'SECRETXFA', '/XFA']) expect(text).not.toContain(secret);
+			if (pages.length === 1) expect(text).not.toContain('SECRETPAGE2');
+			expect(Object.keys(await fieldValues(res.bytes))).toEqual(['name']);
+		}
 	}, T);
 });

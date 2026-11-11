@@ -22,7 +22,7 @@ const enc = (s) => Buffer.from(s, 'latin1');
  * "obj"/"endobj"; a Buffer body is a stream: [num, gen, dictString, Buffer]). The first
  * revision gets a full xref; later ones are incremental updates with /Prev.
  */
-export function rawPdf(revisions, { root = '1 0 R', size } = {}) {
+export function rawPdf(revisions, { root = '1 0 R', size, info } = {}) {
 	const parts = [enc('%PDF-1.7\n%\xe2\xe3\xcf\xd3\n')];
 	let offset = parts[0].length;
 	let prev = null;
@@ -53,7 +53,7 @@ export function rawPdf(revisions, { root = '1 0 R', size } = {}) {
 		} else {
 			for (const [n, g, o] of offsets) xref += `${n} 1\n${String(o).padStart(10, '0')} ${String(g).padStart(5, '0')} n \n`;
 		}
-		const trailer = `trailer\n<< /Size ${size ?? maxNum + 1} /Root ${root}${prev !== null ? ` /Prev ${prev}` : ''} >>\nstartxref\n${xrefAt}\n%%EOF\n`;
+		const trailer = `trailer\n<< /Size ${size ?? maxNum + 1} /Root ${root}${info ? ` /Info ${info}` : ''}${prev !== null ? ` /Prev ${prev}` : ''} >>\nstartxref\n${xrefAt}\n%%EOF\n`;
 		const tail = enc(xref + trailer);
 		parts.push(tail);
 		offset += tail.length;
@@ -277,6 +277,70 @@ function formAsString() {
 	]);
 }
 
+
+/**
+ * form-tree.pdf: an XFA-style form: one root field "form1" whose subforms "page<N>" hold
+ * 25 text fields per page, on 24 pages (600 widgets). Copying pages one by one would
+ * copy the whole tree per page (quadratic); exports must edit the file in place.
+ */
+function formTree(pagesCount = 24, perPage = 25) {
+	const objs = [];
+	let next = 10;
+	const pageIds = [];
+	const subIds = [];
+	const objsAfter = [];
+	for (let p = 0; p < pagesCount; p++) {
+		const pageId = next++;
+		const contentId = next++;
+		const subId = next++;
+		pageIds.push(pageId);
+		subIds.push(subId);
+		const widgets = [];
+		for (let k = 0; k < perPage; k++) {
+			const id = next++;
+			widgets.push(id);
+			const y = 740 - k * 17;
+			objsAfter.push([id, 0, `<< /Type /Annot /Subtype /Widget /FT /Tx /T (f${k}[0]) /Parent ${subId} 0 R /P ${pageId} 0 R /F 4 /Rect [200 ${y} 400 ${y + 14}] /DA (/Helv 10 Tf 0 g) /V (v${p}.${k}) /AP << /N 6 0 R >> >>`]);
+		}
+		objsAfter.push([pageId, 0, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ${contentId} 0 R /Resources << /Font << /F1 5 0 R >> >> /Annots [${widgets.map((w) => `${w} 0 R`).join(' ')}] >>`]);
+		objsAfter.push([contentId, 0, '<< /Length %LEN% >>', stream(text(72, 760, `form-tree p${p + 1}`, 12))]);
+		objsAfter.push([subId, 0, `<< /T (page${p + 1}[0]) /Parent 4 0 R /Kids [${widgets.map((w) => `${w} 0 R`).join(' ')}] >>`]);
+	}
+	objs.push([1, 0, '<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R] /DA (/Helv 0 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> >> >>']);
+	objs.push([2, 0, `<< /Type /Pages /Kids [${pageIds.map((i) => `${i} 0 R`).join(' ')}] /Count ${pagesCount} >>`]);
+	objs.push([4, 0, `<< /T (form1[0]) /Kids [${subIds.map((i) => `${i} 0 R`).join(' ')}] >>`]);
+	objs.push([5, 0, FONT]);
+	objs.push([6, 0, '<< /Type /XObject /Subtype /Form /BBox [0 0 200 14] /Length %LEN% >>', stream('')]);
+	return rawPdf([[...objs, ...objsAfter]]);
+}
+
+/**
+ * form-catalog.pdf: a small form whose catalog has what a reduced catalog must not keep:
+ * an outline entry and a structure element (with /Alt text) for page 2, an /OpenAction,
+ * an Info dictionary and an XFA part. Page 2 says "SECRETPAGE2".
+ */
+function formCatalog() {
+	return rawPdf([
+		[
+			[1, 0, '<< /Type /Catalog /Pages 2 0 R /AcroForm 6 0 R /Outlines 10 0 R /StructTreeRoot 12 0 R /OpenAction [4 0 R /Fit] /MarkInfo << /Marked true >> >>'],
+			[2, 0, '<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>'],
+			[3, 0, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 7 0 R /Resources << /Font << /F1 5 0 R >> >> /Annots [9 0 R] >>'],
+			[4, 0, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 8 0 R /Resources << /Font << /F1 5 0 R >> >> >>'],
+			[5, 0, FONT],
+			[6, 0, '<< /Fields [9 0 R] /DA (/Helv 0 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> /XFA 15 0 R >>'],
+			[7, 0, '<< /Length %LEN% >>', stream(text(72, 700, 'form-catalog p1'))],
+			[8, 0, '<< /Length %LEN% >>', stream(text(72, 700, 'SECRETPAGE2'))],
+			[9, 0, '<< /Type /Annot /Subtype /Widget /FT /Tx /T (name) /P 3 0 R /F 4 /Rect [72 600 372 624] /DA (/Helv 12 Tf 0 g) /V (x) >>'],
+			[10, 0, '<< /Type /Outlines /First 11 0 R /Last 11 0 R /Count 1 >>'],
+			[11, 0, '<< /Title (SECRETOUTLINE) /Parent 10 0 R /Dest [4 0 R /Fit] >>'],
+			[12, 0, '<< /Type /StructTreeRoot /K [13 0 R] >>'],
+			[13, 0, '<< /Type /StructElem /S /Figure /P 12 0 R /Pg 4 0 R /Alt (SECRETALT) /K 0 >>'],
+			[14, 0, '<< /Title (SECRETINFO) >>'],
+			[15, 0, '<< /Length %LEN% >>', stream('<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">SECRETXFA</xdp:xdp>')]
+		]
+	], { info: '14 0 R' });
+}
+
 export default async function generateIntake(write) {
 	write('layers.pdf', layers(), { pages: 1, note: 'layer "Hidden" (6 0 R) default OFF via /D /OFF; layer "Shown" (8 0 R) ON; indirect /OCProperties' });
 	write('layers-base-off.pdf', layersBaseOff(), { pages: 2, note: 'direct /OCProperties, /BaseState /OFF, /ON [On]: layer "Off" hidden by base state' });
@@ -287,6 +351,8 @@ export default async function generateIntake(write) {
 	write('damage-jpeg.pdf', damageJpeg(), { pages: 2, note: 'page 2 draws a DCT image whose data is not JPEG: qpdf --check stops (exit 2)' });
 	write('null-contents.pdf', nullContents(), { pages: 2, note: 'page 2 /Contents [null 6 0 R 99 0 R]: qpdf cannot copy the page until the non-streams are removed' });
 	write('form-as-string.pdf', formAsString(), { pages: 1, note: 'checkbox /AS (Off) is a string: MuPDF cannot load the page; opens without a fillable form' });
+	write('form-tree.pdf', formTree(), { pages: 24, note: 'one root field form1[0] > page<N>[0] > 25 text fields per page (600 widgets): copying pages one by one is quadratic' });
+	write('form-catalog.pdf', formCatalog(), { pages: 2, note: 'form + outline, structure element (/Alt), OpenAction to page 2, Info, XFA; page 2 text SECRETPAGE2; markers SECRETOUTLINE/ALT/INFO/XFA' });
 	write('gen-reuse.pdf', genReuse(), { pages: 1, note: 'object 6 reused with generation 1 (legitimate); opens; text "gen-reuse p1"' });
 }
 

@@ -5,7 +5,7 @@
  *
  *   openPdf     qpdf --decrypt rewrite → PDF.js geometry
  *   openImage   pdf-lib one-page PDF → qpdf --check
- *   exportPlan  qpdf --empty --pages (+ --rotate) → [forms] → [redact]
+ *   exportPlan  assemble (qpdf --pages, assemble.ts) → [forms] → [redact]
  *               → [stamps + numbering] → [shrink →] qpdf finalize → verify
  *
  * Stages in brackets run only when the plan asks for them. Each lives in its own
@@ -43,7 +43,7 @@ import {
 	type Orientation
 } from './images';
 import { mupdf as loadMupdf, type Mupdf } from './mupdf';
-import { carryOptionalContent, restoreOptionalContent } from './oc';
+import { assemble } from './assemble';
 import { hasGenerationConflict, listPages } from './intake';
 import { numberingLabels, validateNumbering, verifyNumbering, type NumberingJob } from './numbering';
 import { PdfjsOpenError, inspectWithPdfjs, type PdfjsLib } from './pdfjs';
@@ -408,24 +408,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		}
 
 		// (a) Assemble.
-		const inputs: Record<string, Uint8Array> = {};
-		let layers = false;
-		for (const s of used) {
-			// Layers (optional content) live in the catalog, which the assemble step does not copy.
-			const carried = await carryOptionalContent(qpdf, s.bytes);
-			if (carried !== s.bytes) layers = true;
-			inputs[fileOf.get(s.id)!] = carried;
-		}
-		let bytes = await runOrFail(
-			{
-				args: ['--empty', '--pages', ...pageSelection(pages, fileOf), '--', ...rotateArgs(pages), '/out/assembled.pdf'],
-				inputs,
-				outputs: ['/out/assembled.pdf']
-			},
-			'/out/assembled.pdf',
-			warnings
-		);
-		if (layers) bytes = await restoreOptionalContent(qpdf, bytes);
+		let bytes = await assemble(qpdf, { pages, used, fileOf, run: (r, output) => runOrFail(r, output, warnings) });
 
 		// (b) Forms: answers, appearances, flatten.
 		const formsCtx: FormsContext = {
@@ -769,37 +752,7 @@ export function metadataLeft(json: QpdfJson): string[] {
 	return left;
 }
 
-/** `--pages` arguments, grouping consecutive pages from the same file. */
-export function pageSelection(pages: PageRef[], fileOf: Map<string, string>): string[] {
-	const args: string[] = [];
-	let file = '';
-	let nums: number[] = [];
-	const flush = () => {
-		if (nums.length) args.push(file, nums.join(','));
-	};
-	for (const ref of pages) {
-		const f = fileOf.get(ref.sourceId)!;
-		if (f !== file) {
-			flush();
-			file = f;
-			nums = [];
-		}
-		nums.push(ref.pageIndex + 1);
-	}
-	flush();
-	return args;
-}
-
-export function rotateArgs(pages: PageRef[]): string[] {
-	const by = new Map<Rotation, number[]>();
-	pages.forEach((ref, i) => {
-		if (ref.rotation === 0) return;
-		const list = by.get(ref.rotation) ?? [];
-		list.push(i + 1);
-		by.set(ref.rotation, list);
-	});
-	return [...by.entries()].map(([angle, list]) => `--rotate=+${angle}:${list.join(',')}`);
-}
+export { pageSelection, rotateArgs } from './assemble';
 
 function validateStamps(pageNo: number, stamps: Stamp[], assetIds: Set<string>) {
 	const eps = 1e-6;

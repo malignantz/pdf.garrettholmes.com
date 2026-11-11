@@ -1098,5 +1098,13 @@
 	"form-as-string.pdf": {
 		"pages": 1,
 		"note": "checkbox /AS (Off) is a string: MuPDF cannot load the page; opens without a fillable form"
+	},
+	"form-tree.pdf": {
+		"pages": 24,
+		"note": "one root field form1[0] > page<N>[0] > 25 text fields per page (600 widgets): copying pages one by one is quadratic"
+	},
+	"form-catalog.pdf": {
+		"pages": 2,
+		"note": "form + outline, structure element (/Alt), OpenAction to page 2, Info, XFA; page 2 text SECRETPAGE2; markers SECRETOUTLINE/ALT/INFO/XFA"
 	}
 }
