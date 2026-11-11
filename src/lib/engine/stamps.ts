@@ -420,7 +420,7 @@ function opaqueWidget(lib: typeof PdfLib, a: PdfLib.PDFDict): boolean {
 	for (let depth = 0; field && depth < 8; depth++) {
 		const ff = field.lookup(PDFName.of('Ff'));
 		if (ff instanceof PDFNumber) return (ff.asNumber() & FF_PUSHBUTTON) !== 0;
-		const parent = field.lookup(PDFName.of('Parent'));
+		const parent: PdfLib.PDFObject | undefined = field.lookup(PDFName.of('Parent'));
 		field = parent instanceof PDFDict ? parent : undefined;
 	}
 	return false;
