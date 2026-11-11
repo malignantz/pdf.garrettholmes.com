@@ -1,19 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import { MessageChannel } from 'node:worker_threads';
 import { createEngine, type WorkerLike } from '../../src/lib/engine/client';
-import { serveEngine } from '../../src/lib/engine/host';
+import { serveEngine, type ServeOptions } from '../../src/lib/engine/host';
+import type { Engine } from '../../src/lib/core/types';
 import { EngineError } from '../../src/lib/engine/errors';
 import { corpus, defaultOptions, engine } from './helpers';
 
 /** A "worker" made of a MessageChannel, served in this thread by the real core engine. */
-function channelWorker(): WorkerLike & { crash(): void; terminated: boolean } {
+function channelWorker(served: Engine = engine(), options: ServeOptions = {}): WorkerLike & { crash(): void; terminated: boolean } {
 	const { port1, port2 } = new MessageChannel();
 	serveEngine(
 		{
 			postMessage: (m, t) => port2.postMessage(m, t as never),
 			addEventListener: (_type, fn) => port2.on('message', (data) => fn({ data } as MessageEvent))
 		},
-		engine()
+		served,
+		options
 	);
 	const errorListeners: ((e: Event) => void)[] = [];
 	const w = {
@@ -78,7 +80,7 @@ describe('client ↔ worker protocol', () => {
 	}, 60_000);
 
 	it('delivers engine errors as EngineError with the code and plain message', async () => {
-		const client = createEngine({ createWorker: channelWorker });
+		const client = createEngine({ createWorker: () => channelWorker() });
 		const e = await client.openPdf(corpus('enc-aes-256.pdf'), 'x').catch((err) => err);
 		expect(e).toBeInstanceOf(EngineError);
 		expect(e.code).toBe('password-required');
@@ -106,6 +108,41 @@ describe('client ↔ worker protocol', () => {
 		const s = await client.blankPage({ width: 50, height: 50 });
 		expect(s.pages).toEqual([{ width: 50, height: 50 }]);
 		expect(workers).toHaveLength(2);
+		client.terminate();
+	}, 30_000);
+
+	it('replaces a worker whose MuPDF faulted: the refusal is delivered, unanswered calls go to the new worker', async () => {
+		const workers: ReturnType<typeof channelWorker>[] = [];
+		const client = createEngine({
+			createWorker: () => {
+				const k = workers.length + 1;
+				let faulted = false;
+				// A stand-in engine: "trap" fails as a MuPDF fault would; anything else answers slowly.
+				const fake = {
+					unsupportedChars: async (text: string) => {
+						if (text === 'trap') {
+							faulted = true;
+							throw new EngineError('unsupported', 'This file made the PDF engine fail.');
+						}
+						await new Promise((r) => setTimeout(r, 50));
+						return `w${k}:${text}`;
+					}
+				} as unknown as Engine;
+				const w = channelWorker(fake, { restartNeeded: () => faulted });
+				workers.push(w);
+				return w;
+			}
+		});
+		const slow = client.unsupportedChars('slow');
+		const trap = client.unsupportedChars('trap').catch((e) => e);
+		const e = await trap;
+		expect(e).toBeInstanceOf(EngineError);
+		expect(e.code).toBe('unsupported');
+		// The slow call was answered by the second worker, not by the faulted one.
+		expect(await slow).toBe('w2:slow');
+		expect(workers).toHaveLength(2);
+		expect(workers[0].terminated).toBe(true);
+		expect(await client.unsupportedChars('next')).toBe('w2:next');
 		client.terminate();
 	}, 30_000);
 });

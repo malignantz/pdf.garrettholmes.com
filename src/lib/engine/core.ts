@@ -42,7 +42,7 @@ import {
 	stripJpegMetadata,
 	type Orientation
 } from './images';
-import { mupdf as loadMupdf, type Mupdf } from './mupdf';
+import { discardMupdf, isWasmFault, mupdf as loadMupdf, type Mupdf } from './mupdf';
 import { numberingLabels, validateNumbering, verifyNumbering, type NumberingJob } from './numbering';
 import { PdfjsOpenError, inspectWithPdfjs, type PdfjsLib } from './pdfjs';
 import { QPDF_ERROR, QPDF_OK, QPDF_WARNINGS, Qpdf, type QpdfLoader, type QpdfResult } from './qpdf';
@@ -888,7 +888,17 @@ async function guard<T>(fn: () => Promise<T>): Promise<T> {
 	try {
 		return await fn();
 	} catch (e) {
-		if (e instanceof EngineError) throw e;
+		if (e instanceof EngineError) {
+			if (isWasmFault((e as { cause?: unknown }).cause)) discardMupdf();
+			throw e;
+		}
+		if (isWasmFault(e)) {
+			// A WebAssembly trap: MuPDF's instance is not trusted again (see mupdf.ts).
+			discardMupdf();
+			const err = new EngineError('unsupported', 'This file made the PDF engine fail, so nothing was saved. The file itself was not changed.');
+			(err as { cause?: unknown }).cause = e;
+			throw err;
+		}
 		if (isOutOfMemory(e)) throw new EngineError('too-large', 'This is too large to process on this device.');
 		const err = new EngineError('internal', 'Something went wrong inside the PDF engine. Nothing was changed.');
 		(err as { cause?: unknown }).cause = e;

@@ -12,6 +12,8 @@ import pdfjsWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
 import fontUrl from './fonts/NotoSans-Regular.ttf?url';
 import { createCoreEngine } from './core';
 import { serveEngine } from './host';
+import { discardMupdf, isWasmFault, mupdfRestartNeeded } from './mupdf';
+import { TAG, type EngineRestart } from './protocol';
 
 async function fetchBytes(url: string): Promise<Uint8Array> {
 	const res = await fetch(url);
@@ -39,4 +41,14 @@ const engine = createCoreEngine({
 	}
 });
 
-serveEngine(self as unknown as DedicatedWorkerGlobalScope, engine);
+serveEngine(self as unknown as DedicatedWorkerGlobalScope, engine, { restartNeeded: mupdfRestartNeeded });
+
+// A MuPDF trap outside any call (inside a finalizer, which no try/catch sees): this
+// worker's MuPDF is not trusted again. Ask for a replacement instead of dying; the
+// client re-sends what this worker had not answered.
+self.addEventListener('error', (event: ErrorEvent) => {
+	if (!isWasmFault(event.error)) return;
+	event.preventDefault();
+	discardMupdf();
+	self.postMessage({ tag: TAG, restart: true } satisfies EngineRestart);
+});

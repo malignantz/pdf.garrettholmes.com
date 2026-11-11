@@ -10,7 +10,7 @@
 
 import type { Engine } from '../core/types';
 import { EngineError, fromErrorShape } from './errors';
-import { TAG, isResponse, type EngineMethod, type EngineRequest } from './protocol';
+import { TAG, isResponse, isRestart, type EngineMethod, type EngineRequest } from './protocol';
 
 export interface WorkerLike {
 	postMessage(message: unknown): void;
@@ -28,11 +28,19 @@ function defaultWorker(): WorkerLike {
 	return new Worker(new URL('./worker.ts', import.meta.url), { type: 'module', name: 'pdf-engine' });
 }
 
+interface Pending {
+	resolve: (v: unknown) => void;
+	reject: (e: unknown) => void;
+	req: EngineRequest;
+	/** Times this request was sent again to a replacement worker. */
+	resent: number;
+}
+
 export function createEngine(options: { createWorker?: () => WorkerLike } = {}): EngineClient {
 	const spawn = options.createWorker ?? defaultWorker;
 	let worker: WorkerLike | null = null;
 	let nextId = 1;
-	const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>();
+	const pending = new Map<number, Pending>();
 
 	const failAll = (message: string) => {
 		const err = new EngineError('internal', message);
@@ -51,11 +59,53 @@ export function createEngine(options: { createWorker?: () => WorkerLike } = {}):
 		failAll(message);
 	};
 
+	// The worker asked to be replaced (see protocol.ts EngineRestart): requests it has not
+	// answered go to a new worker, each at most twice.
+	const replace = (w: WorkerLike) => {
+		worker = null;
+		try {
+			w.terminate();
+		} catch {
+			// Already gone.
+		}
+		for (const [id, p] of [...pending]) {
+			if (p.resent >= 2) {
+				pending.delete(id);
+				p.reject(new EngineError('internal', 'The PDF engine stopped unexpectedly. Try again.'));
+				continue;
+			}
+			p.resent++;
+			send(id, p);
+		}
+	};
+
+	const send = (id: number, p: Pending) => {
+		let w: WorkerLike;
+		try {
+			w = ensure();
+		} catch {
+			pending.delete(id);
+			p.reject(new EngineError('internal', 'The PDF engine could not start in this browser.'));
+			return;
+		}
+		try {
+			w.postMessage(p.req);
+		} catch {
+			pending.delete(id);
+			p.reject(new EngineError('internal', 'The PDF engine could not receive this file.'));
+		}
+	};
+
 	const ensure = (): WorkerLike => {
 		if (worker) return worker;
 		const w = spawn();
 		w.addEventListener('message', (event: MessageEvent) => {
+			if (worker !== w) return;
 			const msg = event.data;
+			if (isRestart(msg)) {
+				replace(w);
+				return;
+			}
 			if (!isResponse(msg)) return;
 			const p = pending.get(msg.id);
 			if (!p) return;
@@ -76,22 +126,10 @@ export function createEngine(options: { createWorker?: () => WorkerLike } = {}):
 
 	const call = <T>(method: EngineMethod, args: unknown[]): Promise<T> =>
 		new Promise<T>((resolve, reject) => {
-			let w: WorkerLike;
-			try {
-				w = ensure();
-			} catch {
-				reject(new EngineError('internal', 'The PDF engine could not start in this browser.'));
-				return;
-			}
 			const id = nextId++;
-			pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
-			const req: EngineRequest = { tag: TAG, id, method, args };
-			try {
-				w.postMessage(req);
-			} catch {
-				pending.delete(id);
-				reject(new EngineError('internal', 'The PDF engine could not receive this file.'));
-			}
+			const p: Pending = { resolve: resolve as (v: unknown) => void, reject, req: { tag: TAG, id, method, args }, resent: 0 };
+			pending.set(id, p);
+			send(id, p);
 		});
 
 	return {

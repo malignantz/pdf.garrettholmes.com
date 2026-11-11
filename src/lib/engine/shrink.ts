@@ -33,7 +33,8 @@
 import type { Matrix, PDFDocument, PDFObject, Pixmap } from 'mupdf';
 import type { ExportResult, VerifyCheck } from '../core/types';
 import type { EngineDeps } from './deps';
-import type { Mupdf } from './mupdf';
+import { EngineError } from './errors';
+import { isRetired, isWasmFault, rethrowFault, type Mupdf } from './mupdf';
 
 export type ShrinkReport = NonNullable<ExportResult['shrink']>;
 
@@ -175,12 +176,22 @@ export async function shrinkToTarget(
 				'Its images could not be reduced without changing how pages look.'
 			);
 		}
+		if (isRetired(m)) throw new EngineError('internal', 'The PDF engine had to restart. Try again.');
 		return done(outcome.final, outcome.changed, outcome.step.ppi, outcome.visual);
-	} catch {
+	} catch (e) {
+		// A wasm trap is not a soft "could not reduce": MuPDF must be replaced (core.ts).
+		if (isWasmFault(e) || isRetired(m)) throw e;
 		return done(lossless, 0, 0, untouched, 'Its images could not be reduced safely.');
 	} finally {
-		orig?.destroy();
-		m.emptyStore();
+		// After a trap, touching the instance again could trap once more and hide the first error.
+		if (!isRetired(m)) {
+			try {
+				orig?.destroy();
+				m.emptyStore();
+			} catch (e) {
+				rethrowFault(e);
+			}
+		}
 	}
 }
 
@@ -592,7 +603,8 @@ function findCandidates(doc: PDFDocument): Candidate[] {
 					e.pages.add(p);
 				} else placed.set(num, { inW, inH, pages: new Set([p]) });
 			}, scanResources);
-		} catch {
+		} catch (e) {
+			rethrowFault(e);
 			// Content this walker cannot follow: nothing it can reach may change.
 			collect(res);
 		}

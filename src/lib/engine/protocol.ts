@@ -20,6 +20,21 @@ export type EngineResponse =
 	| { tag: typeof TAG; id: number; ok: true; value: unknown }
 	| { tag: typeof TAG; id: number; ok: false; error: EngineErrorShape };
 
+/**
+ * Sent by the worker after its reply when it must not be used again (MuPDF faulted
+ * and cannot be re-created inside this worker; see mupdf.ts). The client starts a
+ * new worker and sends it every request this one has not answered.
+ */
+export interface EngineRestart {
+	tag: typeof TAG;
+	restart: true;
+}
+
+export function isRestart(data: unknown): data is EngineRestart {
+	const d = data as EngineRestart | null;
+	return !!d && d.tag === TAG && d.restart === true;
+}
+
 export const METHODS: readonly EngineMethod[] = [
 	'openPdf',
 	'openImage',

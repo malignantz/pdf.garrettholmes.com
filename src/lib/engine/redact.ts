@@ -146,7 +146,7 @@ import type { PageSize, StampBox, VerifyCheck } from '../core/types';
 import type { EngineDeps } from './deps';
 import { EngineError } from './errors';
 import { applyMatrix, multiply, type Matrix } from './geometry';
-import type { Mupdf } from './mupdf';
+import { disown, isRetired, rethrowFault, type Mupdf } from './mupdf';
 import type { PdfjsLib } from './pdfjs';
 
 export interface RedactJob {
@@ -200,6 +200,7 @@ export async function applyRedactions(deps: EngineDeps, bytes: Uint8Array, jobs:
 		destroy(doc);
 	}
 	const checks = await checkRedactions(deps, out, jobs, { allowed: jobs.map(() => []), strict: true });
+	if (isRetired(m)) throw new EngineError('internal', 'The PDF engine had to restart. Try again.');
 	if (!checks.every((c) => c.ok)) {
 		throw new EngineError('verification-failed', 'A redaction could not be verified, so the file was not saved.', checks);
 	}
@@ -233,26 +234,45 @@ function redactDocument(m: Mupdf, doc: Doc, jobs: RedactJob[]): Uint8Array {
 	try {
 		for (const job of jobs) {
 			const pageNo = job.pageIndex + 1;
+			// Pages, annotations and probes are freed here rather than by the garbage collector:
+			// each page holds its document, and the engine worker is long-lived.
 			const page = doc.loadPage(job.pageIndex);
-			const boxes = pageBoxes(page, job);
-			const grown = growToGlyphs(m, probe ? probe.loadPage(job.pageIndex) : page, boxes);
-			// Text first, over the grown rectangles; then everything, over the boxes themselves.
-			for (const r of grown) page.createAnnotation('Redact').setRect(r);
-			page.applyRedactions(false, m.PDFPage.REDACT_IMAGE_NONE, m.PDFPage.REDACT_LINE_ART_NONE, m.PDFPage.REDACT_TEXT_REMOVE);
-			for (const r of boxes) page.createAnnotation('Redact').setRect(r);
-			page.applyRedactions(false, m.PDFPage.REDACT_IMAGE_PIXELS, m.PDFPage.REDACT_LINE_ART_NONE, m.PDFPage.REDACT_TEXT_REMOVE);
-			const pageObj = page.getObject();
-			const pageTf = page.getTransform() as Matrix;
-			cleanContent(m, doc, pageObj, pageTf, boxes, preCount, pageNo, page.getBounds() as Rect);
-			removeAnnotations(doc, pageObj, pageTf, boxes);
-			paintBlack(doc, pageObj, pageTf, boxes);
-			pageObj.delete('Thumb');
+			const probePage = probe ? probe.loadPage(job.pageIndex) : null;
+			try {
+				const boxes = pageBoxes(page, job);
+				const grown = growToGlyphs(m, probePage ?? page, boxes);
+				// Text first, over the grown rectangles; then everything, over the boxes themselves.
+				const mark = (rects: Rect[]) => {
+					for (const r of rects) {
+						const a = page.createAnnotation('Redact');
+						a.setRect(r);
+						destroy(a);
+					}
+				};
+				mark(grown);
+				page.applyRedactions(false, m.PDFPage.REDACT_IMAGE_NONE, m.PDFPage.REDACT_LINE_ART_NONE, m.PDFPage.REDACT_TEXT_REMOVE);
+				mark(boxes);
+				page.applyRedactions(false, m.PDFPage.REDACT_IMAGE_PIXELS, m.PDFPage.REDACT_LINE_ART_NONE, m.PDFPage.REDACT_TEXT_REMOVE);
+				const pageObj = page.getObject();
+				const pageTf = page.getTransform() as Matrix;
+				cleanContent(m, doc, pageObj, pageTf, boxes, preCount, pageNo, page.getBounds() as Rect);
+				removeAnnotations(doc, pageObj, pageTf, boxes);
+				paintBlack(doc, pageObj, pageTf, boxes);
+				pageObj.delete('Thumb');
+			} finally {
+				if (probePage) destroy(probePage);
+				destroy(page);
+			}
 		}
 	} finally {
 		if (probe) destroy(probe);
 	}
 	doc.getTrailer().get('Root').delete('StructTreeRoot');
-	return doc.saveToBuffer('garbage=compact,compress').asUint8Array().slice();
+	// Not garbage=compact: renumbering copies every object mupdf.js holds a reference to
+	// (all it has read) and the copy of a stream loses its data, so images and forms
+	// read by the pass above came out as empty dictionaries ("XObject should be a
+	// stream"). garbage=yes still drops every object nothing refers to any more.
+	return saveBuffer(doc, 'garbage=yes,compress');
 }
 
 /** Boxes of a job in MuPDF page space; refuses if the page is not the planned size. */
@@ -440,7 +460,7 @@ function walkStream(ctx: PassCtx, ref: Obj, res: Obj, usage: Usage, state: GStat
 	const num = ref.asIndirect();
 	let work = ctx.streams.get(num);
 	if (!work) {
-		work = { obj: ref, bytes: ref.readStream().asUint8Array().slice(), edits: new Map() };
+		work = { obj: ref, bytes: readBytes(ref), edits: new Map() };
 		ctx.streams.set(num, work);
 	}
 	const w = work;
@@ -759,7 +779,7 @@ function containsTextOrImages(ref: Obj, seen: Set<number>, depth: number): boole
 	}
 	if (!ref.isStream()) return false;
 	try {
-		const data = ref.readStream().asUint8Array().slice();
+		const data = readBytes(ref);
 		const res = ref.resolve().get('Resources');
 		const lexer = new Lexer(data, 0);
 		for (let op = lexer.next(); op; op = lexer.next()) {
@@ -774,7 +794,8 @@ function containsTextOrImages(ref: Obj, seen: Set<number>, depth: number): boole
 			if (!sub.isName() || sub.asName() !== 'Form') return true;
 			if (containsTextOrImages(xo, seen, depth + 1)) return true;
 		}
-	} catch {
+	} catch (e) {
+		rethrowFault(e);
 		// Unreadable (e.g. a binary inline image): assume the worst.
 		return true;
 	}
@@ -922,18 +943,23 @@ async function checkRedactions(deps: EngineDeps, bytes: Uint8Array, jobs: Redact
 				continue;
 			}
 			const page = doc.loadPage(job.pageIndex);
-			const b = page.getBounds() as Rect;
-			if (Math.abs(b[2] - b[0] - job.expected.width) > SIZE_TOLERANCE || Math.abs(b[3] - b[1] - job.expected.height) > SIZE_TOLERANCE) {
-				problems.push(`Page ${pageNo} is not the planned size, so its redactions cannot be checked.`);
-				continue;
+			try {
+				const b = page.getBounds() as Rect;
+				if (Math.abs(b[2] - b[0] - job.expected.width) > SIZE_TOLERANCE || Math.abs(b[3] - b[1] - job.expected.height) > SIZE_TOLERANCE) {
+					problems.push(`Page ${pageNo} is not the planned size, so its redactions cannot be checked.`);
+					continue;
+				}
+				const boxes = job.boxes.map((s) => fractionRect(b, s));
+				const overlays = opts.strict ? [] : (job.overlays ?? []).map((s) => pad(fractionRect(b, s), 1));
+				problems.push(
+					...checkPageMupdf(m, page, pageNo, boxes, opts.strict ? [] : (opts.allowed[ji] ?? []), overlays, opts.strict, opts.imagesReencoded === true)
+				);
+			} finally {
+				destroy(page);
 			}
-			const boxes = job.boxes.map((s) => fractionRect(b, s));
-			const overlays = opts.strict ? [] : (job.overlays ?? []).map((s) => pad(fractionRect(b, s), 1));
-			problems.push(
-				...checkPageMupdf(m, page, pageNo, boxes, opts.strict ? [] : (opts.allowed[ji] ?? []), overlays, opts.strict, opts.imagesReencoded === true)
-			);
 		}
 	} catch (e) {
+		rethrowFault(e);
 		problems.push(`MuPDF could not check the redactions (${e instanceof Error ? e.message : String(e)}).`);
 	} finally {
 		if (doc) destroy(doc);
@@ -943,6 +969,7 @@ async function checkRedactions(deps: EngineDeps, bytes: Uint8Array, jobs: Redact
 	} catch (e) {
 		problems.push(`PDF.js could not check the redactions (${e instanceof Error ? e.message : String(e)}).`);
 	}
+	if (isRetired(m)) throw new EngineError('internal', 'The PDF engine had to restart. Try again.');
 	if (problems.length) return problems.map((detail) => ({ name: 'redaction', ok: false, detail }));
 	const areas = jobs.reduce((n, j) => n + j.boxes.length, 0);
 	return [
@@ -1330,7 +1357,11 @@ function runDevice(m: Mupdf, page: MU.PDFPage, h: DeviceHandlers) {
 		ignoreText(text, ctm) {
 			glyphs(text, ctm as Matrix);
 		},
-		fillShade() {
+		fillShade(shade) {
+			// mupdf.js wraps the device's borrowed shade without taking a reference, so the
+			// wrapper's finalizer would free a shade MuPDF still owns (a heap corruption that
+			// surfaced later as "memory access out of bounds"). Keep the wrapper from dropping it.
+			disown(shade);
 			h.shade?.(clip());
 		},
 		fillImage(image, ctm) {
@@ -1702,12 +1733,32 @@ function hasOptionalContent(doc: Doc): boolean {
 
 /** A decrypted copy of the document without /OCProperties, so every layer is visible. */
 function withoutOptionalContent(m: Mupdf, doc: Doc): Doc {
-	const copy = new m.PDFDocument(doc.saveToBuffer('encrypt=none').asUint8Array().slice());
+	const copy = new m.PDFDocument(saveBuffer(doc, 'encrypt=none'));
 	try {
 		copy.getTrailer().get('Root').delete('OCProperties');
-		return new m.PDFDocument(copy.saveToBuffer('').asUint8Array().slice());
+		return new m.PDFDocument(saveBuffer(copy, ''));
 	} finally {
 		destroy(copy);
+	}
+}
+
+/** A stream's decoded data as a plain copy; MuPDF's buffer is freed at once. */
+function readBytes(ref: Obj): Uint8Array {
+	const buf = ref.readStream();
+	try {
+		return buf.asUint8Array().slice();
+	} finally {
+		destroy(buf);
+	}
+}
+
+/** The saved bytes as a plain copy; MuPDF's buffer is freed at once. */
+function saveBuffer(doc: Doc, options: string): Uint8Array {
+	const buf = doc.saveToBuffer(options);
+	try {
+		return buf.asUint8Array().slice();
+	} finally {
+		destroy(buf);
 	}
 }
 
@@ -1738,7 +1789,8 @@ function readRect(o: Obj): Rect | null {
 function destroy(o: unknown) {
 	try {
 		(o as { destroy?: () => void })?.destroy?.();
-	} catch {
+	} catch (e) {
+		rethrowFault(e);
 		// already gone
 	}
 }

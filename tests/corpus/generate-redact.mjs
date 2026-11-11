@@ -526,6 +526,57 @@ function table() {
 	};
 }
 
+// ---------------------------------------------------------------------------------------
+// redact-survey.pdf: ordinary constructs that broke the redact stage on real files
+// (survey of 2026-11-10). One page; the box covers SECRET-SURVEY-LINE only, and
+// everything else is away from it and must come through unchanged:
+//  - an image whose /ColorSpace is an indirect object (MuPDF's garbage=compact save
+//    dropped the stream data of such an image once it had been read through mupdf.js);
+//  - a Form XObject with indirect /Resources;
+//  - a smooth shading (`sh`) with an indirect /Function (the device pass's shade
+//    wrapper freed a shade MuPDF still owned);
+//  - a `null` entry in /Annots next to a link.
+// ---------------------------------------------------------------------------------------
+function survey() {
+	const pdf = new Pdf();
+	const font = pdf.add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
+	const text = (x, y, t, size = 12) => `BT /F1 ${size} Tf 0 0 0 rg 1 0 0 1 ${x} ${y} Tm (${t}) Tj ET`;
+	const cs = pdf.add('[/CalRGB << /WhitePoint [0.9505 1 1.089] >>]');
+	const img = pdf.stream(`<< /Type /XObject /Subtype /Image /Width 64 /Height 32 /ColorSpace ${cs} 0 R /BitsPerComponent 8 >>`, rgbBytes(64, 32, markerPixel), {
+		flate: true
+	});
+	const formRes = pdf.add(`<< /Font << /F1 ${font} 0 R >> >>`);
+	const form = pdf.stream(`<< /Type /XObject /Subtype /Form /BBox [0 0 300 40] /Resources ${formRes} 0 R >>`, text(5, 15, 'KEEP-FORM-TEXT'));
+	const fn = pdf.add('<< /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [0 0 1] /N 1 >>');
+	const sh = pdf.add(`<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [72 0 372 0] /Function ${fn} 0 R >>`);
+	const link = pdf.add('<< /Type /Annot /Subtype /Link /Rect [72 100 272 120] /Border [0 0 0] /A << /S /URI /URI (https://example.com/keep) >> >>');
+	const secretW = helvWidth('SECRET-SURVEY-LINE', 12);
+	const ops = [
+		text(72, 700, 'SECRET-SURVEY-LINE'),
+		text(72, 600, 'KEEP-SURVEY-TEXT'),
+		'q 200 0 0 100 300 400 cm /I1 Do Q',
+		'q 1 0 0 1 72 500 cm /Fm1 Do Q',
+		'q 72 200 300 60 re W n /Sh1 sh Q'
+	];
+	const c = pdf.stream('<< >>', ops.join('\n'), { flate: true });
+	const pages = pdf.alloc();
+	const page = pdf.add(
+		`<< /Type /Page /Parent ${pages} 0 R /MediaBox [0 0 612 792] /Contents ${c} 0 R /Annots [null ${link} 0 R] /Resources << /Font << /F1 ${font} 0 R >> /XObject << /I1 ${img} 0 R /Fm1 ${form} 0 R >> /Shading << /Sh1 ${sh} 0 R >> >> >>`
+	);
+	pdf.set(pages, `<< /Type /Pages /Kids [${page} 0 R] /Count 1 >>`);
+	const catalog = pdf.add(`<< /Type /Catalog /Pages ${pages} 0 R >>`);
+	return {
+		bytes: pdf.bytes(catalog),
+		meta: {
+			pages: 1,
+			box: { rect: [70, 695, 72 + secretW + 2, 712], hides: ['SECRET-SURVEY-LINE'] },
+			image: [300, 400, 500, 500],
+			shading: [72, 200, 372, 260],
+			keep: ['KEEP-SURVEY-TEXT', 'KEEP-FORM-TEXT']
+		}
+	};
+}
+
 /** `write(name, bytes, meta)` as in generate.mjs; `outDir` must already hold photo-plain.jpg. */
 export async function generateRedact({ write, outDir }) {
 	const b = basic();
@@ -538,6 +589,8 @@ export async function generateRedact({ write, outDir }) {
 	write('redact-cid.pdf', c.bytes, { label: null, ...c.meta });
 	const t = table();
 	write('redact-table.pdf', t.bytes, { label: null, ...t.meta });
+	const s = survey();
+	write('redact-survey.pdf', s.bytes, { label: null, ...s.meta });
 }
 
 // Standalone run: write only these files and merge their manifest entries.

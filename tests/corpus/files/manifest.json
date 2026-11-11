@@ -1058,5 +1058,36 @@
 			"dvboth": "DEFAULT-SECRET-ONE",
 			"dvonly": "DEFAULT-SECRET-TWO"
 		}
+	},
+	"redact-survey.pdf": {
+		"label": null,
+		"pages": 1,
+		"box": {
+			"rect": [
+				70,
+				695,
+				206.684,
+				712
+			],
+			"hides": [
+				"SECRET-SURVEY-LINE"
+			]
+		},
+		"image": [
+			300,
+			400,
+			500,
+			500
+		],
+		"shading": [
+			72,
+			200,
+			372,
+			260
+		],
+		"keep": [
+			"KEEP-SURVEY-TEXT",
+			"KEEP-FORM-TEXT"
+		]
 	}
 }
