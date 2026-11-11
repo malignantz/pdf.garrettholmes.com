@@ -345,15 +345,16 @@ function formCatalog() {
 /**
  * form-buttons.pdf: radio "pick" (widgets A, B) whose widgets have only their on-state
  * appearance, no /Off one (shows nothing when off, as many forms do); checkbox "broken"
- * whose appearances are the name /null instead of streams (cannot be shown ticked).
+ * whose appearances are the name /null instead of streams (cannot be shown ticked);
+ * checkbox "zero" with on-state /1 and value /0 (clear, not ticked).
  */
 function formButtons() {
 	const ap = () => `<< /Type /XObject /Subtype /Form /BBox [0 0 18 18] /Length %LEN% >>`;
 	return rawPdf([
 		[
-			[1, 0, '<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R 9 0 R] >> >>'],
+			[1, 0, '<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R 9 0 R 12 0 R] >> >>'],
 			[2, 0, '<< /Type /Pages /Kids [3 0 R] /Count 1 >>'],
-			[3, 0, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> /Annots [7 0 R 8 0 R 9 0 R] >>'],
+			[3, 0, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> /Annots [7 0 R 8 0 R 9 0 R 12 0 R] >>'],
 			[4, 0, '<< /Length %LEN% >>', stream(text(72, 700, 'form-buttons p1'))],
 			[5, 0, FONT],
 			[6, 0, '<< /FT /Btn /Ff 49152 /T (pick) /V /Off /Kids [7 0 R 8 0 R] >>'],
@@ -361,7 +362,9 @@ function formButtons() {
 			[8, 0, '<< /Type /Annot /Subtype /Widget /Parent 6 0 R /P 3 0 R /F 4 /Rect [72 560 90 578] /AS /Off /AP << /N << /B 11 0 R >> >> >>'],
 			[9, 0, '<< /Type /Annot /Subtype /Widget /FT /Btn /T (broken) /P 3 0 R /F 4 /Rect [72 520 90 538] /AS /Off /AP << /N << /Off /null /Yes /null >> >> >>'],
 			[10, 0, ap(), stream('0 g 4 4 10 10 re f')],
-			[11, 0, ap(), stream('0 g 4 4 10 10 re f')]
+			[11, 0, ap(), stream('0 g 4 4 10 10 re f')],
+			[12, 0, '<< /Type /Annot /Subtype /Widget /FT /Btn /T (zero) /V /0 /P 3 0 R /F 4 /Rect [72 480 90 498] /AS /Off /AP << /N << /1 10 0 R /Off 13 0 R >> >> >>'],
+			[13, 0, ap(), stream('')]
 		]
 	]);
 }
@@ -378,7 +381,7 @@ export default async function generateIntake(write) {
 	write('form-as-string.pdf', formAsString(), { pages: 1, note: 'checkbox /AS (Off) is a string: MuPDF cannot load the page; opens without a fillable form' });
 	write('form-tree.pdf', formTree(), { pages: 24, note: 'one root field form1[0] > page<N>[0] > 25 text fields per page (600 widgets): copying pages one by one is quadratic' });
 	write('form-catalog.pdf', formCatalog(), { pages: 2, note: 'form + outline, structure element (/Alt), OpenAction to page 2, Info, XFA; page 2 text SECRETPAGE2; markers SECRETOUTLINE/ALT/INFO/XFA' });
-	write('form-buttons.pdf', formButtons(), { pages: 1, note: 'radio "pick" (A, B) without /Off appearances; checkbox "broken" with /null appearances (not fillable)' });
+	write('form-buttons.pdf', formButtons(), { pages: 1, note: 'radio "pick" (A, B) without /Off appearances; checkbox "broken" with /null appearances (not fillable); checkbox "zero": on-state /1, value /0 (clear)' });
 	write('gen-reuse.pdf', genReuse(), { pages: 1, note: 'object 6 reused with generation 1 (legitimate); opens; text "gen-reuse p1"' });
 }
 

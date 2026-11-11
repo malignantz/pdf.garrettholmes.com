@@ -422,8 +422,9 @@ function fieldOf(name: string, ws: RawWidget[], co: Set<number>): FieldRec | nul
 		}
 		if (on.size !== 1) return null;
 		const onState = [...on][0];
-		const v = first.w.getValue();
-		const field = base(v !== '' && v !== 'Off');
+		// Ticked when the value is the on-state; any other value (e.g. /0 beside an on-state
+		// /1) shows the box clear.
+		const field = base(first.w.getValue() === onState);
 		field.widgets = widgets();
 		return { field, onState, comb: false, formatted };
 	}

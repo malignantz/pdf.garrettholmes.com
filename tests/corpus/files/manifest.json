@@ -1109,6 +1109,6 @@
 	},
 	"form-buttons.pdf": {
 		"pages": 1,
-		"note": "radio \"pick\" (A, B) without /Off appearances; checkbox \"broken\" with /null appearances (not fillable)"
+		"note": "radio \"pick\" (A, B) without /Off appearances; checkbox \"broken\" with /null appearances (not fillable); checkbox \"zero\": on-state /1, value /0 (clear)"
 	}
 }

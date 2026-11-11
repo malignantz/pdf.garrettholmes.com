@@ -227,9 +227,19 @@ describe('forms: buttons and their appearances', () => {
 		const src = await openCorpus('form-buttons.pdf');
 		const fields = await engine().formFields(src);
 		// The checkbox whose appearances are not streams cannot be shown ticked: not offered.
-		expect(fields.map((f) => f.name)).toEqual(['pick']);
+		expect(fields.map((f) => [f.name, f.value])).toEqual([
+			['pick', ''],
+			['zero', false]
+		]);
 		const res = await engine().exportPlan({ pages: [ref(src, 0)], options: defaultOptions, formValues: { [src.id]: { pick: 'B' } } }, [src], []);
 		expect(res.checks.find((c) => c.name === 'forms')?.ok).toBe(true);
 		expect((await fieldValues(res.bytes)).pick.filter((v) => v !== null)).toContain('B');
+	}, T);
+
+	it('reads a checkbox whose value is not its on-state as clear, and ticks it', async () => {
+		const src = await openCorpus('form-buttons.pdf');
+		const res = await engine().exportPlan({ pages: [ref(src, 0)], options: defaultOptions, formValues: { [src.id]: { zero: true } } }, [src], []);
+		expect(res.checks.find((c) => c.name === 'forms')?.ok).toBe(true);
+		expect((await fieldValues(res.bytes)).zero).toEqual(['1']);
 	}, T);
 });
