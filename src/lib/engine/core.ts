@@ -73,6 +73,7 @@ const SIZE_TOLERANCE = 0.5;
 const MIN_TARGET_BYTES = 20_000;
 const STAMP_KINDS: readonly Stamp['kind'][] = ['image', 'text', 'mark', 'highlight', 'redact'];
 const HIGHLIGHT_COLORS = ['yellow', 'green', 'pink'];
+const MAX_PEN_POINTS = 2000;
 const MIN_PAGE = 3;
 const MAX_PAGE = 14400;
 
@@ -773,6 +774,17 @@ function validateStamps(pageNo: number, stamps: Stamp[], assetIds: Set<string>) 
 			}
 			if (s.kind === 'mark' && !['check', 'cross', 'dot'].includes(s.mark)) throw new EngineError('internal', 'Unknown mark.');
 			if (s.kind === 'highlight' && !HIGHLIGHT_COLORS.includes(s.color)) throw new EngineError('internal', 'Unknown highlight colour.');
+			if (s.kind === 'highlight' && s.pen !== undefined) {
+				// A pen stroke: 2+ points on the page and inside its box (the box is what
+				// redaction checks treat as ours), and a positive width.
+				const pen = s.pen;
+				if (!pen || !Array.isArray(pen.points) || pen.points.length < 2 || pen.points.length > MAX_PEN_POINTS) throw bad();
+				if (!fin(pen.width) || !(pen.width > 0 && pen.width <= 0.5)) throw bad();
+				for (const p of pen.points) {
+					if (!p || !fin(p.x, p.y) || !inUnit(p.x) || !inUnit(p.y)) throw bad();
+					if (p.x < b.x - eps || p.x > b.x + b.w + eps || p.y < b.y - eps || p.y > b.y + b.h + eps) throw bad();
+				}
+			}
 		}
 	}
 }

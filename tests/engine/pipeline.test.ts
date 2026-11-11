@@ -61,6 +61,29 @@ describe('export pipeline rules', () => {
 		expect((await rejects(run([ref(src, 0, 0, [kind])], [src]))).code).toBe('internal');
 	}, T);
 
+	it('validates pen highlight strokes', async () => {
+		const src = await openCorpus('multi.pdf');
+		const pb = { x: 0.1, y: 0.1, w: 0.5, h: 0.1 };
+		const pts = [
+			{ x: 0.12, y: 0.15 },
+			{ x: 0.55, y: 0.15 }
+		];
+		const pen = (p: unknown): Stamp => ({ id: 's', kind: 'highlight', color: 'yellow', box: pb, pen: p }) as unknown as Stamp;
+		const good = await run([ref(src, 0, 0, [pen({ points: pts, width: 0.02 })])], [src]);
+		expect(good.checks.every((c) => c.ok)).toBe(true);
+		for (const bad of [
+			{ points: pts.slice(0, 1), width: 0.02 },
+			{ points: pts, width: 0 },
+			{ points: pts, width: Number.NaN },
+			{ points: [pts[0], { x: 0.9, y: 0.15 }], width: 0.02 },
+			{ points: [pts[0], { x: 0.3, y: Number.POSITIVE_INFINITY }], width: 0.02 },
+			{ points: 'M0 0', width: 0.02 },
+			null
+		]) {
+			expect((await rejects(run([ref(src, 0, 0, [pen(bad)])], [src]))).code, JSON.stringify(bad)).toBe('unsupported');
+		}
+	}, T);
+
 	it('validates targetBytes', async () => {
 		const src = await openCorpus('multi.pdf');
 		for (const targetBytes of [19_999, 25_000.5, -1, Number.NaN]) {

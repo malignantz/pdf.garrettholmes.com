@@ -4,7 +4,7 @@
 	import type { Snippet } from 'svelte';
 	import type { HTMLAttributes } from 'svelte/elements';
 	import type { Asset, Stamp } from '../core/types';
-	import { HIGHLIGHT_CSS, acquireAssetUrl, markSvg, releaseAssetUrl, stampStyle } from './stamp-view';
+	import { HIGHLIGHT_CSS, acquireAssetUrl, highlightRadiusCss, markSvg, penSvg, releaseAssetUrl, stampStyle } from './stamp-view';
 
 	interface Props extends Omit<HTMLAttributes<HTMLDivElement>, 'children'> {
 		stamp: Stamp;
@@ -14,9 +14,11 @@
 		aspect: number;
 		children?: Snippet;
 		el?: HTMLDivElement;
+		/** Pen highlights: add a wider invisible stroke that takes pointers (the page editor). */
+		hit?: boolean;
 	}
 
-	let { stamp, asset, aspect, children, el = $bindable(), class: className = '', style = '', ...rest }: Props = $props();
+	let { stamp, asset, aspect, children, el = $bindable(), hit = false, class: className = '', style = '', ...rest }: Props = $props();
 
 	let url = $state<string | null>(null);
 	$effect(() => {
@@ -30,9 +32,10 @@
 	});
 
 	const mark = $derived(stamp.kind === 'mark' ? markSvg(stamp.mark, stamp.box.w * aspect, stamp.box.h) : null);
+	const pen = $derived(stamp.kind === 'highlight' && stamp.pen ? penSvg(stamp.box, stamp.pen, aspect) : null);
 </script>
 
-<div bind:this={el} class="stamp {stamp.kind} {className}" style="{stampStyle(stamp)};{style}" {...rest}>
+<div bind:this={el} class="stamp {stamp.kind} {pen ? 'pen' : ''} {className}" style="{stampStyle(stamp)};{style}" {...rest}>
 	{#if stamp.kind === 'image'}
 		{#if url}<img src={url} alt="" draggable="false" />{/if}
 	{:else if stamp.kind === 'mark' && mark}
@@ -52,8 +55,15 @@
 		</svg>
 	{:else if stamp.kind === 'text'}
 		<span class="txt">{stamp.text}</span>
+	{:else if stamp.kind === 'highlight' && pen}
+		<svg class="pen-svg" viewBox={pen.viewBox} preserveAspectRatio="none" aria-hidden="true" focusable="false">
+			<path d={pen.d} fill="none" stroke={HIGHLIGHT_CSS[stamp.color]} stroke-width={pen.width} stroke-linecap="round" stroke-linejoin="round" />
+			{#if hit}
+				<path class="hit" d={pen.d} fill="none" stroke="transparent" stroke-width={pen.width * 1.6} stroke-linecap="round" stroke-linejoin="round" />
+			{/if}
+		</svg>
 	{:else if stamp.kind === 'highlight'}
-		<span class="fill" style="background:{HIGHLIGHT_CSS[stamp.color]}"></span>
+		<span class="fill" style="background:{HIGHLIGHT_CSS[stamp.color]};border-radius:{highlightRadiusCss(stamp.box)}"></span>
 	{:else if stamp.kind === 'redact'}
 		<span class="fill" style="background:#000"></span>
 	{/if}
@@ -109,6 +119,11 @@
 	/* Like the export: Multiply, so text under a highlight stays as dark as it was. */
 	.highlight {
 		mix-blend-mode: multiply;
+	}
+
+	/* The export clips a stroke at the page edge, where its box ends. */
+	svg.pen-svg {
+		overflow: hidden;
 	}
 
 	.fill {

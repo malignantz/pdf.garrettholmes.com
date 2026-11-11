@@ -12,7 +12,8 @@
 
 	const byId = $derived(new Map(assets.map((a) => [a.id, a])));
 	const aspect = $derived.by(() => {
-		if (page.stamps.every((s) => s.kind !== 'mark')) return 1;
+		// Marks and pen strokes are drawn in page-shaped units; nothing else needs the shape.
+		if (page.stamps.every((s) => s.kind !== 'mark' && !(s.kind === 'highlight' && s.pen))) return 1;
 		const size = getApp().store.displayedSize(page);
 		return size && size.height > 0 ? size.width / size.height : 1;
 	});

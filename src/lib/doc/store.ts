@@ -15,7 +15,8 @@ import type {
 	Rotation,
 	Source,
 	SourceId,
-	Stamp
+	Stamp,
+	StampBox
 } from '../core/types';
 import { newId } from './ids';
 
@@ -25,6 +26,8 @@ export { newId };
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 type KeysOfUnion<T> = T extends unknown ? keyof T : never;
+/** Type of key K in whichever members of the union T have it (optional keys included). */
+type ValueOfKey<T, K extends PropertyKey> = T extends unknown ? (K extends keyof T ? T[K] : never) : never;
 
 /** A stamp to add; `id` is generated when omitted. */
 export type NewStamp = DistributiveOmit<Stamp, 'id'> & { id?: string };
@@ -34,7 +37,7 @@ export type NewStamp = DistributiveOmit<Stamp, 'id'> & { id?: string };
  * kind are ignored; `id` and `kind` can never change.
  */
 export type StampPatch = {
-	[K in Exclude<KeysOfUnion<Stamp>, 'id' | 'kind'>]?: Extract<Stamp, Record<K, unknown>>[K];
+	[K in Exclude<KeysOfUnion<Stamp>, 'id' | 'kind'>]?: Exclude<ValueOfKey<Stamp, K>, undefined>;
 };
 
 export interface HistoryEvent {
@@ -183,7 +186,27 @@ function plural(n: number, one: string, many: string): string {
 const pagesLabel = (verb: string, n: number) => `${verb} ${plural(n, 'page', 'pages')}`;
 
 function cloneStamp(s: Stamp, id: string): Stamp {
+	if (s.kind === 'highlight' && s.pen)
+		return { ...s, id, box: { ...s.box }, pen: { width: s.pen.width, points: s.pen.points.map((p) => ({ x: p.x, y: p.y })) } };
 	return 'box' in s ? { ...s, id, box: { ...s.box } } : { ...s, id };
+}
+
+/** Most points one pen stroke may hold (the editor stores tens). */
+const MAX_PEN_POINTS = 2000;
+
+/** A pen stroke: 2+ finite points on the page and inside the stamp's box, a positive width. */
+function checkPen(pen: unknown, box: StampBox): void {
+	const p = pen as { points?: unknown; width?: unknown } | null;
+	const fin = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+	if (!p || typeof p !== 'object' || !Array.isArray(p.points) || p.points.length < 2 || p.points.length > MAX_PEN_POINTS)
+		throw new Error('DocStore: a pen highlight needs 2 or more points');
+	if (!fin(p.width) || !(p.width > 0) || p.width > 0.5) throw new Error('DocStore: bad pen width');
+	const eps = 1e-6;
+	for (const q of p.points as { x?: unknown; y?: unknown }[]) {
+		if (!q || !fin(q.x) || !fin(q.y)) throw new Error('DocStore: bad pen point');
+		if (q.x < box.x - eps || q.x > box.x + box.w + eps || q.y < box.y - eps || q.y > box.y + box.h + eps)
+			throw new RangeError('DocStore: pen point outside its box');
+	}
 }
 
 function valuesEqual(a: unknown, b: unknown): boolean {
@@ -376,6 +399,7 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 			throw new Error(`DocStore: unknown asset ${s.assetId}`);
 		if (s.kind === 'highlight' && !HIGHLIGHT_COLORS.includes(s.color))
 			throw new Error(`DocStore: unknown highlight colour ${s.color}`);
+		if (s.kind === 'highlight' && s.pen !== undefined) checkPen(s.pen, s.box);
 	}
 
 	function spliceIn(d: Doc, refs: PageRef[], at: number): Doc {
