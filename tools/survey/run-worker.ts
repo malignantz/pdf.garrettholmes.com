@@ -588,9 +588,10 @@ function textAnswer(c: Ctx, f: { name: string; label?: string; maxLength?: numbe
 		height = Math.min(height, w.box.h * page.height);
 	}
 	let fit = full.length;
-	if (Number.isFinite(width) && !f.multiline) {
-		const size = Math.min(12, Math.max(6, height * 0.7));
-		fit = Math.floor((width - 4) / (size * 0.6));
+	if (Number.isFinite(width)) {
+		const size = f.multiline ? 10 : Math.min(12, Math.max(6, height * 0.7));
+		const lines = f.multiline ? Math.max(1, Math.floor((height - 2) / (size * 1.2))) : 1;
+		fit = Math.floor((width - 4) / (size * 0.6)) * lines;
 	}
 	if (f.maxLength) fit = Math.min(fit, f.maxLength);
 	fit = Math.max(1, Math.min(fit, full.length));
