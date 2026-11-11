@@ -211,12 +211,6 @@ export async function verifyNumbering(
 	return [{ name: 'numbering', ok: true, detail: describeLabels(labels) }];
 }
 
-interface Run {
-	text: string;
-	x0: number;
-	x1: number;
-}
-
 async function labelIsThere(
 	page: import('pdfjs-dist/legacy/build/pdf.mjs').PDFPageProxy,
 	label: string,
@@ -241,19 +235,26 @@ async function labelIsThere(
 	const H = vp.height;
 	const pool = items.filter((it) => it.ok).sort((p, q) => p.x0 - q.x0);
 	const tol = 2;
-	// Group items that share a baseline into runs.
-	const runs: (Run & { y: number })[] = [];
-	for (const it of pool) {
-		const run = runs.find((r) => Math.abs(r.y - it.y) <= 1 && it.x0 - r.x1 <= numbering.size);
-		if (run) {
-			run.text += squash(it.str);
-			run.x1 = Math.max(run.x1, it.x1);
-		} else runs.push({ text: squash(it.str), x0: it.x0, x1: it.x1, y: it.y });
-	}
-	for (const r of runs) {
-		if (r.text !== want) continue;
-		const lay = numberLayout(W, H, numbering.position, numbering.size, r.x1 - r.x0);
-		if (Math.abs(r.x0 - lay.x) <= tol && Math.abs(r.y - lay.baseline) <= tol) return true;
+	// The label is one item or a few that follow each other along one baseline. Runs
+	// are built from each possible first item, taking only items that continue the
+	// label, so page text on the same baseline (even text the label is drawn over)
+	// does not join it.
+	for (let i = 0; i < pool.length; i++) {
+		const first = pool[i];
+		let text = squash(first.str);
+		if (!want.startsWith(text)) continue;
+		let x1 = first.x1;
+		for (let j = i + 1; j < pool.length && text.length < want.length; j++) {
+			const it = pool[j];
+			if (Math.abs(it.y - first.y) > 1 || it.x0 < x1 - tol || it.x0 - x1 > numbering.size) continue;
+			const next = text + squash(it.str);
+			if (!want.startsWith(next)) continue;
+			text = next;
+			x1 = Math.max(x1, it.x1);
+		}
+		if (text !== want) continue;
+		const lay = numberLayout(W, H, numbering.position, numbering.size, x1 - first.x0);
+		if (Math.abs(first.x0 - lay.x) <= tol && Math.abs(first.y - lay.baseline) <= tol) return true;
 	}
 	return false;
 }
