@@ -369,6 +369,26 @@ function formButtons() {
 	]);
 }
 
+
+/**
+ * form-autosize.pdf: multiline text fields with an automatic font size (/DA "/Helv 0 Tf")
+ * in boxes 10 pt high ("short", DA inherited from the form) and with a fixed 12 pt size
+ * ("fixed"). Acrobat shrinks the first to fit; the second cannot show a line.
+ */
+function formAutosize() {
+	return rawPdf([
+		[
+			[1, 0, '<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R 7 0 R] /DA (/Helv 0 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> >> >>'],
+			[2, 0, '<< /Type /Pages /Kids [3 0 R] /Count 1 >>'],
+			[3, 0, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> /Annots [6 0 R 7 0 R] >>'],
+			[4, 0, '<< /Length %LEN% >>', stream(text(72, 700, 'form-autosize p1'))],
+			[5, 0, FONT],
+			[6, 0, '<< /Type /Annot /Subtype /Widget /FT /Tx /Ff 4096 /T (short) /P 3 0 R /F 4 /Rect [72 600 330 610] >>'],
+			[7, 0, '<< /Type /Annot /Subtype /Widget /FT /Tx /Ff 4096 /T (fixed) /P 3 0 R /F 4 /Rect [72 560 330 570] /DA (/Helv 12 Tf 0 g) >>']
+		]
+	]);
+}
+
 export default async function generateIntake(write) {
 	write('layers.pdf', layers(), { pages: 1, note: 'layer "Hidden" (6 0 R) default OFF via /D /OFF; layer "Shown" (8 0 R) ON; indirect /OCProperties' });
 	write('layers-base-off.pdf', layersBaseOff(), { pages: 2, note: 'direct /OCProperties, /BaseState /OFF, /ON [On]: layer "Off" hidden by base state' });
@@ -382,6 +402,7 @@ export default async function generateIntake(write) {
 	write('form-tree.pdf', formTree(), { pages: 24, note: 'one root field form1[0] > page<N>[0] > 25 text fields per page (600 widgets): copying pages one by one is quadratic' });
 	write('form-catalog.pdf', formCatalog(), { pages: 2, note: 'form + outline, structure element (/Alt), OpenAction to page 2, Info, XFA; page 2 text SECRETPAGE2; markers SECRETOUTLINE/ALT/INFO/XFA' });
 	write('form-buttons.pdf', formButtons(), { pages: 1, note: 'radio "pick" (A, B) without /Off appearances; checkbox "broken" with /null appearances (not fillable); checkbox "zero": on-state /1, value /0 (clear)' });
+	write('form-autosize.pdf', formAutosize(), { pages: 1, note: 'multiline fields 10 pt high: "short" auto size (0 Tf, inherited), "fixed" 12 pt' });
 	write('gen-reuse.pdf', genReuse(), { pages: 1, note: 'object 6 reused with generation 1 (legitimate); opens; text "gen-reuse p1"' });
 }
 

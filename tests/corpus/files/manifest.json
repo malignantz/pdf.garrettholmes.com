@@ -1110,5 +1110,9 @@
 	"form-buttons.pdf": {
 		"pages": 1,
 		"note": "radio \"pick\" (A, B) without /Off appearances; checkbox \"broken\" with /null appearances (not fillable); checkbox \"zero\": on-state /1, value /0 (clear)"
+	},
+	"form-autosize.pdf": {
+		"pages": 1,
+		"note": "multiline fields 10 pt high: \"short\" auto size (0 Tf, inherited), \"fixed\" 12 pt"
 	}
 }

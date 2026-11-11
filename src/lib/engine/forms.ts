@@ -830,6 +830,43 @@ function appearanceProblem(w: MWidget, want: string, comb: number | null): 'does
 	return null;
 }
 
+const DA_SIZE = /(\/\S+\s+)(-?[\d.]+)(\s+Tf)/;
+const MIN_AUTO_SIZE = 4;
+
+/**
+ * A text field with an automatic font size (/DA "... 0 Tf") is drawn at whatever size fits,
+ * as Acrobat does. MuPDF draws multiline auto-size fields at a fixed 12 pt, so an answer that
+ * does not fit is redrawn at smaller sizes (half a point at a time, down to 4 pt) until it
+ * does. The field keeps its automatic size for later edits: only the appearance is drawn at
+ * the chosen size. Fields with a fixed size are left as drawn.
+ */
+function shrinkAutoSize(doc: MDoc, w: MWidget, want: string, comb: number | null): 'does-not-fit' | 'comb' | null {
+	const o = w.getObject();
+	const own = get(o, 'DA');
+	const da = text(own) ?? text(o.getInheritable('DA')) ?? text(get(doc.getTrailer(), 'Root', 'AcroForm', 'DA'));
+	const m = da !== null ? DA_SIZE.exec(da) : null;
+	if (!da || !m || Number(m[2]) !== 0) return 'does-not-fit';
+	const [x0, y0, x1, y1] = w.getRect();
+	const start = Math.min(12, Math.floor(Math.min(Math.abs(x1 - x0), Math.abs(y1 - y0)) * 2) / 2);
+	let result: 'does-not-fit' | 'comb' | null = 'does-not-fit';
+	try {
+		for (let size = start; size >= MIN_AUTO_SIZE; size -= 0.5) {
+			o.put('DA', doc.newString(da.replace(DA_SIZE, `$1${size}$3`)));
+			// MuPDF redraws only a changed field: set the value again to mark it changed.
+			w.setTextValue(`${want} `);
+			w.setTextValue(want);
+			w.update();
+			result = appearanceProblem(w, want, comb);
+			if (result === null) break;
+		}
+	} finally {
+		// Keep the automatic size in the field itself.
+		if (own) o.put('DA', own);
+		else o.delete('DA');
+	}
+	return result;
+}
+
 /** The appearance uses only standard, non-embedded Type1 fonts in WinAnsiEncoding. */
 function appearanceFontsOk(o: MObj): boolean {
 	const n = get(o, 'AP', 'N');
@@ -924,7 +961,9 @@ export async function applyForms(
 				if (!appearanceFontsOk(t.widget.getObject())) {
 					throw new EngineError('unsupported', `${fieldTitle(f)} uses a font this app cannot fill in.`);
 				}
-				const problem = appearanceProblem(t.widget, shownText(t.answer), rec.comb ? (f.maxLength ?? null) : null);
+				const comb = rec.comb ? (f.maxLength ?? null) : null;
+				let problem = appearanceProblem(t.widget, shownText(t.answer), comb);
+				if (problem === 'does-not-fit' && f.kind === 'text') problem = shrinkAutoSize(doc, t.widget, shownText(t.answer), comb);
 				if (problem === 'comb') throw new EngineError('unsupported', `${fieldTitle(f)} could not be laid out in its boxes.`);
 				if (problem) throw new EngineError('unsupported', `The answer for ${fieldTitle(f)} does not fit in its box. Shorten it.`);
 			}

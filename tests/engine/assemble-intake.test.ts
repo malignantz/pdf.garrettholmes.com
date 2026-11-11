@@ -243,3 +243,31 @@ describe('forms: buttons and their appearances', () => {
 		expect((await fieldValues(res.bytes)).zero).toEqual(['1']);
 	}, T);
 });
+
+describe('forms: automatic font size', () => {
+	it('draws an auto-size answer small enough to fit, and keeps the size automatic', async () => {
+		const src = await openCorpus('form-autosize.pdf');
+		for (const flattenForms of [false, true]) {
+			const res = await engine().exportPlan(
+				{ pages: [ref(src, 0)], options: { ...defaultOptions, flattenForms }, formValues: { [src.id]: { short: 'Survey 42 answer' } } },
+				[src],
+				[]
+			);
+			expect(res.checks.every((c) => c.ok)).toBe(true);
+			// The field itself keeps no fixed size: no /DA of its own, the form's "0 Tf" applies.
+			if (!flattenForms) {
+				const field = latin1(res.bytes).split('endobj').find((o) => o.includes('/T (short)'));
+				expect(field).toBeDefined();
+				expect(field).not.toContain('/DA');
+			}
+			else expect((await pageTexts(res.bytes))[0]).toContain('Survey 42 answer');
+		}
+	}, T);
+
+	it('still refuses an answer that a fixed-size field cannot show', async () => {
+		const src = await openCorpus('form-autosize.pdf');
+		await expect(
+			engine().exportPlan({ pages: [ref(src, 0)], options: defaultOptions, formValues: { [src.id]: { fixed: 'Survey' } } }, [src], [])
+		).rejects.toThrow(/does not fit/);
+	}, T);
+});
