@@ -581,7 +581,11 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			outputs: ['/j.json']
 		});
 		const file = res.files.get('/j.json');
-		if (res.code !== QPDF_OK || !file) throw new EngineError('internal', 'The PDF engine could not inspect the file.');
+		// Warnings (exit 3) still give the whole dump: they report damage qpdf read past, such
+		// as a name with a stray "#", which the original already has.
+		if ((res.code !== QPDF_OK && res.code !== QPDF_WARNINGS) || !file) {
+			throw new EngineError('internal', 'The PDF engine could not inspect the file.');
+		}
 		const parsed = JSON.parse(new TextDecoder().decode(file)) as { qpdf: [Record<string, unknown>, Record<string, QpdfJsonObject>] };
 		return { header: parsed.qpdf[0], objects: parsed.qpdf[1] };
 	}

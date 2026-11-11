@@ -270,6 +270,21 @@ describe('exportPlan: options', () => {
 		for (const secret of ['Nested author', 'Property-list author', 'nested app data', 'xmpmeta']) expect(raw).not.toContain(secret);
 	}, T);
 
+	it('strips metadata and encrypts a file qpdf reads only with warnings (a name with a stray #)', async () => {
+		const src = await openCorpus('stray-hash-name.pdf');
+		const res = await exportPages([ref(src, 0)], [src], { stripMetadata: true, password: 'pw' });
+		expect(res.checks.every((c) => c.ok)).toBe(true);
+		const qdf = await qpdf.run({
+			args: ['--password=pw', '--qdf', '--object-streams=disable', '--decrypt', '/i.pdf', '/o.pdf'],
+			inputs: { '/i.pdf': res.bytes },
+			outputs: ['/o.pdf']
+		});
+		const raw = Buffer.from(qdf.files.get('/o.pdf')!).toString('latin1');
+		expect(raw).toContain('stray-hash p1');
+		expect(raw).not.toContain('SECRETAUTHOR');
+		expect(await pageTexts(res.bytes, 'pw')).toEqual(['stray-hash p1']);
+	}, T);
+
 	it('the metadata check also sees metadata keys nested in direct dictionaries', () => {
 		const json = { header: {}, objects: { 'obj:1 0 R': { value: { '/Properties': { '/MC0': { '/Metadata': 'obj:2 0 R' } } } } } };
 		expect(metadataLeft(json)).toEqual(['obj:1 0 R nested /Metadata']);

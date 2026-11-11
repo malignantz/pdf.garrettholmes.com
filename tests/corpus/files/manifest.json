@@ -1194,5 +1194,9 @@
 	"form-objstm-extends.pdf": {
 		"pages": 3,
 		"note": "form; object stream 41 /Extends stale object stream 40 (numbers 1-39, superseded by the xref stream); text \"objstm-extends p<N>\""
+	},
+	"stray-hash-name.pdf": {
+		"pages": 1,
+		"note": "font /Differences glyph name \"/#\" (stray #): qpdf JSON dump exits 3 (warnings); Info /Author SECRETAUTHOR; text \"stray-hash p1\""
 	}
 }

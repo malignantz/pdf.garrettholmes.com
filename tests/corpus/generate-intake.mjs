@@ -505,6 +505,30 @@ function formObjstmExtends() {
 	return new Uint8Array(Buffer.concat(parts));
 }
 
+/**
+ * stray-hash-name.pdf: the page font's /Differences names a glyph "/#" (a "#" not
+ * followed by two hex digits), as Type 3 fonts from some generators do. qpdf reads the
+ * font with a warning ("name with stray #", exit 3), so its whole-file JSON dump exits 3;
+ * listing the pages does not read the font. Also an Info dictionary with an author, so
+ * stripping metadata has work to do.
+ */
+function strayHashName() {
+	return rawPdf(
+		[
+			[
+				[1, 0, '<< /Type /Catalog /Pages 2 0 R >>'],
+				[2, 0, '<< /Type /Pages /Kids [3 0 R] /Count 1 >>'],
+				[3, 0, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>'],
+				[4, 0, '<< /Length %LEN% >>', stream(text(72, 700, 'stray-hash p1'))],
+				[5, 0, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding 7 0 R >>'],
+				[7, 0, '<< /Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences [35 /# 36 /dollar] >>'],
+				[6, 0, '<< /Author (SECRETAUTHOR) /Title (Stray hash) >>']
+			]
+		],
+		{ info: '6 0 R' }
+	);
+}
+
 export default async function generateIntake(write) {
 	write('layers.pdf', layers(), { pages: 1, note: 'layer "Hidden" (6 0 R) default OFF via /D /OFF; layer "Shown" (8 0 R) ON; indirect /OCProperties' });
 	write('layers-base-off.pdf', layersBaseOff(), { pages: 2, note: 'direct /OCProperties, /BaseState /OFF, /ON [On]: layer "Off" hidden by base state' });
@@ -522,6 +546,7 @@ export default async function generateIntake(write) {
 	write('form-comb.pdf', formComb(), { pages: 1, note: 'comb text field "code", 8 cells (MaxLen 8)' });
 	write('form-shared.pdf', formShared(), { pages: 1, note: 'checkbox "tick": on/off appearances share indirect /Resources; two images share an indirect /ColorSpace' });
 	write('gen-reuse.pdf', genReuse(), { pages: 1, note: 'object 6 reused with generation 1 (legitimate); opens; text "gen-reuse p1"' });
+	write('stray-hash-name.pdf', strayHashName(), { pages: 1, note: 'font /Differences glyph name "/#" (stray #): qpdf JSON dump exits 3 (warnings); Info /Author SECRETAUTHOR; text "stray-hash p1"' });
 	write('form-objstm-extends.pdf', formObjstmExtends(), { pages: 3, note: 'form; object stream 41 /Extends stale object stream 40 (numbers 1-39, superseded by the xref stream); text "objstm-extends p<N>"' });
 }
 
