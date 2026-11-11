@@ -3,6 +3,7 @@ import { defaultOptions, engine, loadPdfjs, openCorpus, pageTexts, ref } from '.
 import { corpus } from './helpers';
 import { EngineError } from '../../src/lib/engine/errors';
 import { checkProblems } from '../../src/lib/engine/core';
+import type { Stamp } from '../../src/lib/core/types';
 
 const T = 30_000;
 
@@ -226,6 +227,29 @@ describe('assemble: one source with a form is edited in place', () => {
 			if (pages.length === 1) expect(text).not.toContain('SECRETPAGE2');
 			expect(Object.keys(await fieldValues(res.bytes))).toEqual(['name']);
 		}
+	}, T);
+});
+
+describe('assemble: a form edited in place whose object streams extend a stale one', () => {
+	it('stamps and numbers every page (the stale object stream is not written again)', async () => {
+		const src = await openCorpus('form-objstm-extends.pdf');
+		const stamp = (): Stamp[] => [{ id: 's', kind: 'text', text: 'Signed', x: 0.1, y: 0.1, size: 0.02, color: 'black' }];
+		const res = await engine().exportPlan(
+			{
+				pages: [ref(src, 0, 0, stamp()), ref(src, 1), ref(src, 2, 0, stamp())],
+				options: { ...defaultOptions, numbering: { style: 'page-n-of-total', position: 'bottom-center', start: 1, skip: 0, size: 10 } }
+			},
+			[src],
+			[]
+		);
+		const texts = await pageTexts(res.bytes);
+		expect(texts).toHaveLength(3);
+		texts.forEach((t, i) => {
+			expect(t).toContain(`objstm-extends p${i + 1}`);
+			expect(t).toContain(`Page ${i + 1} of 3`);
+		});
+		expect(texts[0]).toContain('Signed');
+		expect(texts[2]).toContain('Signed');
 	}, T);
 });
 

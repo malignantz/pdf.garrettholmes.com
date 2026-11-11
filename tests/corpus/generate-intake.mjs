@@ -432,6 +432,79 @@ function formShared() {
 	]);
 }
 
+/**
+ * form-objstm-extends.pdf: a 3-page form whose objects sit in object streams with a
+ * cross-reference stream, as incremental saves by form software leave them. Object stream
+ * 41 holds the live field and fonts and points with /Extends to object stream 40, whose
+ * members are stale: the xref gives numbers 1-39 to other objects (the pages are direct
+ * objects), but stream 40 still holds dictionaries under those numbers. Viewers follow the
+ * xref. qpdf's default "preserve" mode writes stream 40 again (through /Extends), and a
+ * reader that ignores the xref (pdf-lib) took a stale dictionary for a page.
+ */
+function formObjstmExtends() {
+	const objstm = (objs) => {
+		let head = '';
+		let body = '';
+		for (const [num, text] of objs) {
+			head += `${num} ${body.length} `;
+			body += text + '\n';
+		}
+		return { first: head.length, data: Buffer.from(head + body, 'latin1'), n: objs.length };
+	};
+	const stale = objstm(Array.from({ length: 39 }, (_, i) => [i + 1, `<< /S /Document /K [] /Stale ${i + 1} >>`]));
+	const live = objstm([
+		[5, FONT],
+		[6, '<< /Type /Annot /Subtype /Widget /FT /Tx /T (name) /P 3 0 R /F 4 /Rect [72 600 372 624] /DA (/Helv 12 Tf 0 g) /V (old) >>']
+	]);
+	const pageIds = [3, 7, 8];
+	const direct = [
+		[1, '<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R] /DA (/Helv 0 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> >> >>'],
+		[2, `<< /Type /Pages /Kids [${pageIds.map((n) => `${n} 0 R`).join(' ')}] /Count 3 >>`],
+		...pageIds.map((n, i) => [
+			n,
+			`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ${10 + i} 0 R /Resources << /Font << /F1 5 0 R >> >>${i === 0 ? ' /Annots [6 0 R]' : ''} >>`
+		])
+	];
+	const contents = pageIds.map((_, i) => [10 + i, stream(text(72, 700, `objstm-extends p${i + 1}`))]);
+
+	const parts = [enc('%PDF-1.7\n%\xe2\xe3\xcf\xd3\n')];
+	let offset = parts[0].length;
+	const xref = new Map(); // num -> [type, field2, field3]
+	const put = (num, chunks) => {
+		xref.set(num, [1, offset, 0]);
+		for (const c of chunks) {
+			parts.push(c);
+			offset += c.length;
+		}
+	};
+	const putStream = (num, dict, data) =>
+		put(num, [enc(`${num} 0 obj\n${dict.replace('%LEN%', String(data.length))}\nstream\n`), data, enc('\nendstream\nendobj\n')]);
+	// The stale stream first, then the live objects: later definitions are the current ones.
+	const z40 = zlib.deflateSync(stale.data);
+	putStream(40, `<< /Type /ObjStm /N ${stale.n} /First ${stale.first} /Filter /FlateDecode /Length %LEN% >>`, z40);
+	for (const [num, body] of direct) put(num, [enc(`${num} 0 obj\n${body}\nendobj\n`)]);
+	for (const [num, data] of contents) putStream(num, '<< /Length %LEN% >>', data);
+	const z41 = zlib.deflateSync(live.data);
+	putStream(41, `<< /Type /ObjStm /N ${live.n} /First ${live.first} /Extends 40 0 R /Filter /FlateDecode /Length %LEN% >>`, z41);
+	[5, 6].forEach((num, i) => xref.set(num, [2, 41, i]));
+	const size = 43;
+	xref.set(42, [1, offset, 0]);
+	const rows = [];
+	for (let n = 0; n < size; n++) {
+		const [t, a, b] = xref.get(n) ?? [0, 0, n === 0 ? 65535 : 0];
+		const row = Buffer.alloc(7);
+		row.writeUInt8(t, 0);
+		row.writeUIntBE(a, 1, 4);
+		row.writeUInt16BE(b & 0xffff, 5);
+		rows.push(row);
+	}
+	const xs = Buffer.concat(rows);
+	const xrefAt = offset;
+	putStream(42, `<< /Type /XRef /Size ${size} /W [1 4 2] /Root 1 0 R /Length %LEN% >>`, xs);
+	parts.push(enc(`startxref\n${xrefAt}\n%%EOF\n`));
+	return new Uint8Array(Buffer.concat(parts));
+}
+
 export default async function generateIntake(write) {
 	write('layers.pdf', layers(), { pages: 1, note: 'layer "Hidden" (6 0 R) default OFF via /D /OFF; layer "Shown" (8 0 R) ON; indirect /OCProperties' });
 	write('layers-base-off.pdf', layersBaseOff(), { pages: 2, note: 'direct /OCProperties, /BaseState /OFF, /ON [On]: layer "Off" hidden by base state' });
@@ -449,6 +522,7 @@ export default async function generateIntake(write) {
 	write('form-comb.pdf', formComb(), { pages: 1, note: 'comb text field "code", 8 cells (MaxLen 8)' });
 	write('form-shared.pdf', formShared(), { pages: 1, note: 'checkbox "tick": on/off appearances share indirect /Resources; two images share an indirect /ColorSpace' });
 	write('gen-reuse.pdf', genReuse(), { pages: 1, note: 'object 6 reused with generation 1 (legitimate); opens; text "gen-reuse p1"' });
+	write('form-objstm-extends.pdf', formObjstmExtends(), { pages: 3, note: 'form; object stream 41 /Extends stale object stream 40 (numbers 1-39, superseded by the xref stream); text "objstm-extends p<N>"' });
 }
 
 // Standalone: write only these files and merge into manifest.json.

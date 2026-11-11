@@ -15,6 +15,7 @@
  *   outline, structure tree, names, scripts or Info dictionary, so nothing of a deleted
  *   page survives through them), and an XFA form's XFA part is dropped as in the copy.
  *   The reduction is applied in the same qpdf run; it costs one JSON dump of three objects.
+ *   Object streams are regenerated, never preserved (see the comment at the run).
  */
 
 import type { PageRef, Source } from '../core/types';
@@ -65,7 +66,21 @@ export async function assemble(qpdf: Qpdf, job: AssembleJob): Promise<Uint8Array
 		const sel = pageSelection(pages, fileOf).map((a) => (a === self ? '.' : a));
 		return run(
 			{
-				args: [self, '--update-from-json=/src/catalog.json', '--pages', ...sel, '--', ...rotateArgs(pages), OUT],
+				args: [
+					self,
+					'--update-from-json=/src/catalog.json',
+					// Fresh object streams. qpdf's default ("preserve") keeps the source's object
+					// stream grouping and their /Extends keys, and through /Extends writes the
+					// source's base object stream with its stale contents: object numbers the xref
+					// gives to other objects. pdf-lib (stamps) reads every object it finds and
+					// ignores the xref, so a stale object could take the place of a page.
+					'--object-streams=generate',
+					'--pages',
+					...sel,
+					'--',
+					...rotateArgs(pages),
+					OUT
+				],
 				inputs,
 				outputs: [OUT]
 			},
