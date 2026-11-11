@@ -568,7 +568,8 @@ export async function popplerWordsIn(file: string, box: StampBox, password?: str
 
 /**
  * The line to redact: found in the engine's opened copy, else in the original, else (MuPDF
- * reads neither page 1) in a plain export of the file, whose pages are the same.
+ * reads neither page 1) in a plain export of the file, whose pages are the same. When MuPDF
+ * reads none of them, a fixed box near the top of page 1, so the engine is still tried.
  */
 async function lineToRedact(c: Ctx): Promise<{ line: Line | null; via?: string }> {
 	let first: unknown;
@@ -579,11 +580,12 @@ async function lineToRedact(c: Ctx): Promise<{ line: Line | null; via?: string }
 			first ??= e;
 		}
 	}
-	const plain = await exportPlan(c, { pages: allPages(c), options: baseOptions });
+	const why = `MuPDF cannot read page 1 of the file: ${shortError(first, 60)}`;
 	try {
-		return { line: firstTextLine(plain.bytes), via: `line found in a plain export (MuPDF cannot read page 1 of the file: ${shortError(first, 60)})` };
+		const plain = await exportPlan(c, { pages: allPages(c), options: baseOptions });
+		return { line: firstTextLine(plain.bytes), via: `line found in a plain export (${why})` };
 	} catch {
-		throw first;
+		return { line: { text: '(fixed box)', box: { x: 0.1, y: 0.08, w: 0.6, h: 0.04 } }, via: `fixed box (${why})` };
 	}
 }
 
