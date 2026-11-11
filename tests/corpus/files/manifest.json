@@ -1202,5 +1202,66 @@
 	"objstm-metadata.pdf": {
 		"pages": 3,
 		"note": "empty /AcroForm; pages in object stream 21; page 3 /PieceInfo SECRETPIECE and /Metadata (XMP SECRETXMP); Info /Author SECRETAUTHOR; text \"objstm-metadata p<N>\""
+	},
+	"redact-survey-2.pdf": {
+		"label": null,
+		"pages": 5,
+		"cases": [
+			{
+				"box": [
+					71,
+					592,
+					260,
+					623
+				],
+				"keep": [
+					"a new verse comes over",
+					"KEEP-FAR-LINE"
+				]
+			},
+			{
+				"box": [
+					71,
+					589,
+					263.153,
+					623
+				],
+				"keep": [
+					"a new verse comes over",
+					"KEEP-FAR-LINE"
+				]
+			},
+			{
+				"box": [
+					71,
+					696,
+					202.348,
+					712
+				],
+				"noImage": [
+					71,
+					596,
+					186.34,
+					612
+				],
+				"scaled": "KEEP-TZ"
+			},
+			{
+				"box": [
+					71,
+					696,
+					199.672,
+					712
+				]
+			},
+			{
+				"box": [
+					71,
+					696,
+					229.68,
+					712
+				]
+			}
+		]
 	}
 }

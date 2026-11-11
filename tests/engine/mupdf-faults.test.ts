@@ -217,7 +217,7 @@ describe('redaction: the rest of the page stays as it was (redact-survey.pdf pag
 		// 2 pt lower: the tops of the capitals of the next line are now under the box.
 		const res = await exportBox(1, { ...box, h: box.h + 2 / 792 });
 		expect(res.checks.every((c) => c.ok)).toBe(true);
-		expect(res.warnings.join(' ')).toMatch(/only partly under a redaction box were removed whole/);
+		expect(res.warnings.join(' ')).toMatch(/only partly under a redaction box, or just next to one, were removed whole/);
 	}, T);
 });
 

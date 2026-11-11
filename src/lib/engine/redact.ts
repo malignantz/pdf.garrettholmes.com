@@ -27,10 +27,16 @@
  *     Before that, on a page with stroked text, stroke-state operators are turned into
  *     equivalent ExtGStates (keepStrokeState: MuPDF's rewrite drops them before text).
  *     After the text passes, every visible character outside the boxes must still be
- *     there, in place (MuPDF's rewrite can take or move one), or the stage refuses.
+ *     there, in place (MuPDF's rewrite can take or move one), or the stage refuses; the
+ *     same after step 3. The second, whole-box pass leaves spaces alone (no ink; their em
+ *     box, a full line high, took glyphs of a tightly set line below). Letters removed
+ *     although less than half of their ink was under a box (partly covered, or with only
+ *     their core touching it) are counted in the export's warning.
  *
  *  3. MuPDF `applyRedactions(black=false, IMAGE_PIXELS, LINE_ART_NONE, TEXT_NONE)`
- *     over the boxes (after the text passes of 2). MuPDF rewrites the page content into
+ *     over the boxes (after the text passes of 2), when an image is drawn under a box or
+ *     the text passes did not rewrite the page (every rewrite can move scaled text a
+ *     little, so the page is rewritten as few times as possible). MuPDF rewrites the page content into
  *     a new stream, copies every
  *     Form XObject the page uses (so pages sharing streams, forms or images with this
  *     page are not changed), removes the chosen text (including invisible
@@ -93,7 +99,7 @@
  *
  *  5. Annotations: MuPDF removes links only. Every entry of /Annots whose /Rect
  *     touches a box (or has no usable /Rect) is removed, whatever its subtype,
- *     widgets included; then popups and replies (/Parent, /IRT) of removed ones, judged
+ *     widgets included (the export warns when a visible one reached past the box); then popups and replies (/Parent, /IRT) of removed ones, judged
  *     by identity and by place (qpdf's page copy can leave a reply pointing at a second
  *     copy of the annotation, which would otherwise keep its text alive); then
  *     removed widgets are taken out of /AcroForm /Fields and /CO (with parents left
@@ -147,8 +153,10 @@
  *  - anything the check finds (a glyph MuPDF kept, an image it did not blank, …).
  * Handled by removal, not refused: Type 3 fonts (as text), tiling patterns (the
  * painted path goes), smaller shadings (removed whole), clipped content, outlined text and
- * other drawings that are not kept (removed whole; the export warns when one reached
- * past the box), image masks and soft-masked images (blanked by MuPDF, checked).
+ * other drawings that are not kept (removed whole; the export warns when one, or a
+ * shading, reached past the box), image masks and soft-masked images (blanked by MuPDF,
+ * checked).
+ * Refused up front: a page with more than MAX_REDACT_CONTENT_BYTES of drawing instructions.
  * Not covered: bookmarks, named destinations, document JavaScript or other pages
  * that quote the same text (search-and-redact is in the backlog).
  */
@@ -195,7 +203,7 @@ export async function applyRedactions(deps: EngineDeps, bytes: Uint8Array, jobs:
 	if (jobs.length === 0) return bytes;
 	const m = await deps.mupdf();
 	let out: Uint8Array;
-	const notes = { partly: 0, drawings: 0 };
+	const notes: Notes = { partly: 0, drawings: 0, annots: 0 };
 	const doc = openDoc(m, bytes);
 	try {
 		out = redactDocument(m, doc, jobs, notes);
@@ -219,12 +227,17 @@ export async function applyRedactions(deps: EngineDeps, bytes: Uint8Array, jobs:
 	}
 	if (notes.partly) {
 		warnings.push(
-			`${notes.partly === 1 ? 'A letter' : `${notes.partly} letters`} only partly under a redaction box ${notes.partly === 1 ? 'was' : 'were'} removed whole, so nothing of ${notes.partly === 1 ? 'it' : 'them'} is left in the file. Check the text around the boxes.`
+			`${notes.partly === 1 ? 'A letter' : `${notes.partly} letters`} only partly under a redaction box, or just next to one, ${notes.partly === 1 ? 'was' : 'were'} removed whole, so nothing of ${notes.partly === 1 ? 'it' : 'them'} is left in the file. Check the text around the boxes.`
 		);
 	}
 	if (notes.drawings) {
 		warnings.push(
-			`${notes.drawings === 1 ? 'A drawing' : `${notes.drawings} drawings`} (lines, shapes or outlined text) touching a redaction box ${notes.drawings === 1 ? 'was' : 'were'} removed whole, also where ${notes.drawings === 1 ? 'it extended' : 'they extended'} past the box. Check the page around the boxes.`
+			`${notes.drawings === 1 ? 'A drawing' : `${notes.drawings} drawings`} (lines, shapes, gradients or outlined text) touching a redaction box ${notes.drawings === 1 ? 'was' : 'were'} removed whole, also where ${notes.drawings === 1 ? 'it extended' : 'they extended'} past the box. Check the page around the boxes.`
+		);
+	}
+	if (notes.annots) {
+		warnings.push(
+			`${notes.annots === 1 ? 'A comment or other annotation' : `${notes.annots} comments or other annotations`} touching a redaction box ${notes.annots === 1 ? 'was' : 'were'} removed whole, also where ${notes.annots === 1 ? 'it extended' : 'they extended'} past the box. Check the page around the boxes.`
 		);
 	}
 	return out;
@@ -249,6 +262,16 @@ export async function verifyRedactions(
 
 // ---------------------------------------------------------------------------
 // The stage
+
+/** Counts for the export's warnings: things removed whole that showed beyond the boxes. */
+interface Notes {
+	/** Letters less than half under a box (partly covered, or with only their core touching one). */
+	partly: number;
+	/** Drawings, gradients and pattern fills. */
+	drawings: number;
+	/** Annotations (comments, highlights, notes, stamps…). */
+	annots: number;
+}
 
 /**
  * Decoded drawing instructions (page content and the forms and tiling patterns it uses)
@@ -307,7 +330,7 @@ function checkPageSize(doc: Doc, pageIndex: number) {
 	}
 }
 
-function redactDocument(m: Mupdf, doc: Doc, jobs: RedactJob[], notes: { partly: number; drawings: number }): Uint8Array {
+function redactDocument(m: Mupdf, doc: Doc, jobs: RedactJob[], notes: Notes): Uint8Array {
 	// Before anything heavy (the probe copy, text extraction, MuPDF's rewrite).
 	for (const job of jobs) checkPageSize(doc, job.pageIndex);
 	const preCount = doc.countObjects();
@@ -326,8 +349,12 @@ function redactDocument(m: Mupdf, doc: Doc, jobs: RedactJob[], notes: { partly: 
 				// Text first: exactly the glyphs whose ink touches a box (see glyphMarks). Then
 				// pictures under the boxes themselves, text left alone (MuPDF's own test would
 				// also take every glyph whose nominal box merely overlaps a box).
+				// Each MuPDF rewrite of the page can move text (scaled text with TJ adjustments
+				// moves about 0.3 pt per rewrite), so the page is rewritten as few times as possible.
+				let rewritten = false;
 				const removeText = (marks: Rect[]) => {
 					if (!marks.length) return;
+					rewritten = true;
 					const a = page.createAnnotation('Redact');
 					a.setQuadPoints(marks.map(([x0, y0, x1, y1]) => [x0, y0, x1, y0, x0, y1, x1, y1]));
 					destroy(a);
@@ -350,23 +377,34 @@ function redactDocument(m: Mupdf, doc: Doc, jobs: RedactJob[], notes: { partly: 
 				// by nominal box, so where those overlap a lot removing one glyph takes its
 				// neighbour; and its rewrite of a text object can shift the glyphs after a
 				// removed one, seen with character spacing).
-				if (lostText(before, readChars(page, true), boxes, choice.cores)) {
+				const afterText = readChars(page, true);
+				const refuseLost = () => {
 					throw new EngineError(
 						'unsupported',
 						`Page ${pageNo}: removing the text under a redaction box would also remove or move text outside it, so nothing was exported.`
 					);
+				};
+				if (lostText(before, afterText, boxes, choice.cores)) refuseLost();
+				// Letters that went although less than half of their ink was under a box: partly
+				// covered ones, and those whose core touched a box (see GLYPH_CORE).
+				notes.partly += removedChars(before, afterText).filter((ch) => ch.ink && shareInside(ch.ink, boxes) < 0.5).length;
+				// Pictures under the boxes. Skipped when no image is drawn there (hidden layers
+				// included: the probe shows them) and the text pass already rewrote the page (our
+				// own pass below needs MuPDF's rewritten content).
+				if (!rewritten || imageUnder(m, probePage ?? page, boxes)) {
+					for (const r of boxes) {
+						const a = page.createAnnotation('Redact');
+						a.setRect(r);
+						destroy(a);
+					}
+					page.applyRedactions(false, m.PDFPage.REDACT_IMAGE_PIXELS, m.PDFPage.REDACT_LINE_ART_NONE, m.PDFPage.REDACT_TEXT_NONE);
+					// That rewrite can move text again: the same check on the result.
+					if (lostText(before, readChars(page, true), boxes, choice.cores)) refuseLost();
 				}
-				notes.partly += choice.chosen.filter((ch) => ch.ink && shareInside(ch.ink, boxes) < 0.5).length;
-				for (const r of boxes) {
-					const a = page.createAnnotation('Redact');
-					a.setRect(r);
-					destroy(a);
-				}
-				page.applyRedactions(false, m.PDFPage.REDACT_IMAGE_PIXELS, m.PDFPage.REDACT_LINE_ART_NONE, m.PDFPage.REDACT_TEXT_NONE);
 				const pageObj = page.getObject();
 				const pageTf = page.getTransform() as Matrix;
 				cleanContent(m, doc, pageObj, pageTf, boxes, preCount, pageNo, page.getBounds() as Rect, notes);
-				removeAnnotations(doc, pageObj, pageTf, boxes);
+				notes.annots += removeAnnotations(doc, pageObj, pageTf, boxes);
 				paintBlack(doc, pageObj, pageTf, boxes);
 				pageObj.delete('Thumb');
 			} finally {
@@ -383,6 +421,17 @@ function redactDocument(m: Mupdf, doc: Doc, jobs: RedactJob[], notes: { partly: 
 	// read by the pass above came out as empty dictionaries ("XObject should be a
 	// stream"). garbage=yes still drops every object nothing refers to any more.
 	return saveBuffer(doc, 'garbage=yes,compress');
+}
+
+/** True when an image (or image mask, inline image) drawn on the page, annotations included, touches a box. */
+function imageUnder(m: Mupdf, page: MU.PDFPage, boxes: Rect[]): boolean {
+	let found = false;
+	runDevice(m, page, {
+		image: (_image, _ctm, bounds) => {
+			if (boxes.some((b) => touches(bounds, b, 0))) found = true;
+		}
+	});
+	return found;
 }
 
 /** Boxes of a job in MuPDF page space; refuses if the page is not the planned size. */
@@ -444,18 +493,21 @@ function glyphMarks(m: Mupdf, page: MU.PDFPage, boxes: Rect[], whole: boolean): 
 		return [x, y, x, y];
 	};
 	const marks = chosen.map((ch) => (whole ? ch.nominal : free(shrinkBy(ch.nominal, 0.15))));
-	const cores: Pt[] = [];
+	const cores: Core[] = [];
 	runDevice(m, page, {
 		glyph: (g) => {
 			if (!hit(g.core)) return;
 			if (whole) {
+				// A space has no ink and the check ignores it; its em box (a full line high) would
+				// take glyphs of a tightly set neighbouring line (seen with 29 pt Hebrew over 40 pt).
+				if (g.space) return;
 				marks.push(g.em);
 				return;
 			}
 			// Text extraction already chose this glyph: its point is set.
 			const cx = (g.core[0] + g.core[2]) / 2;
 			const cy = (g.core[1] + g.core[3]) / 2;
-			cores.push([cx, cy]);
+			cores.push({ x: cx, y: cy, c: g.c });
 			if (chosen.some((ch) => cx >= ch.nominal[0] && cx <= ch.nominal[2] && cy >= ch.nominal[1] && cy <= ch.nominal[3])) return;
 			marks.push(free(g.mark));
 		}
@@ -468,15 +520,21 @@ interface GlyphChoice {
 	marks: Rect[];
 	/** Visible characters chosen (their ink touches a box). */
 	chosen: CharBox[];
-	/** Centres of the em cores of glyphs the device pass chose. */
-	cores: Pt[];
+	/** Centres of the em cores of glyphs the device pass chose, with their characters. */
+	cores: Core[];
+}
+
+interface Core {
+	x: number;
+	y: number;
+	c: string;
 }
 
 /**
  * True when a visible character whose ink is outside every box (so it should have
  * stayed) is gone: no character with the same text within half a point of it is left.
  */
-function lostText(before: CharBox[], after: CharBox[], boxes: Rect[], cores: Pt[]): boolean {
+function lostText(before: CharBox[], after: CharBox[], boxes: Rect[], cores: Core[]): boolean {
 	const byText = new Map<string, CharBox[]>();
 	for (const ch of after) {
 		const l = byText.get(ch.c);
@@ -490,13 +548,35 @@ function lostText(before: CharBox[], after: CharBox[], boxes: Rect[], cores: Pt[
 		// A character without width is a mark on, or a part of, another glyph (a ligature
 		// lists its letters, all but the first with no width): it goes with that glyph.
 		if (n[2] - n[0] < 0.01 || n[3] - n[1] < 0.01) continue;
-		if (cores.some(([x, y]) => x >= n[0] && x <= n[2] && y >= n[1] && y <= n[3])) continue;
+		// Chosen by the device pass (its em core touches a box): the same character, centred in
+		// this nominal box. (A glyph of another line whose core centre merely falls inside this
+		// tall nominal box does not excuse this one's loss.)
+		if (cores.some((k) => k.c === ch.c && k.x >= n[0] && k.x <= n[2] && k.y >= n[1] && k.y <= n[3])) continue;
 		const same = byText.get(ch.c) ?? [];
 		const i = same.findIndex((o) => near(o.nominal, ch.nominal));
 		if (i < 0) return true;
 		same.splice(i, 1);
 	}
 	return false;
+}
+
+/** Visible characters of `before` with no character of the same text within half a point in `after`. */
+function removedChars(before: CharBox[], after: CharBox[]): CharBox[] {
+	const byText = new Map<string, CharBox[]>();
+	for (const ch of after) {
+		const l = byText.get(ch.c);
+		if (l) l.push(ch);
+		else byText.set(ch.c, [ch]);
+	}
+	const out: CharBox[] = [];
+	for (const ch of before) {
+		if (ch.c.trim() === '') continue;
+		const same = byText.get(ch.c) ?? [];
+		const i = same.findIndex((o) => Math.abs(o.nominal[0] - ch.nominal[0]) <= 0.5 && Math.abs(o.nominal[1] - ch.nominal[1]) <= 0.5);
+		if (i < 0) out.push(ch);
+		else same.splice(i, 1);
+	}
+	return out;
 }
 
 function shrinkBy(r: Rect, f: number): Rect {
@@ -620,17 +700,17 @@ interface PassCtx {
 	/** Area of the displayed page (pt²). */
 	pageArea: number;
 	/** Counts for the export's warnings. */
-	notes: { partly: number; drawings: number };
+	notes: Notes;
 }
 
 /** A gradient or pattern fill that goes whole may cover at most this share of the page outside the boxes. */
 const LARGE_FILL = 0.25;
 
 /** A drawing removed whole that also covered a noticeable area outside the boxes (more than 4 pt² and than a tenth of the box area it touches). */
-function visibleOutside(ctx: PassCtx, r: Rect | null): boolean {
+function visibleOutside(boxes: Rect[], r: Rect | null): boolean {
 	if (!r) return false;
 	const area = (q: Rect) => Math.max(0, q[2] - q[0]) * Math.max(0, q[3] - q[1]);
-	const inside = ctx.boxes.reduce((n, b) => n + area(intersect(r, b) ?? [0, 0, 0, 0]), 0);
+	const inside = boxes.reduce((n, b) => n + area(intersect(r, b) ?? [0, 0, 0, 0]), 0);
 	const outside = area(r) - inside;
 	return outside > 4 && outside > 0.1 * Math.max(inside, 1);
 }
@@ -786,7 +866,7 @@ function cleanContent(
 	preCount: number,
 	pageNo: number,
 	bounds: Rect,
-	notes: { partly: number; drawings: number } = { partly: 0, drawings: 0 }
+	notes: Notes = { partly: 0, drawings: 0, annots: 0 }
 ) {
 	void m;
 	const ctx: PassCtx = {
@@ -965,7 +1045,7 @@ function walkStream(ctx: PassCtx, ref: Obj, res: Obj, usage: Usage, state: GStat
 					// Removed unless it is a plain rule/border/background (see the header).
 					if (p && ctx.boxes.some((b) => touches(p, b, 0)) && (pattern || !path.keepable(ctx.boxes, fill))) {
 						if (pattern) refuseLargeFill(ctx, intersect(p, top().clip ?? p));
-						else if (visibleOutside(ctx, intersect(p, top().clip ?? p))) ctx.notes.drawings++;
+						if (visibleOutside(ctx.boxes, intersect(p, top().clip ?? p))) ctx.notes.drawings++;
 						edit(op.s, op.e, 'n');
 					}
 					else paint(fill, stroke);
@@ -983,6 +1063,7 @@ function walkStream(ctx: PassCtx, ref: Obj, res: Obj, usage: Usage, state: GStat
 				const area = top().clip;
 				if (!area || ctx.boxes.some((b) => touches(area, b, 0))) {
 					refuseLargeFill(ctx, area);
+					if (!area || visibleOutside(ctx.boxes, area)) ctx.notes.drawings++;
 					edit(op.args[0]?.s ?? op.s, op.e, '');
 				}
 				else if (name) usage.Shading.add(name);
@@ -1210,11 +1291,16 @@ function containsTextOrImages(ref: Obj, seen: Set<number>, depth: number): boole
 // ---------------------------------------------------------------------------
 // Annotations, black boxes
 
-function removeAnnotations(doc: Doc, pageObj: Obj, pageTf: Matrix, boxes: Rect[]) {
+/**
+ * Removes every annotation touching a box (see the header, 5). Returns how many of them
+ * showed on the page beyond the boxes (for the export's warning): not links, popups or
+ * hidden ones.
+ */
+function removeAnnotations(doc: Doc, pageObj: Obj, pageTf: Matrix, boxes: Rect[]): number {
 	const annots = pageObj.get('Annots');
-	if (annots.isNull()) return;
+	if (annots.isNull()) return 0;
 	const arr = annots.resolve();
-	if (!arr.isArray()) return;
+	if (!arr.isArray()) return 0;
 	const entries: Obj[] = [];
 	for (let i = 0; i < arr.length; i++) entries.push(arr.get(i));
 	const removed = new Set<number>();
@@ -1252,7 +1338,18 @@ function removeAnnotations(doc: Doc, pageObj: Obj, pageTf: Matrix, boxes: Rect[]
 			}
 		});
 	}
-	if (!drop.some(Boolean)) return;
+	if (!drop.some(Boolean)) return 0;
+	let shown = 0;
+	entries.forEach((e, i) => {
+		if (!drop[i]) return;
+		const d = e.resolve();
+		const sub = d.get('Subtype');
+		const kind = sub.isName() ? sub.asName() : '';
+		const flags = d.get('F');
+		const hidden = flags.isNumber() && (flags.asNumber() & (2 | 32)) !== 0;
+		const rect = readRect(d.get('Rect'));
+		if (kind !== 'Link' && kind !== 'Popup' && !hidden && rect && visibleOutside(boxes, transformRect(pageTf, rect))) shown++;
+	});
 	const kept = doc.newArray();
 	entries.forEach((e, i) => {
 		if (!drop[i]) kept.push(e);
@@ -1260,6 +1357,7 @@ function removeAnnotations(doc: Doc, pageObj: Obj, pageTf: Matrix, boxes: Rect[]
 	if (kept.length) pageObj.put('Annots', kept);
 	else pageObj.delete('Annots');
 	removeFields(doc, removed);
+	return shown;
 }
 
 /** Takes removed widgets out of the AcroForm field tree (and parents left without kids). */
@@ -1680,9 +1778,11 @@ interface GlyphInfo {
 	em: Rect;
 	/** The middle of the glyph's nominal box (its true advance, which may be 0): what to redact to remove it. */
 	mark: Rect;
-	/** Middle 80% of the advance × [0, 0.6] em: for the check. */
+	/** Middle 80% of the advance × [0, GLYPH_CORE] em: for the check. */
 	core: Rect;
 	space: boolean;
+	/** The glyph's character ('' when it has none). */
+	c: string;
 }
 interface DeviceHandlers {
 	glyph?: (g: GlyphInfo) => void;
@@ -1694,13 +1794,18 @@ interface DeviceHandlers {
 
 const INFINITE: Rect = [-1e9, -1e9, 1e9, 1e9];
 /**
- * PDF.js check: a text item counts from its baseline up to this share of its height
- * (the same band as the device pass's glyph core). Ink above it (the top of capitals,
- * at 0.66 to 0.72 em) is MuPDF's outline check's job; at 0.75 the PDF.js band reached
- * into a box drawn tightly over the line above while no ink of the item did, and the
- * export was refused.
+ * A glyph's core: its advance (middle 80%) from the baseline up to this share of the em.
+ * The device pass removes and the checks look for every glyph whose core touches a box;
+ * the PDF.js check takes a text item from its baseline up to the same share of its height.
+ * It stands for where a glyph is when its ink is not known (invisible or clipped text).
+ * Ink above it (lowercase stops at 0.45 to 0.55 em, capitals reach 0.66 to 0.72) is MuPDF's
+ * outline check's job. At 0.75 the PDF.js band reached into a box drawn tightly over the
+ * line above while no ink of the item did, and the export was refused; at 0.6 it still
+ * took a whole lowercase line of 40 pt text whose ink ended 1 pt below a box drawn over
+ * the line above (survey 2026-11-11: an Arabic title, a Greek dictionary entry).
  */
-const PDFJS_CORE = 0.6;
+const GLYPH_CORE = 0.5;
+const PDFJS_CORE = GLYPH_CORE;
 /** Image pixels next to a box edge not compared on the final file (see imageBlankUnder). */
 const FINAL_IMAGE_INSET = 16;
 const SPACES = new Set([9, 10, 13, 32, 0xa0]);
@@ -1719,9 +1824,15 @@ function runDevice(m: Mupdf, page: MU.PDFPage, h: DeviceHandlers) {
 				const adv = advance || 0.5;
 				const full = multiply(trm as Matrix, ctm);
 				const em: Rect = wmode ? [-0.5, -adv, 0.5, 0] : [0, -0.25, adv, 1];
-				const core: Rect = wmode ? [-0.3, -adv * 0.9, 0.3, -adv * 0.1] : [adv * 0.1, 0, adv * 0.9, 0.6];
+				const core: Rect = wmode ? [-0.3, -adv * 0.9, 0.3, -adv * 0.1] : [adv * 0.1, 0, adv * 0.9, GLYPH_CORE];
 				const mark: Rect = wmode ? [-0.2, -advance * 0.75, 0.2, -advance * 0.25] : [advance * 0.25, 0.15, advance * 0.75, 0.45];
-				on({ em: transformRect(full, em), core: transformRect(full, core), mark: transformRect(full, mark), space: SPACES.has(unicode) });
+				on({
+					em: transformRect(full, em),
+					core: transformRect(full, core),
+					mark: transformRect(full, mark),
+					space: SPACES.has(unicode),
+					c: unicode > 0 ? String.fromCodePoint(unicode) : ''
+				});
 			}
 		});
 	};

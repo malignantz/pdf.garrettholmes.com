@@ -635,6 +635,78 @@ function survey() {
 }
 
 /**
+ * Second survey round (2026-11-11). Each page has the trait of a real file that went wrong;
+ * `meta.cases[i]` gives page i+1's box (user space) and what must stay. Helvetica throughout.
+ * 1. A lone space drawn as its own text object under the box, over a 40 pt lowercase line
+ *    set 34 pt lower (Hebrew government report): MuPDF's first text pass leaves such a space,
+ *    and the second pass, over its em box (a full line high), took glyphs of the big line.
+ * 2. The same lines, the box 2 pt above the ink of the lowercase line (Arabic title, Greek
+ *    dictionary): the glyph core band (0.6 em then) reached into the box, and the whole
+ *    line went without a word in the warning.
+ * 3. A line with 96.67 % horizontal scaling and TJ adjustments away from the box (Korean
+ *    legal form): every MuPDF rewrite of the page moves its glyphs about 0.3 pt; the image
+ *    pass rewrote the page a second time after the "moved text" check. The box over
+ *    SECRET-OVER-IMAGE touches an image, the box over SECRET-NO-IMAGE does not.
+ * 4. A highlight annotation over two lines and a note icon next to the box (pdf.js tests):
+ *    both are removed whole, which the export did not say.
+ * 5. A small colour gradient next to a label (axis legend): removed whole, unannounced.
+ */
+function survey2() {
+	const pdf = new Pdf();
+	const font = pdf.add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
+	const text = (x, y, t, size = 12) => `BT /F1 ${size} Tf 0 0 0 rg 1 0 0 1 ${x} ${y} Tm (${t}) Tj ET`;
+	const res = `/Font << /F1 ${font} 0 R >>`;
+	const pagesRef = pdf.alloc();
+	const kids = [];
+	const metas = [];
+	const page = (ops, meta, extra = '', resExtra = '') => {
+		const c = pdf.stream('<< >>', ops.join('\n'), { flate: true });
+		kids.push(pdf.add(`<< /Type /Page /Parent ${pagesRef} 0 R /MediaBox [0 0 612 792] /Contents ${c} 0 R /Resources << ${res} ${resExtra} >> ${extra} >>`));
+		metas.push(meta);
+	};
+	const below = 'a new verse comes over';
+	// 1. A lone space.
+	page([text(72, 600, 'SECRET A B', 29), 'BT /F1 29 Tf 0 0 0 rg 1 0 0 1 150 600 Tm ( ) Tj ET', text(72, 566, below, 40), text(72, 300, 'KEEP-FAR-LINE')], {
+		box: [71, 592, 260, 623],
+		keep: [below, 'KEEP-FAR-LINE']
+	});
+	// 2. Core band.
+	page([text(72, 600, 'SECRET LINE', 29), text(72, 566, below, 40), text(72, 300, 'KEEP-FAR-LINE')], {
+		box: [71, 589, 72 + helvWidth('SECRET LINE', 29) + 1, 623],
+		keep: [below, 'KEEP-FAR-LINE']
+	});
+	// 3. Scaled text and two rewrites.
+	const img = pdf.stream('<< /Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 8 >>', Buffer.alloc(64, 0x80), { flate: true });
+	page(
+		[
+			'q 200 0 0 30 60 690 cm /Im1 Do Q',
+			text(72, 700, 'SECRET-OVER-IMAGE'),
+			text(72, 600, 'SECRET-NO-IMAGE'),
+			'BT /F1 12 Tf 0 0 0 rg 96.67 Tz 1 0 0 1 72 400 Tm [(K)106.4(E)106.4(E)106.4(P)106.4(-TZ)] TJ ET'
+		],
+		{
+			box: [71, 696, 72 + helvWidth('SECRET-OVER-IMAGE', 12) + 1, 712],
+			noImage: [71, 596, 72 + helvWidth('SECRET-NO-IMAGE', 12) + 1, 612],
+			scaled: 'KEEP-TZ'
+		},
+		'',
+		`/XObject << /Im1 ${img} 0 R >>`
+	);
+	// 4. Annotations.
+	const hl = pdf.add(
+		'<< /Type /Annot /Subtype /Highlight /Rect [70 580 300 715] /QuadPoints [72 712 250 712 72 698 250 698 72 612 200 612 72 598 200 598] /C [1 1 0] /F 4 >>'
+	);
+	const note = pdf.add('<< /Type /Annot /Subtype /Text /Rect [60 690 80 710] /Contents (a comment) /F 4 >>');
+	page([text(72, 700, 'SECRET-ANNOTATED'), text(72, 600, 'KEEP-HIGHLIGHTED')], { box: [71, 696, 72 + helvWidth('SECRET-ANNOTATED', 12) + 1, 712] }, `/Annots [${hl} 0 R ${note} 0 R]`);
+	// 5. A small gradient next to a label.
+	const sh = pdf.add('<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 600 0 720] /Function << /FunctionType 2 /Domain [0 1] /C0 [0 1 1] /C1 [0 0 0.5] /N 1 >> >>');
+	page(['q 150 600 12 120 re W n /Sh1 sh Q', text(72, 700, 'SECRET-10-7')], { box: [71, 696, 72 + helvWidth('SECRET-10-7', 12) + 1 + 80, 712] }, '', `/Shading << /Sh1 ${sh} 0 R >>`);
+	pdf.set(pagesRef, `<< /Type /Pages /Kids [${kids.map((k) => `${k} 0 R`).join(' ')}] /Count ${kids.length} >>`);
+	const catalog = pdf.add(`<< /Type /Catalog /Pages ${pagesRef} 0 R >>`);
+	return { bytes: pdf.bytes(catalog), meta: { pages: metas.length, cases: metas } };
+}
+
+/**
  * A page with `mb` MB of drawing instructions (a short line repeated, so it compresses to
  * a few KB), drawn directly or (`inForm`) from a Form XObject, and SECRET-DENSE-LINE at
  * the top in a 12 pt line box [72 700 .. 72+w 712]. Not written to files/: corpus-wide
@@ -675,6 +747,8 @@ export async function generateRedact({ write, outDir }) {
 	write('redact-table.pdf', t.bytes, { label: null, ...t.meta });
 	const s = survey();
 	write('redact-survey.pdf', s.bytes, { label: null, ...s.meta });
+	const s2 = survey2();
+	write('redact-survey-2.pdf', s2.bytes, { label: null, ...s2.meta });
 }
 
 // Standalone run: write only these files and merge their manifest entries.
