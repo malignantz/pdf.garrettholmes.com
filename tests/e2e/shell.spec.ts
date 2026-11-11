@@ -27,6 +27,25 @@ test('home loads under the CSP with no errors and the empty state visible', asyn
 	await expect(page.locator('input[type=file]')).toHaveAttribute('accept', /application\/pdf/);
 });
 
+test('the start page says what the tool does', async ({ page }) => {
+	await page.goto('/');
+	await expect(page.getByRole('heading', { level: 1, name: 'Combine, sign and fix PDFs' })).toBeVisible();
+	await expect(page.getByRole('heading', { level: 2, name: 'What you can do' })).toBeVisible();
+	const items = page.getByRole('list').filter({ has: page.getByText('Combine and rearrange') }).getByRole('listitem');
+	await expect(items).toHaveCount(6);
+	for (const title of [
+		'Combine and rearrange',
+		'Sign and fill in',
+		'Mark up',
+		'Black out private details',
+		'Make it smaller',
+		'Lock, unlock, convert'
+	]) {
+		await expect(page.getByText(title, { exact: true })).toBeVisible();
+	}
+	await expect(page.getByRole('button', { name: 'Choose files' })).toBeVisible();
+});
+
 test('the CSP really blocks other origins', async ({ page, guard }) => {
 	guard.allowConsoleErrors();
 	await page.goto('/');

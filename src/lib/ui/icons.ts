@@ -92,6 +92,8 @@ export const icons = {
 	'chevron-left': ['M14.5 6l-6 6 6 6'],
 	'chevron-right': ['M9.5 6l6 6-6 6'],
 	upload: ['M12 16V4', 'M7 8.5l5-5 5 5', 'M5 20h14'],
+	/** Four arrows pointing in: "make it smaller". */
+	shrink: ['M4 4l6 6', 'M10 5.5V10H5.5', 'M20 4l-6 6', 'M14 5.5V10h4.5', 'M4 20l6-6', 'M10 18.5V14H5.5', 'M20 20l-6-6', 'M14 18.5V14h4.5'],
 	'blank-page': ['M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5z', 'M14 3v5h5', 'M12 11.5v6', 'M9 14.5h6']
 } satisfies Record<string, IconPath[]>;
 

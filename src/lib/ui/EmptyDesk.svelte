@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Button from './Button.svelte';
 	import Icon from './Icon.svelte';
+	import type { IconName } from './icons';
 
 	/**
 	 * The empty state. The whole desk (the window) is the drop target while this
@@ -14,6 +15,15 @@
 
 	let { onfiles, accept = 'application/pdf,.pdf,image/png,image/jpeg,image/webp,image/gif,image/heic,image/*' }: Props =
 		$props();
+
+	const features: { icon: IconName; title: string; line: string }[] = [
+		{ icon: 'duplicate', title: 'Combine and rearrange', line: 'Merge files, then reorder, rotate or delete pages.' },
+		{ icon: 'sign', title: 'Sign and fill in', line: 'Add your signature, type on the page, fill in form fields.' },
+		{ icon: 'highlight', title: 'Mark up', line: 'Highlight, add check marks, dates and page numbers.' },
+		{ icon: 'redact', title: 'Black out private details', line: 'Redaction that truly removes what is under the box.' },
+		{ icon: 'shrink', title: 'Make it smaller', line: 'Shrink a file to fit an email limit.' },
+		{ icon: 'lock', title: 'Lock, unlock, convert', line: 'Add or remove a password. Turn photos into a PDF.' }
+	];
 
 	let input: HTMLInputElement | undefined = $state();
 	let dragging = $state(false);
@@ -75,14 +85,14 @@
 			{#if dragging}
 				Drop to add them
 			{:else}
-				<span class="pointer-fine">Drop PDFs or images here</span><span class="pointer-coarse"
-					>Open PDFs or images</span
-				>
+				Combine, sign and fix PDFs
 			{/if}
 		</h1>
+		<p class="sub">Free, no account. Your files never leave this device.</p>
 
 		<div class="cta">
 			<Button variant="primary" size="lg" icon="add" onclick={() => input?.click()}>Choose files</Button>
+			<span class="drop-hint">or drop them anywhere on this page</span>
 			<input
 				bind:this={input}
 				class="visually-hidden"
@@ -94,6 +104,18 @@
 				{onchange}
 			/>
 		</div>
+
+		<h2 class="what">What you can do</h2>
+		<ul class="features">
+			{#each features as f (f.title)}
+				<li>
+					<Icon name={f.icon} size={22} />
+					<span class="ftext"><strong>{f.title}</strong><span>{f.line}</span></span>
+				</li>
+			{/each}
+		</ul>
+
+		<p class="once">Add a file to start. Everything is in one place, and you download once at the end.</p>
 
 		<p class="proof">
 			<Icon name="shield-check" size={18} />Files stay on this device. This page cannot send them anywhere.
@@ -108,7 +130,7 @@
 		display: grid;
 		place-items: center;
 		min-height: calc(100dvh - var(--bar-h) - var(--safe-top));
-		padding: var(--s-6) calc(var(--s-4) + var(--safe-right)) calc(var(--s-7) + var(--safe-bottom))
+		padding: var(--s-6) calc(var(--s-4) + var(--safe-right)) calc(var(--s-5) + var(--safe-bottom))
 			calc(var(--s-4) + var(--safe-left));
 		transition: background-color var(--dur) var(--ease);
 	}
@@ -140,19 +162,20 @@
 		flex-direction: column;
 		align-items: center;
 		text-align: center;
-		max-width: 34rem;
+		width: 100%;
+		max-width: 56rem;
 		/* Optical centre sits a little above the geometric one. */
-		margin-top: -4vh;
+		margin-top: -2vh;
 	}
 
 	/* ---------- Sheets illustration ---------- */
 
 	.sheets {
-		--w: 116px;
+		--w: 84px;
 		position: relative;
 		width: calc(var(--w) * 1.9);
 		height: calc(var(--w) * 1.414 + 12px);
-		margin-bottom: var(--s-6);
+		margin-bottom: var(--s-4);
 	}
 
 	.sheet {
@@ -249,26 +272,89 @@
 		color: var(--ink);
 	}
 
-	.pointer-coarse {
-		display: none;
-	}
-
-	@media (hover: none) and (pointer: coarse) {
-		.pointer-fine {
-			display: none;
-		}
-
-		.pointer-coarse {
-			display: inline;
-		}
+	.sub {
+		margin-top: var(--s-2);
+		font-size: var(--text-base);
+		color: var(--ink-soft);
 	}
 
 	.cta {
+		margin-top: var(--s-4);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: var(--s-3) var(--s-4);
+		flex-wrap: wrap;
+	}
+
+	.drop-hint {
+		font-size: var(--text-caption);
+		color: var(--ink-soft);
+	}
+
+	@media (hover: none) and (pointer: coarse) {
+		.drop-hint {
+			display: none;
+		}
+	}
+
+	.what {
 		margin-top: var(--s-5);
+		font-family: var(--font-sans);
+		font-size: var(--text-chip);
+		font-weight: 600;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--ink-soft);
+	}
+
+	.features {
+		list-style: none;
+		margin: var(--s-3) 0 0;
+		padding: var(--s-4) 0 0;
+		border-top: 1px solid var(--line);
+		width: 100%;
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: var(--s-4) var(--s-5);
+		text-align: left;
+	}
+
+	.features li {
+		display: flex;
+		gap: var(--s-3);
+		align-items: flex-start;
+	}
+
+	.features li > :global(.icon) {
+		flex: none;
+		margin-top: 2px;
+		color: var(--accent);
+	}
+
+	.ftext {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		font-size: var(--text-caption);
+		line-height: 1.45;
+		color: var(--ink-soft);
+	}
+
+	.ftext strong {
+		font-size: var(--text-control);
+		font-weight: 600;
+		color: var(--ink);
+	}
+
+	.once {
+		margin-top: var(--s-4);
+		font-size: var(--text-caption);
+		color: var(--ink-soft);
 	}
 
 	.proof {
-		margin-top: var(--s-5);
+		margin-top: var(--s-3);
 		max-width: 36rem;
 		font-size: var(--text-caption);
 		line-height: 1.6;
@@ -288,20 +374,35 @@
 		white-space: nowrap;
 	}
 
-	@media (max-width: 599px) {
-		.sheets {
-			--w: 92px;
-			margin-bottom: var(--s-5);
+	@media (max-width: 759px) {
+		.features {
+			grid-template-columns: 1fr;
+			gap: var(--s-3);
+			max-width: 26rem;
 		}
 
-		.stage {
-			margin-top: -6vh;
+		.what {
+			margin-top: var(--s-5);
 		}
 	}
 
-	@media (min-width: 1200px) {
+	@media (max-width: 599px) {
+		.desk {
+			place-items: start center;
+			padding-top: var(--s-4);
+		}
+
 		.sheets {
-			--w: 132px;
+			--w: 56px;
+			margin-bottom: var(--s-3);
+		}
+
+		.stage {
+			margin-top: 0;
+		}
+
+		.headline {
+			font-size: 1.625rem;
 		}
 	}
 </style>
