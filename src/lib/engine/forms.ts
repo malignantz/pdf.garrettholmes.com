@@ -992,6 +992,15 @@ export async function applyForms(
 		// writes copied streams without their data (docs/research/2026-11-10-mupdf-api.md).
 		// Unreferenced objects are still dropped; qpdf renumbers at finalize.
 		return doc.saveToBuffer('garbage=yes').asUint8Array().slice();
+	} catch (e) {
+		// MuPDF rejects malformed form or page objects with a plain Error (a WebAssembly trap is
+		// a RuntimeError and is left to the engine's guard).
+		if (e instanceof Error && !(e instanceof EngineError) && e.name === 'Error') {
+			const err = new EngineError('unsupported', 'This file’s form fields are malformed, so they cannot be filled in or flattened. Nothing was saved.');
+			(err as { cause?: unknown }).cause = e;
+			throw err;
+		}
+		throw e;
 	} finally {
 		closeDoc(doc);
 	}

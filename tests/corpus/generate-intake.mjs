@@ -435,11 +435,11 @@ function formShared() {
 export default async function generateIntake(write) {
 	write('layers.pdf', layers(), { pages: 1, note: 'layer "Hidden" (6 0 R) default OFF via /D /OFF; layer "Shown" (8 0 R) ON; indirect /OCProperties' });
 	write('layers-base-off.pdf', layersBaseOff(), { pages: 2, note: 'direct /OCProperties, /BaseState /OFF, /ON [On]: layer "Off" hidden by base state' });
-	write('gen-conflict.pdf', genConflict(), { pages: 1, note: 'page 3 1 R redefined as 3 0 obj with an annotation in an update: readers disagree; intake refuses' });
+	write('gen-conflict.pdf', genConflict(), { pages: 1, expect: 'unreadable', note: 'page 3 1 R redefined as 3 0 obj with an annotation in an update: readers disagree; intake refuses' });
 	write('form-split.pdf', formSplit(), { pages: 2, note: 'field "Fine": text kid "Note" (p1, value "old"), checkbox kid "SA" (p2); the assemble step leaves off-page copies' });
 	write('damage-content.pdf', damageContent(), { pages: 1, note: 'stray ")" in the content stream: qpdf --check warns; exports keep the same warning' });
 	write('damage-flate.pdf', damageFlate(), { pages: 1, note: 'an unused Flate stream with a bad zlib header: --recompress-flate fails on it' });
-	write('damage-jpeg.pdf', damageJpeg(), { pages: 2, note: 'page 2 draws a DCT image whose data is not JPEG: qpdf --check stops (exit 2)' });
+	write('damage-jpeg.pdf', damageJpeg(), { pages: 2, expect: 'unreadable', note: 'page 2 draws a DCT image whose data is not JPEG: qpdf --check stops (exit 2); opens, every export is refused as unreadable' });
 	write('null-contents.pdf', nullContents(), { pages: 2, note: 'page 2 /Contents [null 6 0 R 99 0 R]: qpdf cannot copy the page until the non-streams are removed' });
 	write('form-as-string.pdf', formAsString(), { pages: 1, note: 'checkbox /AS (Off) is a string: MuPDF cannot load the page; opens without a fillable form' });
 	write('form-tree.pdf', formTree(), { pages: 24, note: 'one root field form1[0] > page<N>[0] > 25 text fields per page (600 widgets): copying pages one by one is quadratic' });

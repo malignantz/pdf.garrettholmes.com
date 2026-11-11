@@ -1069,6 +1069,7 @@
 	},
 	"gen-conflict.pdf": {
 		"pages": 1,
+		"expect": "unreadable",
 		"note": "page 3 1 R redefined as 3 0 obj with an annotation in an update: readers disagree; intake refuses"
 	},
 	"gen-reuse.pdf": {
@@ -1089,7 +1090,8 @@
 	},
 	"damage-jpeg.pdf": {
 		"pages": 2,
-		"note": "page 2 draws a DCT image whose data is not JPEG: qpdf --check stops (exit 2)"
+		"expect": "unreadable",
+		"note": "page 2 draws a DCT image whose data is not JPEG: qpdf --check stops (exit 2); opens, every export is refused as unreadable"
 	},
 	"null-contents.pdf": {
 		"pages": 2,

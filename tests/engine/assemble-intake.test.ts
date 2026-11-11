@@ -186,6 +186,13 @@ describe('intake: a form MuPDF cannot read', () => {
 		const res = await exportAll('form-as-string.pdf', true);
 		expect(await pageTexts(res.bytes)).toEqual(['form-as-string p1']);
 	}, T);
+
+	it('refuses in plain words to flatten it', async () => {
+		const src = await openCorpus('form-as-string.pdf');
+		await expect(
+			engine().exportPlan({ pages: [ref(src, 0)], options: { ...defaultOptions, flattenForms: true } }, [src], [])
+		).rejects.toMatchObject({ code: 'unsupported', message: expect.stringMatching(/form fields are malformed/) });
+	}, T);
 });
 
 describe('assemble: one source with a form is edited in place', () => {
