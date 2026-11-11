@@ -1,7 +1,9 @@
 /**
  * Minimal content-stream scanner: finds how a page's content nests q/Q so stamps can
  * be drawn in the page's initial graphics state even when the original content
- * leaves a `cm` or an unclosed `q` behind.
+ * leaves a `cm` or an unclosed `q` behind. It also reports where the content leaves
+ * the lexer (an unclosed string, array, dictionary or inline image would swallow
+ * anything appended after it) and whether a text object (BT) is still open.
  */
 
 export interface GraphicsNesting {
@@ -9,6 +11,14 @@ export interface GraphicsNesting {
 	minDepth: number;
 	/** Depth after the last operator. */
 	finalDepth: number;
+	/** A BT is still open at the end (more BT than ET). */
+	inText: boolean;
+	/**
+	 * Why content appended after this would not be read as operators (the content
+	 * ends inside a string, array, dictionary or inline image), or null when it is
+	 * safe to append.
+	 */
+	unterminated: string | null;
 }
 
 const WS = new Uint8Array(256);
@@ -35,6 +45,10 @@ export function graphicsNesting(parts: Uint8Array[]): GraphicsNesting {
 function scan(d: Uint8Array): GraphicsNesting {
 	let depth = 0;
 	let minDepth = 0;
+	let text = 0;
+	let arrays = 0;
+	let dicts = 0;
+	let unterminated: string | null = null;
 	let i = 0;
 	const n = d.length;
 	while (i < n) {
@@ -57,17 +71,26 @@ function scan(d: Uint8Array): GraphicsNesting {
 					i++;
 				}
 			}
+			if (nest > 0) unterminated = 'string';
 		} else if (c === 0x3c) {
-			if (d[i + 1] === 0x3c) i += 2; // <<
-			else {
+			if (d[i + 1] === 0x3c) {
+				dicts++;
+				i += 2;
+			} else {
 				i++;
 				while (i < n && d[i] !== 0x3e) i++;
+				if (i >= n) unterminated = 'hex string';
 				i++;
 			}
 		} else if (c === 0x3e) {
-			i += d[i + 1] === 0x3e ? 2 : 1;
+			if (d[i + 1] === 0x3e) {
+				if (dicts > 0) dicts--;
+				i += 2;
+			} else i++;
 		} else if (DELIM[c]) {
 			// / name, [ ] { }
+			if (c === 0x5b) arrays++;
+			else if (c === 0x5d && arrays > 0) arrays--;
 			i++;
 			if (c === 0x2f) while (i < n && !WS[d[i]] && !DELIM[d[i]]) i++;
 		} else {
@@ -78,15 +101,26 @@ function scan(d: Uint8Array): GraphicsNesting {
 			else if (len === 1 && d[start] === Q) {
 				depth--;
 				if (depth < minDepth) minDepth = depth;
+			} else if (len === 2 && d[start] === 0x42 && d[start + 1] === 0x54) {
+				text++; // BT
+			} else if (len === 2 && d[start] === 0x45 && d[start + 1] === 0x54) {
+				if (text > 0) text--; // ET
 			} else if (len === 2 && d[start] === 0x49 && d[start + 1] === 0x44) {
 				// ID: inline image data runs to whitespace + EI + whitespace/EOF.
 				i = skipInlineImage(d, i);
+				if (i < 0) {
+					unterminated = 'inline image';
+					i = n;
+				}
 			}
 		}
 	}
-	return { minDepth, finalDepth: depth };
+	if (!unterminated && arrays > 0) unterminated = 'array';
+	if (!unterminated && dicts > 0) unterminated = 'dictionary';
+	return { minDepth, finalDepth: depth, inText: text > 0, unterminated };
 }
 
+/** Index just past EI, or -1 when the image data never ends. */
 function skipInlineImage(d: Uint8Array, i: number): number {
 	const n = d.length;
 	i++; // single whitespace after ID
@@ -101,5 +135,5 @@ function skipInlineImage(d: Uint8Array, i: number): number {
 		}
 		i++;
 	}
-	return n;
+	return -1;
 }

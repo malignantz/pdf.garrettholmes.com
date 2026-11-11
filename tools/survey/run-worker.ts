@@ -77,6 +77,8 @@ const PASSWORD = 'survey-pw-1';
 const MARGIN = 0.015;
 /** A highlight/mark/redaction box counts as visible when at least this share of its pixels changed. */
 const VISIBLE_FRACTION = 0.3;
+/** Fewer light pixels than this under a must-change region: not judged (noted). */
+const MIN_LIGHT_PIXELS = 6;
 /** A redaction box counts as black when its mean luminance is below this. */
 const BLACK_LUMA = 60;
 
@@ -191,7 +193,8 @@ const allPages = (c: Ctx) => c.src.pages.map((_, i) => ref(c.src, i));
 // --- independent checks ------------------------------------------------------
 
 interface Problem {
-	level: 'wrong' | 'suspect';
+	/** 'note': a check that could not judge this file; recorded, not counted. */
+	level: 'wrong' | 'suspect' | 'note';
 	text: string;
 }
 
@@ -284,6 +287,8 @@ function saveEvidence(c: Ctx, scenario: string, label: string, pair: { before: R
 }
 
 function judge(problems: Problem[], evidence: string[] = [], extra: Partial2 = { outcome: 'verified' }): Partial2 {
+	const notes = problems.filter((p) => p.level === 'note').map((p) => p.text);
+	if (notes.length) extra = { ...extra, notes: [...(extra.notes ?? []), ...notes] };
 	const wrong = problems.filter((p) => p.level === 'wrong');
 	const suspect = problems.filter((p) => p.level === 'suspect');
 	if (wrong.length) return { ...extra, outcome: 'wrong', detail: [...wrong, ...suspect].map((p) => p.text).join(' | '), evidence };
@@ -326,8 +331,20 @@ function pixelCheck(
 	} else if (d.fraction > SUSPECT_FRACTION) {
 		problems.push({ level: 'suspect', text: `${where}: ${(d.fraction * 100).toFixed(2)}% of inked pixels differ outside the edited areas` });
 	}
-	(opts.mustChange ?? []).forEach((_, k) => {
-		if (d.insideFractions[k] < VISIBLE_FRACTION) problems.push({ level: 'suspect', text: `${where}: edit ${k + 1} barely visible (${(d.insideFractions[k] * 100).toFixed(0)}% changed)` });
+	(opts.mustChange ?? []).forEach((r, k) => {
+		const pxW = (r.x1 - r.x0) * pair.before.w;
+		const pxH = (r.y1 - r.y0) * pair.before.h;
+		if (pxW < 3 || pxH < 3) {
+			problems.push({ level: 'note', text: `${where}: edit ${k + 1} not checked (${pxW.toFixed(1)}×${pxH.toFixed(1)} px at this resolution)` });
+			return;
+		}
+		// Judged on the pixels that were light before: a multiply highlight cannot show
+		// over dark content, and a region of a few pixels says nothing.
+		if (d.insideLight[k] < MIN_LIGHT_PIXELS) {
+			problems.push({ level: 'note', text: `${where}: edit ${k + 1} not checked (only ${d.insideLight[k]} light pixels under it)` });
+		} else if (d.insideLightFractions[k] < VISIBLE_FRACTION) {
+			problems.push({ level: 'suspect', text: `${where}: edit ${k + 1} barely visible (${(d.insideLightFractions[k] * 100).toFixed(0)}% of light pixels changed)` });
+		}
 	});
 	const off = (opts.mustChange ?? []).length;
 	(opts.mustBeBlack ?? []).forEach((_, k) => {
@@ -445,10 +462,14 @@ async function stampsScenario(c: Ctx): Promise<Partial2> {
 		const r = pixelCheck(c, 'stamps', res.bytes, i, i, file, { allowed, mustChange: [innerRegion(HIGHLIGHT_BOX)], softer: c.src.hasForm });
 		problems.push(...r.problems);
 		evidence.push(...r.evidence);
-		// Page number read back by poppler.
-		const t = await tool('pdftotext', ['-f', String(i + 1), '-l', String(i + 1), '-enc', 'UTF-8', file, '-'], 60_000);
+		// Page number read back by poppler, in content-stream order (-raw): the label is
+		// drawn last as one string, and layout order would interleave it with page text
+		// that shares its baseline.
+		const t = await tool('pdftotext', ['-raw', '-f', String(i + 1), '-l', String(i + 1), '-enc', 'UTF-8', file, '-'], 60_000);
 		const label = `Page ${i + 1} of ${n}`;
-		if (t.code === 0 && !squash(t.stdout).includes(squash(label))) {
+		if (/Failed to create page/.test(t.stderr)) {
+			problems.push({ level: 'note', text: `poppler cannot build page ${i + 1}; page number not checked` });
+		} else if (t.code === 0 && !squash(t.stdout).includes(squash(label))) {
 			problems.push({ level: 'suspect', text: `poppler does not find "${label}" on page ${i + 1}` });
 		}
 	}

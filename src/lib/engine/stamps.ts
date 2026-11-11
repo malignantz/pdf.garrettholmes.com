@@ -2,10 +2,13 @@
  * Draws stamps onto an assembled PDF with pdf-lib.
  *
  * Every page that gets stamps has its content wrapped as
- *   [q × n] [original content…] [Q × m] [our stamps]
+ *   [q × n] [original content…] [ET] [Q × m] [our stamps]
  * where n and m come from scanning the original content's q/Q nesting, so stamps are
  * drawn in the page's initial graphics state even when the original leaves a `cm`,
- * clip or an unclosed `q` behind. Stamp geometry comes from geometry.ts.
+ * clip or an unclosed `q` behind; ET is added only when the original leaves a text
+ * object open. A page whose content ends inside a string, array, dictionary or
+ * inline image is refused: anything appended would be read as part of it.
+ * Stamp geometry comes from geometry.ts.
  */
 
 import type { Asset, PageSize, Stamp, VerifyCheck } from '../core/types';
@@ -32,7 +35,7 @@ import {
 } from './geometry';
 import type { Rotation } from '../core/types';
 import { parsePng } from './images';
-import { numberLayout, type NumberingJob } from './numbering';
+import { NUMBER_CAP_EM, numberLayout, type NumberingJob } from './numbering';
 
 export interface StampJob {
 	/** 0-based page index in the assembled file. */
@@ -62,7 +65,9 @@ export async function applyStamps(
 	bytes: Uint8Array,
 	jobs: StampJob[],
 	assets: Asset[],
-	numbering?: NumberingJob
+	numbering?: NumberingJob,
+	/** Receives plain-language warnings (e.g. a stamp lies under an annotation). */
+	warnings?: string[]
 ): Promise<Uint8Array> {
 	const { lib } = deps;
 	const { PDFDocument, PDFName, PDFArray, PDFDict, PDFRef, PDFRawStream, PDFContentStream, ParseSpeeds } = lib;
@@ -133,8 +138,13 @@ export async function applyStamps(
 			throw new EngineError('verification-failed', 'The pages did not come out the expected size, so the file was not saved.', [check]);
 		}
 
-		// Original content streams and their q/Q nesting.
-		const rawContents = leaf.get(PDFName.of('Contents'));
+		// Original content streams and their q/Q nesting. /Contents may also be a
+		// reference to an array of streams.
+		let rawContents = leaf.get(PDFName.of('Contents'));
+		if (rawContents instanceof PDFRef) {
+			const target = ctx.lookup(rawContents);
+			if (target instanceof PDFArray) rawContents = target;
+		}
 		const contentRefs: PdfLib.PDFObject[] = [];
 		if (rawContents instanceof PDFArray) {
 			for (let k = 0; k < rawContents.size(); k++) contentRefs.push(rawContents.get(k));
@@ -142,6 +152,10 @@ export async function applyStamps(
 			contentRefs.push(rawContents);
 		}
 		const decoded: Uint8Array[] = [];
+		// Streams kept in the new /Contents. Empty and missing ones are left out: they
+		// draw nothing, and poppler stops reading a page's content at an empty stream
+		// that claims /FlateDecode, which would hide the stamps there.
+		const kept: PdfLib.PDFObject[] = [];
 		for (let k = 0; k < contentRefs.length; k++) {
 			let obj = contentRefs[k];
 			if (!(obj instanceof PDFRef)) {
@@ -151,13 +165,17 @@ export async function applyStamps(
 			}
 			obj = ctx.lookup(contentRefs[k]) as PdfLib.PDFObject;
 			if (obj instanceof PDFRawStream) {
+				// An empty stream holds no operators, whatever its /Filter says.
+				if (obj.getContentsSize() === 0) continue;
 				try {
 					decoded.push(lib.decodePDFRawStream(obj).decode());
 				} catch {
-					throw new EngineError('unsupported', `Page ${job.pageIndex + 1} uses a content encoding that stamps cannot be added to safely.`);
+					throw new EngineError('unsupported', `Page ${job.pageIndex + 1} has damaged content, so stamps cannot be added to it safely.`);
 				}
+				kept.push(contentRefs[k]);
 			} else if (obj instanceof PDFContentStream) {
 				decoded.push(obj.getUnencodedContents());
+				kept.push(contentRefs[k]);
 			} else if (obj === undefined || obj === lib.PDFNull) {
 				// Missing stream: treated as empty, as viewers do.
 			} else {
@@ -165,6 +183,9 @@ export async function applyStamps(
 			}
 		}
 		const nest = graphicsNesting(decoded);
+		if (nest.unterminated) {
+			throw new EngineError('unsupported', `Page ${job.pageIndex + 1} has damaged content, so stamps cannot be added to it safely.`);
+		}
 		const pushes = 1 - nest.minDepth;
 		const pops = pushes + nest.finalDepth;
 
@@ -192,12 +213,27 @@ export async function applyStamps(
 		leaf.set(PDFName.of('Resources'), resources);
 
 		const body: PdfLib.PDFOperator[] = [];
+		/** Where this page's stamps are, in PDF user space (for the annotation warning). */
+		const drawn: Box[] = [];
+		const shownSize = displayedUserSize(geom.box, geom.rotation);
 		const imageNames = new Map<string, string>();
 		let fontName: string | null = null;
 
 		// Highlights first, so anything else on the page stays on top of them.
 		for (const stamp of job.stamps) {
-			if (stamp.kind === 'highlight') body.push(...highlightOps(ops, geom, stamp, mulName));
+			if (stamp.kind !== 'highlight') continue;
+			body.push(...highlightOps(ops, geom, stamp, mulName));
+			if (stamp.pen) {
+				const half = (stamp.pen.width * shownSize.height) / 2;
+				const xs: number[] = [];
+				const ys: number[] = [];
+				for (const p of stamp.pen.points) {
+					const [x, y] = displayToPdf(geom.box, geom.rotation, p.x * shownSize.width, p.y * shownSize.height);
+					xs.push(x);
+					ys.push(y);
+				}
+				drawn.push({ x0: Math.min(...xs) - half, y0: Math.min(...ys) - half, x1: Math.max(...xs) + half, y1: Math.max(...ys) + half });
+			} else drawn.push(stampPdfRect(geom.box, geom.rotation, stamp.box));
 		}
 		for (const stamp of job.stamps) {
 			if (stamp.kind === 'redact' || stamp.kind === 'highlight') {
@@ -219,8 +255,10 @@ export async function applyStamps(
 				}
 				const m = stampBoxMatrix(geom.box, geom.rotation, stamp.box);
 				body.push(ops.pushGraphicsState(), cm(ops, m), ops.drawObject(xname), ops.popGraphicsState());
+				drawn.push(stampPdfRect(geom.box, geom.rotation, stamp.box));
 			} else if (stamp.kind === 'mark') {
 				body.push(...markOps(ops, geom, stamp));
+				drawn.push(stampPdfRect(geom.box, geom.rotation, stamp.box));
 			} else if (stamp.kind === 'text') {
 				const f = await getFont();
 				if (!fontName) {
@@ -229,6 +267,12 @@ export async function applyStamps(
 					fonts.set(PDFName.of(fontName), f.ref);
 				}
 				body.push(...textOps(ops, geom, stamp, f, fontName));
+				const size = stamp.size * shownSize.height;
+				const lines = normalizeStampText(stamp.text).split('\n');
+				const w = Math.max(...lines.map((l) => f.widthOfTextAtSize(l, size)));
+				const x = stamp.x * shownSize.width;
+				const y = stamp.y * shownSize.height;
+				drawn.push(displayRectToPdf(geom, x, y, x + w, y + lines.length * STAMP_FONT.lineHeight * size));
 			}
 		}
 
@@ -240,7 +284,12 @@ export async function applyStamps(
 				fontName = name(fonts, 'PgsF');
 				fonts.set(PDFName.of(fontName), f.ref);
 			}
-			body.push(...numberOps(ops, geom, numbering.numbering, label, f, fontName));
+			const num = numberOps(ops, geom, numbering.numbering, label, f, fontName, job.pageIndex);
+			body.push(...num.ops);
+			drawn.push(num.rect);
+		}
+		if (warnings && coveredByAnnotation(lib, leaf, drawn)) {
+			warnings.push(`On page ${job.pageIndex + 1}, an annotation on the page (such as a comment, sticker or form field) lies over a stamp and may hide part of it.`);
 		}
 
 		const pre = ctx.register(PDFContentStream.of(ctx.obj({}), Array.from({ length: pushes }, () => ops.pushGraphicsState()), false));
@@ -248,6 +297,7 @@ export async function applyStamps(
 			PDFContentStream.of(
 				ctx.obj({}),
 				[
+					...(nest.inText ? [ops.endText()] : []),
 					...Array.from({ length: pops }, () => ops.popGraphicsState()),
 					ops.pushGraphicsState(),
 					ops.setGraphicsState(gsName),
@@ -257,7 +307,7 @@ export async function applyStamps(
 				true
 			)
 		);
-		leaf.set(PDFName.of('Contents'), ctx.obj([pre, ...contentRefs, tail]));
+		leaf.set(PDFName.of('Contents'), ctx.obj([pre, ...kept, tail]));
 	}
 
 	return doc.save({ useObjectStreams: false, addDefaultPage: false, updateFieldAppearances: false, objectsPerTick: Infinity });
@@ -295,6 +345,85 @@ export function readGeometry(lib: typeof PdfLib, leaf: PdfLib.PDFPageLeaf): Page
 		rotation: normalizeRotation(rot instanceof PDFNumber ? rot.asNumber() : 0),
 		userUnit
 	};
+}
+
+/** A display-space rectangle (user units from the displayed top-left) as a PDF user-space box. */
+function displayRectToPdf(geom: PageGeometry, left: number, top: number, right: number, bottom: number): Box {
+	const [ax, ay] = displayToPdf(geom.box, geom.rotation, left, top);
+	const [bx, by] = displayToPdf(geom.box, geom.rotation, right, bottom);
+	return { x0: Math.min(ax, bx), y0: Math.min(ay, by), x1: Math.max(ax, bx), y1: Math.max(ay, by) };
+}
+
+/** Annotation flags: Hidden (2) and NoView (32). */
+const ANNOT_UNSEEN = 2 | 32;
+
+/**
+ * Whether a visible annotation with an appearance overlaps any of `rects`.
+ * Annotations are painted above page content, so such an annotation can hide a stamp.
+ * Links and popups paint nothing; a form field counts only when it is likely to be
+ * opaque (see opaqueWidget); otherwise its appearance is text and borders over the page.
+ */
+function coveredByAnnotation(lib: typeof PdfLib, leaf: PdfLib.PDFPageLeaf, rects: Box[]): boolean {
+	const { PDFArray, PDFDict, PDFName, PDFNumber, PDFStream } = lib;
+	if (rects.length === 0) return false;
+	let annots: PdfLib.PDFArray | undefined;
+	try {
+		annots = leaf.lookupMaybe(PDFName.of('Annots'), PDFArray);
+	} catch {
+		return false;
+	}
+	if (!annots) return false;
+	for (let k = 0; k < annots.size(); k++) {
+		let a: PdfLib.PDFDict | undefined;
+		try {
+			a = annots.lookupMaybe(k, PDFDict);
+		} catch {
+			continue;
+		}
+		if (!a) continue;
+		const subtype = a.lookup(PDFName.of('Subtype'));
+		const kind = subtype instanceof PDFName ? subtype.decodeText() : '';
+		if (kind === 'Link' || kind === 'Popup') continue;
+		const flags = a.lookup(PDFName.of('F'));
+		if (flags instanceof PDFNumber && (flags.asNumber() & ANNOT_UNSEEN) !== 0) continue;
+		const ap = a.lookup(PDFName.of('AP'));
+		const normal = ap instanceof PDFDict ? ap.lookup(PDFName.of('N')) : undefined;
+		if (!(normal instanceof PDFStream) && !(normal instanceof PDFDict)) continue;
+		if (kind === 'Widget' && !opaqueWidget(lib, a)) continue;
+		const r = a.lookup(PDFName.of('Rect'));
+		if (!(r instanceof PDFArray) || r.size() !== 4) continue;
+		const v = [0, 1, 2, 3].map((i) => r.lookup(i));
+		if (!v.every((n) => n instanceof PDFNumber)) continue;
+		const [x0, y0, x1, y1] = (v as PdfLib.PDFNumber[]).map((n) => n.asNumber());
+		const ax0 = Math.min(x0, x1);
+		const ax1 = Math.max(x0, x1);
+		const ay0 = Math.min(y0, y1);
+		const ay1 = Math.max(y0, y1);
+		if (rects.some((b) => Math.min(b.x1, ax1) - Math.max(b.x0, ax0) > 0.5 && Math.min(b.y1, ay1) - Math.max(b.y0, ay0) > 0.5)) return true;
+	}
+	return false;
+}
+
+/** Pushbutton flag in a field's /Ff. */
+const FF_PUSHBUTTON = 1 << 16;
+
+/** A form widget with a background colour or an icon, or a push button (usually drawn as a picture). */
+function opaqueWidget(lib: typeof PdfLib, a: PdfLib.PDFDict): boolean {
+	const { PDFArray, PDFDict, PDFName, PDFNumber } = lib;
+	const mk = a.lookup(PDFName.of('MK'));
+	if (mk instanceof PDFDict) {
+		const bg = mk.lookup(PDFName.of('BG'));
+		if (bg instanceof PDFArray && bg.size() > 0) return true;
+		if (mk.has(PDFName.of('I'))) return true;
+	}
+	let field: PdfLib.PDFDict | undefined = a;
+	for (let depth = 0; field && depth < 8; depth++) {
+		const ff = field.lookup(PDFName.of('Ff'));
+		if (ff instanceof PDFNumber) return (ff.asNumber() & FF_PUSHBUTTON) !== 0;
+		const parent: PdfLib.PDFObject | undefined = field.lookup(PDFName.of('Parent'));
+		field = parent instanceof PDFDict ? parent : undefined;
+	}
+	return false;
 }
 
 function cm(ops: typeof PdfLib, m: Matrix) {
@@ -440,15 +569,26 @@ function numberOps(
 	numbering: NumberingJob['numbering'],
 	label: string,
 	font: PdfLib.PDFFont,
-	fontName: string
-) {
+	fontName: string,
+	pageIndex: number
+): { ops: PdfLib.PDFOperator[]; rect: Box } {
 	const u = geom.userUnit;
 	const shown = displayedUserSize(geom.box, geom.rotation);
+	const pageW = shown.width * u;
+	const pageH = shown.height * u;
 	const textW = font.widthOfTextAtSize(label, numbering.size);
-	const lay = numberLayout(shown.width * u, shown.height * u, numbering.position, numbering.size, textW);
+	const lay = numberLayout(pageW, pageH, numbering.position, numbering.size, textW);
+	const capTop = lay.baseline - NUMBER_CAP_EM * numbering.size;
+	if (textW > pageW || capTop < 0 || lay.baseline > pageH) {
+		throw new EngineError(
+			'unsupported',
+			`Page ${pageIndex + 1} is too small for a page number of this size. Choose a smaller size or a shorter style.`
+		);
+	}
 	// Display point of the baseline start, in user units, from the displayed top-left.
 	const frame = uprightFrame(geom.box, geom.rotation, lay.x / u, lay.baseline / u);
-	return [
+	const rect = displayRectToPdf(geom, lay.x / u, capTop / u, (lay.x + textW) / u, lay.baseline / u);
+	const out: PdfLib.PDFOperator[] = [
 		ops.pushGraphicsState(),
 		cm(ops, frame),
 		ops.setFillingRgbColor(0, 0, 0),
@@ -464,4 +604,5 @@ function numberOps(
 		ops.endText(),
 		ops.popGraphicsState()
 	];
+	return { ops: out, rect };
 }
