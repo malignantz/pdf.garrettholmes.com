@@ -1119,5 +1119,71 @@
 			"KEEP-SURVEY-TEXT",
 			"KEEP-FORM-TEXT"
 		]
+	},
+	"layers.pdf": {
+		"pages": 1,
+		"note": "layer \"Hidden\" (6 0 R) default OFF via /D /OFF; layer \"Shown\" (8 0 R) ON; indirect /OCProperties"
+	},
+	"layers-base-off.pdf": {
+		"pages": 2,
+		"note": "direct /OCProperties, /BaseState /OFF, /ON [On]: layer \"Off\" hidden by base state"
+	},
+	"gen-conflict.pdf": {
+		"pages": 1,
+		"expect": "unreadable",
+		"note": "page 3 1 R redefined as 3 0 obj with an annotation in an update: readers disagree; intake refuses"
+	},
+	"gen-reuse.pdf": {
+		"pages": 1,
+		"note": "object 6 reused with generation 1 (legitimate); opens; text \"gen-reuse p1\""
+	},
+	"form-split.pdf": {
+		"pages": 2,
+		"note": "field \"Fine\": text kid \"Note\" (p1, value \"old\"), checkbox kid \"SA\" (p2); the assemble step leaves off-page copies"
+	},
+	"damage-content.pdf": {
+		"pages": 1,
+		"note": "stray \")\" in the content stream: qpdf --check warns; exports keep the same warning"
+	},
+	"damage-flate.pdf": {
+		"pages": 1,
+		"note": "an unused Flate stream with a bad zlib header: --recompress-flate fails on it"
+	},
+	"damage-jpeg.pdf": {
+		"pages": 2,
+		"expect": "unreadable",
+		"note": "page 2 draws a DCT image whose data is not JPEG: qpdf --check stops (exit 2); opens, every export is refused as unreadable"
+	},
+	"null-contents.pdf": {
+		"pages": 2,
+		"note": "page 2 /Contents [null 6 0 R 99 0 R]: qpdf cannot copy the page until the non-streams are removed"
+	},
+	"form-as-string.pdf": {
+		"pages": 1,
+		"note": "checkbox /AS (Off) is a string: MuPDF cannot load the page; opens without a fillable form"
+	},
+	"form-tree.pdf": {
+		"pages": 24,
+		"note": "one root field form1[0] > page<N>[0] > 25 text fields per page (600 widgets): copying pages one by one is quadratic"
+	},
+	"form-catalog.pdf": {
+		"pages": 2,
+		"note": "form + outline, structure element (/Alt), OpenAction to page 2, Info, XFA; page 2 text SECRETPAGE2; markers SECRETOUTLINE/ALT/INFO/XFA"
+	},
+	"form-buttons.pdf": {
+		"pages": 1,
+		"note": "radio \"pick\" (A, B) without /Off appearances; checkbox \"broken\" with /null appearances (not fillable); checkbox \"zero\": on-state /1, value /0 (clear)"
+	},
+	"form-autosize.pdf": {
+		"pages": 1,
+		"note": "multiline fields 10 pt high: \"short\" auto size (0 Tf, inherited), \"fixed\" 12 pt"
+	},
+	"form-comb.pdf": {
+		"pages": 1,
+		"note": "comb text field \"code\", 8 cells (MaxLen 8)"
+	},
+	"form-shared.pdf": {
+		"pages": 1,
+		"note": "checkbox \"tick\": on/off appearances share indirect /Resources; two images share an indirect /ColorSpace"
 	}
 }

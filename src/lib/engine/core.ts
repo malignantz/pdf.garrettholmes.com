@@ -5,7 +5,7 @@
  *
  *   openPdf     qpdf --decrypt rewrite → PDF.js geometry
  *   openImage   pdf-lib one-page PDF → qpdf --check
- *   exportPlan  qpdf --empty --pages (+ --rotate) → [forms] → [redact]
+ *   exportPlan  assemble (qpdf --pages, assemble.ts) → [forms] → [redact]
  *               → [stamps + numbering] → [shrink →] qpdf finalize → verify
  *
  * Stages in brackets run only when the plan asks for them. Each lives in its own
@@ -43,6 +43,8 @@ import {
 	type Orientation
 } from './images';
 import { discardMupdf, isWasmFault, mupdf as loadMupdf, type Mupdf } from './mupdf';
+import { assemble } from './assemble';
+import { hasGenerationConflict, listPages } from './intake';
 import { numberingLabels, validateNumbering, verifyNumbering, type NumberingJob } from './numbering';
 import { PdfjsOpenError, inspectWithPdfjs, type PdfjsLib } from './pdfjs';
 import { QPDF_ERROR, QPDF_OK, QPDF_WARNINGS, Qpdf, type QpdfLoader, type QpdfResult } from './qpdf';
@@ -202,16 +204,24 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 					out = repaired.bytes;
 					notes = repaired.notes;
 				} else if (res.code === QPDF_OK || res.code === QPDF_WARNINGS) {
+					if (await hasGenerationConflict(qpdf, bytes, pw)) {
+						throw new EngineError(
+							'unreadable',
+							'This file was saved inconsistently: PDF readers disagree about what some pages contain, so it cannot be edited reliably.'
+						);
+					}
 					notes = res.code === QPDF_WARNINGS ? friendlyWarnings(res.stderr) : [];
 				} else {
 					throw new EngineError('internal', 'The PDF engine stopped unexpectedly while reading this file.');
 				}
 
-				const [enc, npages] = await Promise.all([
-					qpdf.run({ args: [...pw, '--is-encrypted', '/in.pdf'], inputs: { '/in.pdf': bytes } }),
-					qpdf.run({ args: ['--show-npages', '/n.pdf'], inputs: { '/n.pdf': out } })
-				]);
+				const enc = await qpdf.run({ args: [...pw, '--is-encrypted', '/in.pdf'], inputs: { '/in.pdf': bytes } });
 				const wasEncrypted = enc.code === QPDF_OK;
+				const listed = await listPages(qpdf, out);
+				if (listed && listed.fixedPages > 0) {
+					out = listed.bytes;
+					notes.push('Removed broken entries from the content of some pages.', 'Check that the pages look right.');
+				}
 
 				let info;
 				try {
@@ -223,8 +233,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 					throw e;
 				}
 				if (info.numPages === 0) throw new EngineError('unreadable', 'This PDF has no pages.');
-				const qpdfPages = Number.parseInt(npages.stdout.trim(), 10);
-				if (npages.code !== QPDF_OK || qpdfPages !== info.numPages) {
+				if (!listed || listed.pages !== info.numPages) {
 					throw new EngineError('unreadable', 'This file’s page list is inconsistent, so it cannot be opened reliably.');
 				}
 				for (const p of info.pages) {
@@ -255,7 +264,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 					pages: info.pages,
 					originalSize: bytes.length,
 					wasEncrypted,
-					notes,
+					notes: [...new Set(notes)],
 					...(form.hasForm ? { hasForm: true } : {})
 				};
 			}),
@@ -399,17 +408,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		}
 
 		// (a) Assemble.
-		const inputs: Record<string, Uint8Array> = {};
-		for (const s of used) inputs[fileOf.get(s.id)!] = s.bytes;
-		let bytes = await runOrFail(
-			{
-				args: ['--empty', '--pages', ...pageSelection(pages, fileOf), '--', ...rotateArgs(pages), '/out/assembled.pdf'],
-				inputs,
-				outputs: ['/out/assembled.pdf']
-			},
-			'/out/assembled.pdf',
-			warnings
-		);
+		let bytes = await assemble(qpdf, { pages, used, fileOf, run: (r, output) => runOrFail(r, output, warnings) });
 
 		// (b) Forms: answers, appearances, flatten.
 		const formsCtx: FormsContext = {
@@ -470,7 +469,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		}
 
 		// (f) Verify.
-		const checks = await verify(final, expected, password, options.stripMetadata);
+		const checks = await verify(final, expected, password, options.stripMetadata, used, warnings);
 		if (formsRan) checks.push(...(await verifyForms(deps, final, formsCtx, password)));
 		if (redactJobs.length) checks.push(...(await verifyRedactions(deps, final, redactJobs, allowedText, password, (shrink?.imagesChanged ?? 0) > 0)));
 		if (numbering) checks.push(...(await verifyNumbering(deps, final, numbering.labels, password, numbering.numbering)));
@@ -513,7 +512,20 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			finalArgs.push('--encrypt', `--user-password=${pw}`, `--owner-password=${pw}`, '--bits=256', '--');
 		}
 		finalArgs.push('/out/final.pdf');
-		return runOrFail({ args: finalArgs, inputs: finalInputs, outputs: ['/out/final.pdf'] }, '/out/final.pdf', warnings);
+		const run = { args: finalArgs, inputs: finalInputs, outputs: ['/out/final.pdf'] };
+		if (options.compress) {
+			// --recompress-flate stops at a Flate stream zlib cannot decode (viewers draw what
+			// they can of it). Compressing is only an optimization: then keep such streams as they are.
+			const res = await qpdf.run(run);
+			const file = res.files.get('/out/final.pdf');
+			if ((res.code === QPDF_OK || res.code === QPDF_WARNINGS) && file) {
+				if (res.code === QPDF_WARNINGS) warnings.push(...friendlyWarnings(res.stderr));
+				return file;
+			}
+			if (!/inflate|flate|decod/i.test(res.stderr)) failBuild(res);
+			run.args = finalArgs.filter((a) => a !== '--recompress-flate');
+		}
+		return runOrFail(run, '/out/final.pdf', warnings);
 	}
 
 	async function runOrFail(
@@ -523,11 +535,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 	): Promise<Uint8Array> {
 		const res = await qpdf.run(run);
 		const file = res.files.get(output);
-		if ((res.code !== QPDF_OK && res.code !== QPDF_WARNINGS) || !file) {
-			const err = new EngineError('internal', 'The PDF engine could not build the file. Nothing was saved.');
-			(err as { cause?: unknown }).cause = `qpdf exit ${res.code}: ${res.stderr}`;
-			throw err;
-		}
+		if ((res.code !== QPDF_OK && res.code !== QPDF_WARNINGS) || !file) failBuild(res);
 		if (res.code === QPDF_WARNINGS) warnings.push(...friendlyWarnings(res.stderr));
 		return file;
 	}
@@ -581,7 +589,9 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		bytes: Uint8Array,
 		expected: PageSize[],
 		password: string | undefined,
-		stripMetadata: boolean
+		stripMetadata: boolean,
+		sources: Source[],
+		warnings: string[]
 	): Promise<VerifyCheck[]> {
 		const checks: VerifyCheck[] = [];
 		const pw = password !== undefined ? [`--password=${password}`] : [];
@@ -589,14 +599,35 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 
 		// Structure and page count from qpdf.
 		const res = await qpdf.run({ args: [...pw, '--check', '--show-npages', '/v.pdf'], inputs: { '/v.pdf': bytes } });
-		const clean = res.code === QPDF_OK && /No syntax or stream encoding errors found/.test(res.stdout);
-		checks.push({
-			name: 'structure',
-			ok: clean,
-			detail: clean
-				? 'qpdf --check found no syntax or stream errors.'
-				: `qpdf --check reported problems (exit ${res.code}): ${firstLines(res.stderr || res.stdout)}`
-		});
+		let clean = res.code === QPDF_OK && /No syntax or stream encoding errors found/.test(res.stdout);
+		let detail = clean
+			? 'qpdf --check found no syntax or stream errors.'
+			: `qpdf --check reported problems (exit ${res.code}): ${firstLines(res.stderr || res.stdout)}`;
+		if (!clean) {
+			// Damage the sources already have is copied, not made, by the export. Only the same
+			// kinds of problems as in the sources are accepted, and only warnings: after a fatal
+			// error qpdf stops checking, so the rest of the file would go unchecked.
+			const found = checkProblems(`${res.stderr}\n${res.stdout}`);
+			const known = { warnings: new Set<string>(), fatal: new Set<string>() };
+			for (const s of sources) {
+				const r = await qpdf.run({ args: ['--check', '/s.pdf'], inputs: { '/s.pdf': s.bytes } });
+				const p = checkProblems(`${r.stderr}\n${r.stdout}`);
+				p.warnings.forEach((w) => known.warnings.add(w));
+				p.fatal.forEach((f) => known.fatal.add(f));
+			}
+			if (found.fatal.length && found.fatal.every((f) => known.fatal.has(f))) {
+				throw new EngineError(
+					'unreadable',
+					'Part of this file (such as an image) is damaged and cannot be read, so the exported file could not be checked. Nothing was saved.'
+				);
+			}
+			if (res.code === QPDF_WARNINGS && found.fatal.length === 0 && found.warnings.length && found.warnings.every((w) => known.warnings.has(w))) {
+				clean = true;
+				detail = `qpdf --check found only damage the original already has, copied unchanged: ${[...new Set(found.warnings)].slice(0, 3).join('; ')}.`;
+				warnings.push('Some content of the original file is damaged; it was copied unchanged. Check that the pages look right.');
+			}
+		}
+		checks.push({ name: 'structure', ok: clean, detail });
 		const lines = res.stdout.trim().split('\n');
 		const qpdfPages = Number.parseInt(lines[lines.length - 1] ?? '', 10);
 
@@ -740,37 +771,7 @@ export function metadataLeft(json: QpdfJson): string[] {
 	return left;
 }
 
-/** `--pages` arguments, grouping consecutive pages from the same file. */
-export function pageSelection(pages: PageRef[], fileOf: Map<string, string>): string[] {
-	const args: string[] = [];
-	let file = '';
-	let nums: number[] = [];
-	const flush = () => {
-		if (nums.length) args.push(file, nums.join(','));
-	};
-	for (const ref of pages) {
-		const f = fileOf.get(ref.sourceId)!;
-		if (f !== file) {
-			flush();
-			file = f;
-			nums = [];
-		}
-		nums.push(ref.pageIndex + 1);
-	}
-	flush();
-	return args;
-}
-
-export function rotateArgs(pages: PageRef[]): string[] {
-	const by = new Map<Rotation, number[]>();
-	pages.forEach((ref, i) => {
-		if (ref.rotation === 0) return;
-		const list = by.get(ref.rotation) ?? [];
-		list.push(i + 1);
-		by.set(ref.rotation, list);
-	});
-	return [...by.entries()].map(([angle, list]) => `--rotate=+${angle}:${list.join(',')}`);
-}
+export { pageSelection, rotateArgs } from './assemble';
 
 function validateStamps(pageNo: number, stamps: Stamp[], assetIds: Set<string>) {
 	const eps = 1e-6;
@@ -864,6 +865,20 @@ function drawFullPage(
 	);
 }
 
+/**
+ * qpdf could not write an export. Damage in the source (data qpdf cannot decode or parse)
+ * is the file's problem, said plainly; anything else is the engine's.
+ */
+function failBuild(res: QpdfResult): never {
+	if (/bad_alloc|out of memory/i.test(res.stderr)) throw new EngineError('too-large', 'This file is too large to process on this device.');
+	const damaged = /inflate|decod|jpeg|DCT|stream|parse|expected|invalid|damaged|unexpected/i.test(res.stderr);
+	const err = damaged
+		? new EngineError('unreadable', 'Part of this file is damaged and could not be copied, so nothing was saved.')
+		: new EngineError('internal', 'The PDF engine could not build the file. Nothing was saved.');
+	(err as { cause?: unknown }).cause = `qpdf exit ${res.code}: ${res.stderr}`;
+	throw err;
+}
+
 function unreadableMessage(stderr: string): string {
 	if (/can't find PDF header|not a PDF/i.test(stderr) && /startxref|unable to find|xref/i.test(stderr)) {
 		return 'This file is not a PDF, or it is too damaged to open.';
@@ -889,6 +904,32 @@ export function friendlyWarnings(stderr: string): string[] {
 	}
 	if (notes.size) notes.add('Check that the pages look right.');
 	return [...notes];
+}
+
+/**
+ * Problems in `qpdf --check` output, reduced to what went wrong (object numbers, offsets and
+ * file names removed) so the same damage reads the same in a source and in its export.
+ */
+export function checkProblems(output: string): { warnings: string[]; fatal: string[] } {
+	const warnings: string[] = [];
+	const fatal: string[] = [];
+	const what = (s: string) => {
+		const i = s.lastIndexOf('): ');
+		const msg = i >= 0 ? s.slice(i + 3) : s.replace(/^\/\S*:\s*/, '');
+		return msg.replace(/\d+/g, '#').trim();
+	};
+	for (const raw of output.split('\n')) {
+		const line = raw.trim();
+		if (!line || /operation succeeded with warnings/i.test(line)) continue;
+		const w = /^WARNING:\s*(.*)$/.exec(line);
+		if (w) {
+			warnings.push(what(w[1]));
+			continue;
+		}
+		const f = /^(?:this\.program|qpdf):\s*(.*)$/.exec(line);
+		if (f) fatal.push(what(f[1]));
+	}
+	return { warnings, fatal };
 }
 
 function firstLines(s: string) {

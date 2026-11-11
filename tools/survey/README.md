@@ -32,7 +32,7 @@ Options (pass after `--`, e.g. `npm run survey:run -- --workers 2`):
 | profile | `--input PATH` (repeatable: a folder, or a TSV of sha256, path, size, source) | `pile/files.tsv` if present, else `pile/raw`, plus `tests/corpus/files` |
 | profile | `--no-corpus`, `--limit N`, `--workers 3`, `--mem-mb 1500`, `--timeout 90` (s) | |
 | sample | `--size 600`, `--k 2`, `--max-mb 100`, `--seed 1`, `--no-pairs`, `--profiles FILE` | |
-| run | `--workers 3`, `--mem-mb 1800`, `--timeout 180` (s, per scenario), `--scenarios a,b`, `--limit N`, `--only SHAPREFIX`, `--sample FILE`, `--profiles FILE` | |
+| run | `--workers 3`, `--mem-mb 1800`, `--timeout 180` (s, per scenario), `--scenarios a,b`, `--limit N`, `--only SHAPREFIX`, `--files LIST` (a file with one sha256 prefix or path per line), `--sample FILE`, `--profiles FILE` | |
 | report | `--label TEXT`, `--profiles FILE` | |
 
 Files modified in the last two minutes are skipped by folder discovery (still downloading).

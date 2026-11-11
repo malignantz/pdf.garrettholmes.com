@@ -12,6 +12,8 @@ import { shortError, tool } from './lib/common';
 import { engine, loadPdfjs } from './lib/engine';
 import { serveJobs } from './lib/pool';
 import {
+	INK_LUMA,
+	MIN_DIFF_PIXELS,
 	LOSSY_MEAN_SUSPECT,
 	SUSPECT_FRACTION,
 	WRONG_FRACTION,
@@ -220,32 +222,46 @@ function firstLine(s: string) {
 	return (s.split('\n').find((l) => l.trim()) ?? 'failed').slice(0, 200);
 }
 
-/** Renders input page `i` (the original bytes, else the normalized ones) and output page `j` at the same scale. */
-function renderPair(c: Ctx, out: Uint8Array, i: number, j: number, password?: string): { before: Raster; after: Raster } {
+/**
+ * Renders input page `i` from the original bytes and from the engine's normalized copy
+ * (`norm`; null when it renders the same as the original) and output page `j`, at one scale.
+ * When MuPDF cannot render the original, `before` is the normalized copy.
+ */
+function renderPair(c: Ctx, out: Uint8Array, i: number, j: number, password?: string): { before: Raster; after: Raster; norm: Raster | null } {
 	const size = c.src.pages[i];
 	const scale = renderScale(size.width, size.height);
+	const render = (bytes: Uint8Array) => {
+		const d = openDoc(mupdf, bytes);
+		try {
+			return renderPage(mupdf, d, i, scale);
+		} finally {
+			d.destroy();
+		}
+	};
+	const norm = render(c.src.bytes);
 	let before: Raster;
 	try {
-		const d = openDoc(mupdf, c.bytes);
-		try {
-			before = renderPage(mupdf, d, i, scale);
-		} finally {
-			d.destroy();
-		}
+		before = render(c.bytes);
 	} catch {
-		const d = openDoc(mupdf, c.src.bytes);
-		try {
-			before = renderPage(mupdf, d, i, scale);
-		} finally {
-			d.destroy();
-		}
+		before = norm;
 	}
 	const d2 = openDoc(mupdf, out, password);
 	try {
-		return { before, after: renderPage(mupdf, d2, j, scale) };
+		const same = before === norm || (() => {
+			const d = compare(before, norm);
+			return d.sameSize && d.fraction <= SUSPECT_FRACTION;
+		})();
+		return { before, after: renderPage(mupdf, d2, j, scale), norm: same ? null : norm };
 	} finally {
 		d2.destroy();
 	}
+}
+
+/** Pixels darker than the ink threshold. */
+function inkPixels(r: Raster): number {
+	let n = 0;
+	for (let k = 0; k < r.px.length; k += 3) if (0.299 * r.px[k] + 0.587 * r.px[k + 1] + 0.114 * r.px[k + 2] < INK_LUMA) n++;
+	return n;
 }
 
 function saveEvidence(c: Ctx, scenario: string, label: string, pair: { before: Raster; after: Raster }, diff: Diff | null, pdf?: string): string[] {
@@ -293,8 +309,14 @@ function pixelCheck(
 		return { problems: [{ level: 'suspect', text: `could not render page ${i + 1} for comparison: ${shortError(e, 120)}` }], evidence: [] };
 	}
 	const inside = [...(opts.mustChange ?? []), ...(opts.mustBeBlack ?? [])];
-	const d = compare(pair.before, pair.after, opts.allowed ?? [], inside);
 	const where = `page ${i + 1}→${j + 1}`;
+	if (pair.norm && inkPixels(pair.before) < MIN_DIFF_PIXELS) {
+		// MuPDF draws the original blank but the engine's opened copy is not (e.g. qpdf decrypts a
+		// file MuPDF cannot): there is no independent "before"; compare with the opened copy.
+		problems.push({ level: 'suspect', text: `${where}: MuPDF renders the original blank; compared with the engine's opened copy` });
+		pair.before = pair.norm;
+	}
+	const d = compare(pair.before, pair.after, opts.allowed ?? [], inside);
 	if (!d.sameSize) {
 		problems.push({ level: 'wrong', text: `${where}: rendered size ${pair.before.w}×${pair.before.h} became ${pair.after.w}×${pair.after.h}` });
 	} else if (opts.lossy) {
@@ -352,19 +374,35 @@ async function arrangeScenario(c: Ctx): Promise<Partial2> {
 	pages.push(ref(good, 0), ref(good, Math.min(1, good.pages.length - 1)));
 	const res = await exportPlan(c, { pages, options: { ...baseOptions, compress: true } }, [good]);
 	const { problems, file } = await reopenChecks(c, res.bytes, pages.length, 'arrange');
-	// Independent page sizes (MuPDF) against what the plan asked for.
+	// Independent page sizes: MuPDF's size of each output page against MuPDF's size of the
+	// source page it shows (rotated as planned). The plan's sizes come from PDF.js; on pages
+	// with degenerate boxes the two readers disagree about the original already.
 	try {
 		const doc = openDoc(mupdf, res.bytes);
+		const srcDoc = (() => {
+			try {
+				const d = openDoc(mupdf, c.bytes);
+				if (d.countPages() === c.src.pages.length) return d;
+				d.destroy();
+			} catch {
+				// MuPDF cannot read the original: use the engine's opened copy.
+			}
+			return openDoc(mupdf, c.src.bytes);
+		})();
+		const goodDoc = openDoc(mupdf, good.bytes);
 		const bad: string[] = [];
 		pages.forEach((p, k) => {
 			if (k >= doc.countPages()) return;
-			const s = (p.sourceId === good.id ? good : c.src).pages[p.pageIndex];
+			const sb = (p.sourceId === good.id ? goodDoc : srcDoc).loadPage(p.pageIndex).getBounds();
+			const s = { width: sb[2] - sb[0], height: sb[3] - sb[1] };
 			const [w, h] = p.rotation % 180 ? [s.height, s.width] : [s.width, s.height];
 			const b = doc.loadPage(k).getBounds();
 			if (Math.abs(b[2] - b[0] - w) > 1 || Math.abs(b[3] - b[1] - h) > 1) bad.push(`page ${k + 1}: ${(b[2] - b[0]).toFixed(1)}×${(b[3] - b[1]).toFixed(1)}, planned ${w.toFixed(1)}×${h.toFixed(1)}`);
 		});
 		doc.destroy();
-		if (bad.length) problems.push({ level: 'wrong', text: `MuPDF page sizes differ from the plan: ${bad.slice(0, 3).join('; ')}` });
+		srcDoc.destroy();
+		goodDoc.destroy();
+		if (bad.length) problems.push({ level: 'wrong', text: `MuPDF page sizes differ from the source pages: ${bad.slice(0, 3).join('; ')}` });
 	} catch (e) {
 		problems.push({ level: 'suspect', text: `MuPDF size check failed: ${shortError(e, 120)}` });
 	}
@@ -531,13 +569,47 @@ async function redactScenario(c: Ctx): Promise<Partial2> {
 	return judge([...problems, ...r.problems], r.evidence, { outcome: 'verified', message: note, warnings: res.warnings });
 }
 
+/** Field names or labels that ask for a number (dates, amounts, codes). */
+const NUMERIC = /date|year|\byr\b|month|\bmo\b|day|\bdd\b|\bmm\b|yyyy|zip|postal|phone|tel|fax|ssn|social security|\bno\b|\bno\.|number|num\b|#|amount|\$|total|qty|quantity|count|age\b|percent|%|code|digit|routing|account|ein|tin\b/i;
+
+/**
+ * An answer a person could type into this text field: digits for number-like fields, and no
+ * longer than the box shows at the form's usual 10-12 pt (or its MaxLen), down to 2-3
+ * characters for small boxes. (One fixed string for every field made most refusals mean
+ * "the survey typed too much".)
+ */
+function textAnswer(c: Ctx, f: { name: string; label?: string; maxLength?: number; multiline?: boolean; widgets: { pageIndex: number; box: StampBox }[] }): string {
+	const numeric = NUMERIC.test(`${f.name} ${f.label ?? ''}`);
+	const full = numeric ? '4242424242' : FORM_TEXT;
+	// Narrowest visible widget, in points.
+	let width = Infinity;
+	let height = Infinity;
+	for (const w of f.widgets) {
+		const page = c.src.pages[w.pageIndex];
+		if (!page) continue;
+		width = Math.min(width, w.box.w * page.width);
+		height = Math.min(height, w.box.h * page.height);
+	}
+	let fit = full.length;
+	if (Number.isFinite(width)) {
+		const size = f.multiline ? 10 : Math.min(12, Math.max(6, height * 0.7));
+		const lines = f.multiline ? Math.max(1, Math.floor((height - 2) / (size * 1.2))) : 1;
+		fit = Math.floor((width - 4) / (size * 0.6)) * lines;
+	}
+	if (f.maxLength) fit = Math.min(fit, f.maxLength);
+	fit = Math.max(1, Math.min(fit, full.length));
+	if (fit >= full.length) return full;
+	if (numeric) return full.slice(0, fit);
+	return fit >= 3 ? 'S42'.slice(0, fit) : 'S4'.slice(0, fit);
+}
+
 async function formsScenario(c: Ctx, flatten: boolean): Promise<Partial2> {
 	if (!c.src.hasForm) return { outcome: 'skipped', message: 'No fillable form.' };
 	const fields = await c.eng.formFields(c.src);
 	const values: Record<string, FormValue> = {};
 	for (const f of fields) {
 		if (f.readOnly) continue;
-		if (f.kind === 'text') values[f.name] = f.maxLength ? FORM_TEXT.slice(0, f.maxLength) : FORM_TEXT;
+		if (f.kind === 'text') values[f.name] = textAnswer(c, f);
 		else if (f.kind === 'checkbox') values[f.name] = true;
 		else if (f.kind === 'radio') {
 			const opt = f.widgets.find((w) => w.option)?.option;
@@ -555,7 +627,11 @@ async function formsScenario(c: Ctx, flatten: boolean): Promise<Partial2> {
 		if (!flatten) {
 			// PDF.js 6 returns a Map (older versions a plain object).
 			const raw = (await doc.getFieldObjects()) as unknown;
-			const objs = (raw instanceof Map ? Object.fromEntries(raw) : (raw ?? {})) as Record<string, { value?: unknown }[]>;
+			const byName = (raw instanceof Map ? Object.fromEntries(raw) : (raw ?? {})) as Record<string, { value?: unknown }[]>;
+			// The assemble step copies a field with widgets on several pages once per page and
+			// renames the copies ("name+1"); every copy must hold the answer.
+			const objs: Record<string, { value?: unknown }[]> = {};
+			for (const [k, v] of Object.entries(byName)) (objs[k.replace(/\+\d+(?=\.|$)/g, '')] ??= []).push(...v);
 			let missing = 0;
 			const mismatches: string[] = [];
 			for (const [name, want] of Object.entries(values)) {
@@ -564,13 +640,15 @@ async function formsScenario(c: Ctx, flatten: boolean): Promise<Partial2> {
 					missing++;
 					continue;
 				}
-				const vals = got.map((g) => g.value);
+				// Parent (container) fields are listed too, with a null value.
+				const all = got.map((g) => g.value);
+				const vals = all.some((v) => v !== null && v !== undefined) ? all.filter((v) => v !== null && v !== undefined) : all;
 				const ok =
 					typeof want === 'string'
-						? vals.some((v) => v === want || (Array.isArray(v) && v.includes(want)))
+						? vals.every((v) => v === want || (Array.isArray(v) && v.includes(want)))
 						: want === true
-							? vals.some((v) => typeof v === 'string' && v !== 'Off' && v !== '')
-							: Array.isArray(want) && vals.some((v) => v === want[0] || (Array.isArray(v) && v.includes(want[0])));
+							? vals.every((v) => typeof v === 'string' && v !== 'Off' && v !== '')
+							: Array.isArray(want) && vals.every((v) => v === want[0] || (Array.isArray(v) && v.includes(want[0])));
 				if (!ok) mismatches.push(`${name}: wanted ${JSON.stringify(want)}, PDF.js reads ${JSON.stringify(vals.slice(0, 3)).slice(0, 60)}`);
 			}
 			if (mismatches.length) problems.push({ level: 'wrong', text: `${mismatches.length} field(s) read back differently: ${mismatches.slice(0, 3).join('; ')}` });
@@ -582,10 +660,12 @@ async function formsScenario(c: Ctx, flatten: boolean): Promise<Partial2> {
 				widgets += annots.filter((a: { subtype?: string }) => a.subtype === 'Widget').length;
 			}
 			if (widgets) problems.push({ level: 'wrong', text: `${widgets} form widget(s) left after flattening` });
-			if (Object.values(values).some((v) => v === FORM_TEXT)) {
+			const longText = fields.find((f) => f.kind === 'text' && String(values[f.name] ?? '').length >= 6);
+			const long = longText ? (values[longText.name] as string) : undefined;
+			if (long) {
 				const t = await tool('pdftotext', ['-enc', 'UTF-8', file, '-'], 60_000);
-				if (t.code === 0 && !squash(t.stdout).includes(squash(FORM_TEXT))) {
-					problems.push({ level: 'wrong', text: `poppler does not find the flattened answer "${FORM_TEXT}" anywhere` });
+				if (t.code === 0 && !squash(t.stdout).includes(squash(long))) {
+					problems.push({ level: 'wrong', text: `poppler does not find the flattened answer "${long}" anywhere` });
 				}
 			}
 		}

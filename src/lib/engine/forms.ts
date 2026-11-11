@@ -25,12 +25,14 @@
  * - not listed: signature fields, push buttons, password, file-select and rich-text
  *   fields, fields whose widgets are all hidden, NoView, zero-size or off the page, fields
  *   whose widgets disagree about type or field object, buttons without exactly one
- *   on-state appearance per widget. XFA forms list nothing (hasForm false, intake note).
+ *   on-state appearance stream per widget. XFA forms list nothing (hasForm false, intake note).
  *
- * qpdf `--empty --pages` (the assemble step) copies form fields page by page: a field with
- * widgets on several pages becomes one field per page ("shared", "shared+1"), a repeated
- * page or a second copy of the same file gets renamed copies, and /CO, /XFA and document
- * scripts are not carried over. So assembled widgets are mapped back to source fields by
+ * The assemble step (assemble.ts) edits a single source with a form in place when each
+ * page is used at most once: the field tree and names stay as they are (/XFA and document
+ * scripts are dropped). Otherwise qpdf `--empty --pages` copies form fields page by page: a
+ * field with widgets on several pages becomes one field per page ("shared", "shared+1"),
+ * a repeated page or a second copy of the same file gets renamed copies, and /CO, /XFA and
+ * document scripts are not carried over. Either way assembled widgets are mapped back to source fields by
  * position, never by name: output page i shows source page ctx.pages[i], and its widgets
  * must match that page's widgets one for one, in order, by field type and /Rect, or the
  * export stops (EngineError 'internal'). Every copy of a widget of an answered source
@@ -67,6 +69,7 @@ export interface FormsContext {
 	redactions?: StampBox[][];
 }
 
+export const FORM_UNREADABLE_NOTE = 'This file’s form fields are malformed, so they cannot be filled here.';
 export const XFA_NOTE = 'This is an XFA form. Its fields cannot be filled here.';
 export const CALC_WARNING = 'This form calculates some fields itself. Totals were not recalculated; check them.';
 export const FORMAT_WARNING =
@@ -159,6 +162,12 @@ function apStates(o: MObj): string[] | null {
 	return keys;
 }
 
+/** The widget's normal appearance for `state` is a stream (not missing, null or a name). */
+function stateDrawn(o: MObj, state: string): boolean {
+	const s = get(o, 'AP', 'N', state);
+	return s !== null && s.isStream();
+}
+
 /** The normal appearance stream a widget currently shows, or null. */
 function normalStream(o: MObj): MObj | null {
 	const n = get(o, 'AP', 'N');
@@ -191,6 +200,29 @@ function sameBox(a: Box, b: Box): boolean {
 		Math.abs(a.x1 - b.x1) <= RECT_TOLERANCE &&
 		Math.abs(a.y1 - b.y1) <= RECT_TOLERANCE
 	);
+}
+
+type MPage = ReturnType<MDoc['loadPage']>;
+const loadedPages = new WeakMap<MDoc, MPage[]>();
+
+/**
+ * Page i of a MuPDF document, loaded once and kept for the document's lifetime. A widget
+ * stays usable only while its page object is alive: MuPDF.js frees a page whose JS object
+ * was garbage-collected, and the page's widgets then fail ("annotation not bound to any
+ * page"), depending on when the collector runs.
+ */
+function pageOf(doc: MDoc, i: number): MPage {
+	let pages = loadedPages.get(doc);
+	if (!pages) loadedPages.set(doc, (pages = []));
+	return (pages[i] ??= doc.loadPage(i));
+}
+
+/** Frees a document and the pages pageOf kept for it (pages first). */
+function closeDoc(doc: MDoc | null) {
+	if (!doc) return;
+	for (const p of loadedPages.get(doc) ?? []) destroy(p);
+	loadedPages.delete(doc);
+	destroy(doc);
 }
 
 function destroy(x: { destroy?: () => void } | null | undefined) {
@@ -309,7 +341,7 @@ function analyzeDoc(doc: MDoc): FormAnalysis {
 	const groups = new Map<string, RawWidget[]>();
 	const n = doc.countPages();
 	for (let i = 0; i < n; i++) {
-		const page = doc.loadPage(i);
+		const page = pageOf(doc, i);
 		const pobj = page.getObject();
 		const box = visibleBox(numbers(pobj.getInheritable('MediaBox')), numbers(pobj.getInheritable('CropBox')));
 		const rot = pobj.getInheritable('Rotate');
@@ -407,14 +439,15 @@ function fieldOf(name: string, ws: RawWidget[], co: Set<number>): FieldRec | nul
 		const on = new Set<string>();
 		for (const x of ws) {
 			const states = apStates(x.o)?.filter((s) => s !== 'Off') ?? [];
-			if (states.length !== 1) return null;
+			if (states.length !== 1 || !stateDrawn(x.o, states[0])) return null;
 			on.add(states[0]);
 			x.rec.state = states[0];
 		}
 		if (on.size !== 1) return null;
 		const onState = [...on][0];
-		const v = first.w.getValue();
-		const field = base(v !== '' && v !== 'Off');
+		// Ticked when the value is the on-state; any other value (e.g. /0 beside an on-state
+		// /1) shows the box clear.
+		const field = base(first.w.getValue() === onState);
 		field.widgets = widgets();
 		return { field, onState, comb: false, formatted };
 	}
@@ -422,7 +455,7 @@ function fieldOf(name: string, ws: RawWidget[], co: Set<number>): FieldRec | nul
 	if (kind === 'radio') {
 		for (const x of ws) {
 			const states = apStates(x.o)?.filter((s) => s !== 'Off') ?? [];
-			if (states.length !== 1) return null;
+			if (states.length !== 1 || !stateDrawn(x.o, states[0])) return null;
 			x.rec.state = states[0];
 		}
 		// Export values by the rules of PDF.js (ButtonWidgetAnnotation._getExportValue), so the
@@ -495,7 +528,7 @@ function analyzeSource(deps: EngineDeps, bytes: Uint8Array): Promise<FormAnalysi
 			try {
 				return analyzeDoc(doc);
 			} finally {
-				destroy(doc);
+				closeDoc(doc);
 			}
 		})();
 		p.catch(() => analyses.delete(bytes));
@@ -537,7 +570,15 @@ async function mayHaveForm(deps: EngineDeps, bytes: Uint8Array): Promise<boolean
  */
 export async function detectForm(deps: EngineDeps, bytes: Uint8Array): Promise<{ hasForm: boolean; notes: string[] }> {
 	if (!(await mayHaveForm(deps, bytes))) return { hasForm: false, notes: [] };
-	const an = await analyzeSource(deps, bytes);
+	let an: FormAnalysis;
+	try {
+		an = await analyzeSource(deps, bytes);
+	} catch (e) {
+		if (e instanceof EngineError) throw e;
+		// MuPDF cannot read the form's pages (malformed field or page objects). The pages
+		// themselves may still open and export; the form is just not offered for filling.
+		return { hasForm: false, notes: [FORM_UNREADABLE_NOTE] };
+	}
 	if (an.xfa) return { hasForm: false, notes: [XFA_NOTE] };
 	return { hasForm: an.fields.some((f) => !f.field.readOnly), notes: [] };
 }
@@ -672,7 +713,7 @@ function mapTargets(doc: MDoc, ctx: FormsContext, answers: Map<Source, SourceAns
 		const src = job.an.pages[p.pageIndex] ?? [];
 		const wanted = (r: WidgetRec) => (r.field !== null && job.answers.get(r.field)?.write === true ? job.answers.get(r.field)! : null);
 		if (!src.some(wanted)) return;
-		const widgets = doc.loadPage(i).getWidgets();
+		const widgets = pageOf(doc, i).getWidgets();
 		if (!sameWidgets(widgets, src)) {
 			throw new EngineError(
 				'internal',
@@ -707,7 +748,7 @@ function byTerminal(doc: MDoc, targets: Target[]): Target[][] {
 	}
 	const onPages = new Set<number>();
 	for (let i = 0; i < doc.countPages(); i++) {
-		for (const w of doc.loadPage(i).getWidgets()) onPages.add(objId(w.getObject()));
+		for (const w of pageOf(doc, i).getWidgets()) onPages.add(objId(w.getObject()));
 	}
 	for (const list of groups.values()) {
 		const ours = new Set(list.map((t) => objId(t.widget.getObject())));
@@ -783,10 +824,51 @@ function appearanceProblem(w: MWidget, want: string, comb: number | null): 'does
 			const hi = Math.floor((Math.max(...vs) - start - 0.5) / cell);
 			return lo === hi ? lo : -1;
 		});
+		// Each drawn character sits in the cell of its position in the answer (spaces take a
+		// cell but draw nothing).
+		const pos = [...want].flatMap((ch, i) => (ch.trim() !== '' ? [i] : []));
 		const dir = cells.length > 1 && cells[1] < cells[0] ? -1 : 1;
-		if (cells.some((c, i) => c < 0 || c >= comb || (i > 0 && c !== cells[i - 1] + dir))) return 'comb';
+		if (pos.length !== cells.length) return 'comb';
+		if (cells.some((c, i) => c < 0 || c >= comb || c - cells[0] !== dir * (pos[i] - pos[0]))) return 'comb';
 	}
 	return null;
+}
+
+const DA_SIZE = /(\/\S+\s+)(-?[\d.]+)(\s+Tf)/;
+const MIN_AUTO_SIZE = 4;
+
+/**
+ * A text field with an automatic font size (/DA "... 0 Tf") is drawn at whatever size fits,
+ * as Acrobat does. MuPDF draws multiline auto-size fields at a fixed 12 pt, so an answer that
+ * does not fit is redrawn at smaller sizes (half a point at a time, down to 4 pt) until it
+ * does. The field keeps its automatic size for later edits: only the appearance is drawn at
+ * the chosen size. Fields with a fixed size are left as drawn.
+ */
+function shrinkAutoSize(doc: MDoc, w: MWidget, want: string, comb: number | null): 'does-not-fit' | 'comb' | null {
+	const o = w.getObject();
+	const own = get(o, 'DA');
+	const da = text(own) ?? text(o.getInheritable('DA')) ?? text(get(doc.getTrailer(), 'Root', 'AcroForm', 'DA'));
+	const m = da !== null ? DA_SIZE.exec(da) : null;
+	if (!da || !m || Number(m[2]) !== 0) return 'does-not-fit';
+	const [x0, y0, x1, y1] = w.getRect();
+	const start = Math.min(12, Math.floor(Math.min(Math.abs(x1 - x0), Math.abs(y1 - y0)) * 2) / 2);
+	let result: 'does-not-fit' | 'comb' | null = 'does-not-fit';
+	try {
+		for (let size = start; size >= MIN_AUTO_SIZE; size -= 0.5) {
+			o.put('DA', doc.newString(da.replace(DA_SIZE, `$1${size}$3`)));
+			// MuPDF redraws only a changed field: set the value again to mark it changed.
+			w.setTextValue(`${want} `);
+			w.setTextValue(want);
+			w.update();
+			result = appearanceProblem(w, want, comb);
+			if (result === null) break;
+		}
+	} finally {
+		// Keep the automatic size in the field itself.
+		if (own) o.put('DA', own);
+		else o.delete('DA');
+	}
+	return result;
 }
 
 /** The appearance uses only standard, non-embedded Type1 fonts in WinAnsiEncoding. */
@@ -871,6 +953,8 @@ export async function applyForms(
 			for (const t of list) updated.add(objId(t.widget.getObject()));
 		}
 
+		syncOffPageCopies(doc, groups);
+
 		// Every drawn text appearance must show the whole answer.
 		for (const list of groups) {
 			const { rec } = list[0].answer;
@@ -881,7 +965,9 @@ export async function applyForms(
 				if (!appearanceFontsOk(t.widget.getObject())) {
 					throw new EngineError('unsupported', `${fieldTitle(f)} uses a font this app cannot fill in.`);
 				}
-				const problem = appearanceProblem(t.widget, shownText(t.answer), rec.comb ? (f.maxLength ?? null) : null);
+				const comb = rec.comb ? (f.maxLength ?? null) : null;
+				let problem = appearanceProblem(t.widget, shownText(t.answer), comb);
+				if (problem === 'does-not-fit' && f.kind === 'text') problem = shrinkAutoSize(doc, t.widget, shownText(t.answer), comb);
 				if (problem === 'comb') throw new EngineError('unsupported', `${fieldTitle(f)} could not be laid out in its boxes.`);
 				if (problem) throw new EngineError('unsupported', `The answer for ${fieldTitle(f)} does not fit in its box. Shorten it.`);
 			}
@@ -902,10 +988,104 @@ export async function applyForms(
 			if (wrote.length && job.an.calculates) warnings.push(CALC_WARNING);
 			if (wrote.some((a) => a.rec.formatted)) warnings.push(FORMAT_WARNING);
 		}
-		return doc.saveToBuffer('garbage=compact').asUint8Array().slice();
+		// Not garbage=compact: renumbering copies objects that MuPDF.js still holds from JS and
+		// writes copied streams without their data (docs/research/2026-11-10-mupdf-api.md).
+		// Unreferenced objects are still dropped; qpdf renumbers at finalize.
+		return doc.saveToBuffer('garbage=yes').asUint8Array().slice();
+	} catch (e) {
+		// MuPDF rejects malformed form or page objects with a plain Error (a WebAssembly trap is
+		// a RuntimeError and is left to the engine's guard).
+		if (e instanceof Error && !(e instanceof EngineError) && e.name === 'Error') {
+			const err = new EngineError('unsupported', 'This file’s form fields are malformed, so they cannot be filled in or flattened. Nothing was saved.');
+			(err as { cause?: unknown }).cause = e;
+			throw err;
+		}
+		throw e;
 	} finally {
-		destroy(doc);
+		closeDoc(doc);
 	}
+}
+
+/** Fully qualified field name of a field node, with qpdf's "+N" copy suffixes removed. */
+function sourceName(o: MObj): string {
+	const parts: string[] = [];
+	let t: MObj | null = o;
+	for (let depth = 0; t && depth < 32; depth++) {
+		const name = text(get(t, 'T'));
+		if (name !== null) parts.unshift(name.replace(/\+\d+$/, ''));
+		t = get(t, 'Parent');
+	}
+	return parts.join('.');
+}
+
+/**
+ * When a field has widgets on several pages, the assemble step gives each page its own
+ * copy of the field ("name", "name+1"), and every copy keeps all the field's widgets: the
+ * ones of other pages stay in the field tree, on no page. They are invisible, but a form
+ * reader that looks fields up by name finds them, still holding the old answer. Give those
+ * off-page copies of an answered field the same answer.
+ */
+function syncOffPageCopies(doc: MDoc, groups: Target[][]) {
+	const af = get(doc.getTrailer(), 'Root', 'AcroForm');
+	const fields = get(af, 'Fields');
+	if (!fields || !fields.isArray() || groups.length === 0) return;
+	const onPages = new Set<number>();
+	for (let i = 0; i < doc.countPages(); i++) {
+		for (const a of arrayItems(get(pageOf(doc, i).getObject(), 'Annots'))) onPages.add(objId(a));
+	}
+	// Answers by source field name; a name answered differently by two sources is left alone.
+	const byName = new Map<string, Target[] | null>();
+	const written = new Set<number>();
+	for (const list of groups) {
+		const term = terminalOf(list[0].widget.getObject());
+		written.add(objId(term));
+		const name = sourceName(term);
+		const prev = byName.get(name);
+		byName.set(name, prev === undefined || (prev !== null && sameValue(prev[0].answer.value, list[0].answer.value)) ? list : null);
+	}
+	const isWidget = (o: MObj) => text(get(o, 'Subtype')) === 'Widget';
+	const visit = (node: MObj, depth: number) => {
+		if (depth > 32 || !node.isDictionary()) return;
+		const kids = arrayItems(get(node, 'Kids'));
+		const fieldKids = kids.filter((k) => get(k, 'T') !== null);
+		if (fieldKids.length) {
+			for (const k of fieldKids) visit(k, depth + 1);
+			return;
+		}
+		// A terminal field: its widgets are its kids, or the node itself.
+		const widgets = kids.length ? kids : isWidget(node) ? [node] : [];
+		if (written.has(objId(node)) || widgets.length === 0 || widgets.some((w) => onPages.has(objId(w)))) return;
+		const list = byName.get(sourceName(node));
+		if (!list) return;
+		const { rec, value } = list[0].answer;
+		const f = rec.field;
+		if (f.kind === 'text') {
+			node.put('V', doc.newString(value as string));
+		} else if (f.kind === 'choice') {
+			const v = value as string[];
+			if (v.length) node.put('V', doc.newString(v[0]));
+			else node.delete('V');
+			node.delete('I');
+		} else if (f.kind === 'checkbox') {
+			const on = value === true;
+			let state = 'Off';
+			for (const w of widgets) {
+				const s = apStates(w)?.filter((x) => x !== 'Off') ?? [];
+				const ws = on && s.length === 1 ? s[0] : 'Off';
+				if (ws !== 'Off') state = ws;
+				w.put('AS', doc.newName(ws));
+			}
+			node.put('V', doc.newName(state));
+		} else {
+			const chosen = (value !== '' && rec.stateOf?.get(value as string)) || 'Off';
+			for (const w of widgets) {
+				const s = apStates(w)?.filter((x) => x !== 'Off') ?? [];
+				w.put('AS', doc.newName(s.length === 1 && s[0] === chosen ? chosen : 'Off'));
+			}
+			node.put('V', doc.newName(chosen));
+		}
+	};
+	for (const f of arrayItems(fields)) visit(f, 0);
 }
 
 /**
@@ -914,7 +1094,7 @@ export async function applyForms(
  */
 function drawRequested(doc: MDoc, done: Set<number>) {
 	for (let i = 0; i < doc.countPages(); i++) {
-		for (const w of doc.loadPage(i).getWidgets()) {
+		for (const w of pageOf(doc, i).getWidgets()) {
 			if (done.has(objId(w.getObject()))) continue;
 			const type = w.getFieldType();
 			const value = w.getValue();
@@ -935,7 +1115,7 @@ function drawRequested(doc: MDoc, done: Set<number>) {
 /** Bake every shown widget into its page; drop the others and the form itself. */
 function flattenAll(doc: MDoc) {
 	for (let i = 0; i < doc.countPages(); i++) {
-		const page = doc.loadPage(i);
+		const page = pageOf(doc, i);
 		for (const w of page.getWidgets()) {
 			// Hidden widgets and widgets without a usable appearance show nothing. Left in, MuPDF
 			// would draw its own for the first and scale an empty /BBox to infinity for the second.
@@ -947,7 +1127,7 @@ function flattenAll(doc: MDoc) {
 	if (get(root, 'AcroForm')) root!.delete('AcroForm');
 	// (MuPDF's loaded pages still list the baked widgets; the page objects are what is saved.)
 	for (let i = 0; i < doc.countPages(); i++) {
-		const annots = arrayItems(get(doc.loadPage(i).getObject(), 'Annots'));
+		const annots = arrayItems(get(pageOf(doc, i).getObject(), 'Annots'));
 		if (annots.some((a) => text(get(a, 'Subtype')) === 'Widget')) {
 			throw new EngineError('internal', 'Some form fields could not be turned into page content.');
 		}
@@ -968,7 +1148,7 @@ interface PdfjsAnnotation {
 function openFinal(m: M, bytes: Uint8Array, password?: string): MDoc {
 	const doc = new m.PDFDocument(bytes);
 	if (doc.needsPassword() && (password === undefined || doc.authenticatePassword(password) === 0)) {
-		destroy(doc);
+		closeDoc(doc);
 		throw new EngineError('internal', 'MuPDF could not open the exported file.');
 	}
 	return doc;
@@ -1059,7 +1239,7 @@ export async function verifyForms(
 		if (ctx.flatten) {
 			if (get(doc.getTrailer(), 'Root', 'AcroForm')) problems.push('the file still has a form');
 			for (let i = 0; i < doc.countPages(); i++) {
-				if (doc.loadPage(i).getWidgets().length) problems.push(`page ${i + 1} still has form fields (MuPDF)`);
+				if (pageOf(doc, i).getWidgets().length) problems.push(`page ${i + 1} still has form fields (MuPDF)`);
 			}
 			for (let i = 0; i < pdf.numPages; i++) {
 				const page = await pdf.getPage(i + 1);
@@ -1069,7 +1249,7 @@ export async function verifyForms(
 				const boxes = ctx.redactions?.[i] ?? [];
 				let frame: { box: Box; rotation: Rotation } | null = null;
 				if (boxes.length) {
-					const pobj = doc.loadPage(i).getObject();
+					const pobj = pageOf(doc, i).getObject();
 					const rot = pobj.getInheritable('Rotate');
 					frame = {
 						box: visibleBox(numbers(pobj.getInheritable('MediaBox')), numbers(pobj.getInheritable('CropBox'))),
@@ -1102,7 +1282,7 @@ export async function verifyForms(
 			for (const i of pages) {
 				const p = ctx.pages[i];
 				const src = answers.get(p.source)!.an.pages[p.pageIndex];
-				const widgets = doc.loadPage(i).getWidgets();
+				const widgets = pageOf(doc, i).getWidgets();
 				if (!sameWidgets(widgets, src)) {
 					problems.push(`page ${i + 1}: the form fields do not match the original page (MuPDF)`);
 					continue;
@@ -1123,7 +1303,7 @@ export async function verifyForms(
 	} catch (e) {
 		problems.push(`the file could not be read back (${e instanceof Error ? e.message : String(e)})`);
 	} finally {
-		destroy(doc);
+		closeDoc(doc);
 		await task?.destroy().catch(() => undefined);
 	}
 	if (problems.length) {
@@ -1167,7 +1347,9 @@ function checkWidget(m: M, w: MWidget, pj: PdfjsAnnotation | undefined, e: Expec
 	// Appearances are checked where this export drew them; an unchanged answer keeps the file's own.
 	if (!e.rec.visible || !e.answer.write) return;
 	if (!hasNormalStream(o)) {
-		problem(`${name} has no appearance`);
+		// A button's off state may have no appearance at all: it then shows nothing, as meant.
+		const off = (f.kind === 'checkbox' && v === false) || (f.kind === 'radio' && e.rec.option !== v);
+		if (!off) problem(`${name} has no appearance`);
 		return;
 	}
 	if (f.kind === 'text' || f.kind === 'choice') {
