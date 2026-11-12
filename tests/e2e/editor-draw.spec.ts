@@ -122,13 +122,15 @@ test.describe('drawn tools', () => {
 		await openEditor(page, 'file=multi.pdf&page=1');
 		await chooseTool(page, 'Highlight');
 		await expect(tool(page, 'Highlight')).toHaveAttribute('aria-pressed', 'true');
-		await expect(page.locator('.armed-hint').first()).toContainText('Drag over the text to highlight');
-		// Pen is the default shape; the bar offers Pen | Box and the colours.
+		// The page has text, so Text is the default shape; the bar offers Text | Pen | Box and the colours.
 		const bar = page.getByRole('toolbar', { name: 'Highlighter' });
 		await expect(bar).toBeVisible();
 		const shapes = bar.getByRole('radiogroup', { name: 'Highlight shape' });
-		await expect(shapes.getByRole('radio', { name: 'Pen' })).toHaveAttribute('aria-checked', 'true');
+		await expect(shapes.getByRole('radio')).toHaveText(['Text', 'Pen', 'Box']);
+		await expect(shapes.getByRole('radio', { name: 'Text' })).toHaveAttribute('aria-checked', 'true');
+		await highlightShape(page, 'Pen');
 		await expect(shapes.getByRole('radio', { name: 'Box' })).toHaveAttribute('aria-checked', 'false');
+		await expect(page.locator('.armed-hint').first()).toContainText('Drag over the text to highlight');
 		await expect(bar.getByRole('radiogroup', { name: 'Highlight colour' }).getByRole('radio')).toHaveCount(3);
 
 		// A wavy stroke: the preview follows the pointer, nothing is stored before release.
@@ -213,6 +215,7 @@ test.describe('drawn tools', () => {
 		await openEditor(page, 'file=multi.pdf&page=1');
 		const b = await pageBox(page);
 		await chooseTool(page, 'Highlight');
+		await highlightShape(page, 'Pen');
 		// About 2° off level, with a small wobble.
 		const dy = (Math.tan((2 * Math.PI) / 180) * 0.4 * b.width) / b.height;
 		await drawPath(page, info, [
@@ -286,21 +289,32 @@ test.describe('drawn tools', () => {
 		await page.getByRole('button', { name: 'Edit page 1' }).click();
 		await chooseTool(page, 'Highlight');
 		await expect(page.getByRole('radio', { name: 'Box' })).toHaveAttribute('aria-checked', 'true');
-		// …but a new visit starts with Pen.
+		// …but a new visit starts again with Text (the page has text).
 		await page.reload();
 		await openEditor(page, 'file=multi.pdf&page=1');
 		await chooseTool(page, 'Highlight');
-		await expect(page.getByRole('radio', { name: 'Pen' })).toHaveAttribute('aria-checked', 'true');
+		await expect(page.getByRole('radio', { name: 'Text' })).toHaveAttribute('aria-checked', 'true');
 	});
 
 	test('highlighter bar: keyboard reaches Pen | Box and the colours; arrows choose', async ({ page }, info) => {
 		test.skip(isPhone(info), 'keyboard');
 		await openEditor(page, 'file=multi.pdf&page=1');
 		await chooseTool(page, 'Highlight');
-		const pen = page.getByRole('radio', { name: 'Pen' });
-		await pen.focus();
+		// One Tab stop for the group: the checked mode (Text on a page with text).
+		const text = page.getByRole('radio', { name: 'Text' });
+		await expect(text).toHaveAttribute('tabindex', '0');
+		await expect(page.getByRole('radio', { name: 'Pen' })).toHaveAttribute('tabindex', '-1');
+		await text.focus();
+		await page.keyboard.press('ArrowRight');
+		await expect(page.getByRole('radio', { name: 'Pen' })).toBeFocused();
+		await expect(page.getByRole('radio', { name: 'Pen' })).toHaveAttribute('aria-checked', 'true');
 		await page.keyboard.press('ArrowRight');
 		await expect(page.getByRole('radio', { name: 'Box' })).toBeFocused();
+		await expect(page.getByRole('radio', { name: 'Box' })).toHaveAttribute('aria-checked', 'true');
+		// Round the group and back.
+		await page.keyboard.press('ArrowRight');
+		await expect(text).toHaveAttribute('aria-checked', 'true');
+		await page.keyboard.press('ArrowLeft');
 		await expect(page.getByRole('radio', { name: 'Box' })).toHaveAttribute('aria-checked', 'true');
 		// Arrow keys stayed in the bar: the page did not change.
 		await expect(page.getByText('1 of 6')).toBeVisible();
@@ -395,6 +409,7 @@ test.describe('drawn tools', () => {
 		const barColours = bar.getByRole('radiogroup', { name: 'Highlight colour' });
 		await expect(barColours.getByRole('radio', { name: 'Yellow' })).toHaveAttribute('aria-checked', 'true');
 		await barColours.getByRole('radio', { name: 'Green' }).click();
+		await highlightShape(page, 'Pen');
 		await drawPath(page, info, [
 			[0.2, 0.3],
 			[0.6, 0.3]
@@ -427,6 +442,7 @@ test.describe('drawn tools', () => {
 		await page.reload();
 		await openEditor(page, 'file=multi.pdf&page=1');
 		await chooseTool(page, 'Highlight');
+		await highlightShape(page, 'Pen');
 		await drawPath(page, info, [
 			[0.2, 0.3],
 			[0.6, 0.3]
@@ -438,6 +454,7 @@ test.describe('drawn tools', () => {
 	test('a pen stroke moves with its points, deletes, undoes; it has no resize handle', async ({ page }, info) => {
 		await openEditor(page, 'file=multi.pdf&page=1');
 		await chooseTool(page, 'Highlight');
+		await highlightShape(page, 'Pen');
 		await drawPath(page, info, [
 			[0.2, 0.3],
 			[0.35, 0.36],
@@ -582,6 +599,7 @@ test.describe('drawn tools', () => {
 			new MutationObserver((ms) => (w.__redraws += ms.length)).observe(c, { attributes: true });
 		});
 		await chooseTool(page, 'Highlight');
+		await highlightShape(page, 'Pen');
 		await dragOnPage(page, info, [0.2, 0.3], [0.6, 0.34]);
 		await dragOnPage(page, info, [0.2, 0.4], [0.6, 0.44]);
 		expect(await stamps(page)).toHaveLength(2);
@@ -609,6 +627,7 @@ test.describe('drawn tools', () => {
 		test.skip(!isPhone(info), 'touch emulation only on the phone project');
 		const sheet = await openEditor(page, 'file=multi.pdf&page=2');
 		await chooseTool(page, 'Highlight');
+		await highlightShape(page, 'Pen');
 		const { touch } = await touchSession(page);
 		const b = (await sheet.boundingBox())!;
 		const cx = b.x + b.width / 2;
@@ -805,6 +824,7 @@ test.describe('phone tool bar', () => {
 		test.skip(!isPhone(info), 'phone layout');
 		await openEditor(page, 'file=multi.pdf&page=1');
 		await chooseTool(page, 'Highlight');
+		await highlightShape(page, 'Pen');
 		await drawPath(page, info, [
 			[0.2, 0.3],
 			[0.6, 0.3]
@@ -870,6 +890,7 @@ test.describe('highlight export', () => {
 	test('draw a pen stroke, export: verified, colour along the stroke only', async ({ page }, info) => {
 		await openEditor(page, 'file=multi.pdf&page=1');
 		await chooseTool(page, 'Highlight');
+		await highlightShape(page, 'Pen');
 		await drawPath(page, info, [
 			[0.2, 0.5],
 			[0.4, 0.56],
@@ -908,6 +929,7 @@ test.describe('highlight export', () => {
 		await openEditor(page, 'file=multi.pdf&page=1');
 		const b = await pageBox(page);
 		await chooseTool(page, 'Highlight');
+		await highlightShape(page, 'Pen');
 		await drawPath(page, info, [
 			[0.2, 0.62],
 			[0.7, 0.62 + 6 / b.height]

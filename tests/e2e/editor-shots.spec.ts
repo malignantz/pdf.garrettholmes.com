@@ -182,6 +182,7 @@ for (const size of [
 			[0.01, 0.024],
 			[0.13, 0.025]
 		]);
+		await page.getByRole('radio', { name: 'Pen' }).click();
 		await path([
 			[0.2, 0.3],
 			[0.35, 0.36],
