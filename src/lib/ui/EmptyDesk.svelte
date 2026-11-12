@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
 	import Button from './Button.svelte';
 	import Icon from './Icon.svelte';
 	import type { IconName } from './icons';
@@ -11,9 +12,11 @@
 		onfiles: (files: File[]) => void;
 		/** MIME types and extensions the picker offers. */
 		accept?: string;
+		/** Shown above the headline (the "pick up where you left off" card). */
+		top?: Snippet;
 	}
 
-	let { onfiles, accept = 'application/pdf,.pdf,image/png,image/jpeg,image/webp,image/gif,image/heic,image/*' }: Props =
+	let { onfiles, accept = 'application/pdf,.pdf,image/png,image/jpeg,image/webp,image/gif,image/heic,image/*', top }: Props =
 		$props();
 
 	const features: { icon: IconName; title: string; line: string }[] = [
@@ -72,6 +75,7 @@
 
 <section class="desk" class:dragging aria-labelledby="empty-title">
 	<div class="stage">
+		{#if top}{@render top()}{/if}
 		<div class="sheets" aria-hidden="true">
 			<div class="sheet s1"></div>
 			<div class="sheet s2"></div>

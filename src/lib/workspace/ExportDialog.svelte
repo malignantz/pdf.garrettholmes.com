@@ -11,8 +11,8 @@
 	import Select from '../ui/Select.svelte';
 	import Toggle from '../ui/Toggle.svelte';
 	import OptionPicker from './OptionPicker.svelte';
+	import { exportForm } from './export-form.svelte';
 	import {
-		DEFAULT_FORM,
 		FIT_CHOICES,
 		NUMBER_POSITIONS,
 		NUMBER_SIZES,
@@ -30,8 +30,7 @@
 		plural,
 		redactionCount,
 		shrinkSummary,
-		targetBytesFor,
-		type ExportForm
+		targetBytesFor
 	} from './logic';
 
 	interface Props {
@@ -56,8 +55,9 @@
 
 	let phase = $state<Phase>({ kind: 'form' });
 	let filename = $state('');
-	// Options stay as set when the dialog is reopened; only the file name and password start fresh.
-	const f = $state<Omit<ExportForm, 'filename'>>({ ...DEFAULT_FORM });
+	// Options stay as set when the dialog is reopened (and are saved with the session);
+	// only the file name and password start fresh.
+	const f = exportForm;
 	let usePassword = $state(false);
 	let password = $state('');
 	let confirm = $state('');
