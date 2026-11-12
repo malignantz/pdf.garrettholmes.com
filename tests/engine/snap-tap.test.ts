@@ -164,10 +164,17 @@ describe('snap on tap: which pages', () => {
 		expect(t.x).toBeCloseTo(150 / 612, 6);
 		expect(t.size).toBeCloseTo(11 / 792, 6);
 		expect(t.y * 792 + 0.988 * 11).toBeCloseTo(100, 1);
-		const tick = snappedTick(source, r, { x: 134 / 612, y: 263 / 792 })!;
+		// The link to the blank: the line the text snapped to, in page fractions.
+		expect(t.blank.kind).toBe('text');
+		expect(t.blank.box.x * 612).toBeCloseTo(130, 0);
+		expect((t.blank.box.y + t.blank.box.h) * 792).toBeCloseTo(102, 0);
+		const { box: tick, blank } = snappedTick(source, r, { x: 134 / 612, y: 263 / 792 })!;
 		expect(tick.x * 612).toBeCloseTo(130, 3);
 		expect(tick.w * 612).toBeCloseTo(9, 3);
 		expect(tick.h * 792).toBeCloseTo(9, 3);
+		expect(blank.kind).toBe('check');
+		expect(blank.box.x * 612).toBeCloseTo(130, 1);
+		expect(blank.box.w * 612).toBeCloseTo(9, 1);
 		// A failed read: no snapping there, no error.
 		requestBlanks({ pageBlanks: async () => Promise.reject(new Error('boom')) }, source, 1);
 		await new Promise((res) => setTimeout(res, 10));
@@ -184,7 +191,7 @@ describe('snap on tap: preview matches export', () => {
 		const f = { x: 150 / 612, y: 93 / 792 };
 		await expect.poll(() => snappedText(source, r, f), { timeout: 20_000 }).not.toBeNull();
 		const at = snappedText(source, r, f)!;
-		const tick = snappedTick(source, r, { x: 141 / 612, y: 264 / 792 })!;
+		const tick = snappedTick(source, r, { x: 141 / 612, y: 264 / 792 })!.box;
 		r.stamps = [
 			{ id: 't', kind: 'text', text: 'JANE', color: 'black', ...at },
 			{ id: 'c', kind: 'mark', mark: 'check', box: tick }

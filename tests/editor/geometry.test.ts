@@ -187,4 +187,12 @@ describe('copy to pages', () => {
 		const t = stampForPage({ id: 'y', kind: 'text', text: 'Hi', x: 0.2, y: 0.3, size: 0.02, color: 'red' }, 1, 2);
 		expect(t).toEqual({ kind: 'text', text: 'Hi', x: 0.2, y: 0.3, size: 0.02, color: 'red' });
 	});
+
+	it('stampForPage never copies a link to a blank (it is on the original page)', () => {
+		const blank = { kind: 'check' as const, box: { x: 0.1, y: 0.1, w: 0.1, h: 0.1 } };
+		const c = stampForPage({ id: 'x', kind: 'mark', mark: 'check', box: { x: 0.1, y: 0.1, w: 0.1, h: 0.1 }, blank }, 1, 1);
+		expect('blank' in c).toBe(false);
+		const t = stampForPage({ id: 'y', kind: 'text', text: 'Hi', x: 0.2, y: 0.3, size: 0.02, color: 'red', blank: { ...blank, kind: 'text' } }, 1, 1);
+		expect('blank' in t).toBe(false);
+	});
 });

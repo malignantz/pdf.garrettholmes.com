@@ -36,6 +36,17 @@ import {
 import type { Rotation } from '../core/types';
 import { parsePng } from './images';
 import { NUMBER_CAP_EM, numberLayout, type NumberingJob } from './numbering';
+import {
+	TEXT_MARGIN_PT,
+	drFontNames,
+	linked,
+	makeWidget,
+	onBlank,
+	readAcroForm,
+	registerFields,
+	uniqueName,
+	type BlankFieldsJob
+} from './blank-fields';
 
 export interface StampJob {
 	/** 0-based page index in the assembled file. */
@@ -67,7 +78,9 @@ export async function applyStamps(
 	assets: Asset[],
 	numbering?: NumberingJob,
 	/** Receives plain-language warnings (e.g. a stamp lies under an annotation). */
-	warnings?: string[]
+	warnings?: string[],
+	/** Keep filled blanks editable: these linked stamps become form fields (blank-fields.ts). */
+	fields?: BlankFieldsJob
 ): Promise<Uint8Array> {
 	const { lib } = deps;
 	const { PDFDocument, PDFName, PDFArray, PDFDict, PDFRef, PDFRawStream, PDFContentStream, ParseSpeeds } = lib;
@@ -117,6 +130,20 @@ export async function applyStamps(
 		}
 		return font;
 	};
+	// Filled blanks as form fields: declined for a form that redraws its fields itself.
+	let fieldIds: ReadonlySet<string> = new Set();
+	let fieldNames = new Set<string>();
+	const widgetRefs: PdfLib.PDFRef[] = [];
+	let drFonts = { helv: 'Helv', zadb: 'ZaDb' };
+	if (fields && fields.ids.size) {
+		const af = readAcroForm(lib, doc);
+		if (af.redraws) for (const id of fields.ids) fields.plain.set(id, 'form-redraws');
+		else {
+			fieldIds = fields.ids;
+			fieldNames = af.names;
+			drFonts = drFontNames(lib, doc);
+		}
+	}
 	const multiplyRef = ctx.register(ctx.obj({ Type: 'ExtGState', CA: 1, ca: 1, BM: 'Multiply' }));
 	const gsRef = ctx.register(
 		ctx.obj({ Type: 'ExtGState', CA: 1, ca: 1, BM: 'Normal', SMask: 'None', LW: 1, LC: 0, LJ: 0, D: [[], 0] })
@@ -218,6 +245,42 @@ export async function applyStamps(
 		const shownSize = displayedUserSize(geom.box, geom.rotation);
 		const imageNames = new Map<string, string>();
 		let fontName: string | null = null;
+		/** Widgets of filled blanks on this page, added to /Annots after the overlap warning. */
+		const pageWidgets: PdfLib.PDFRef[] = [];
+		/**
+		 * A linked stamp as a form field instead of page content (blank-fields.ts), when it
+		 * sits on its blank; false: draw it as usual. `ops` are the stamp's own operators.
+		 */
+		const asField = (stamp: Stamp, ops: PdfLib.PDFOperator[], ink: Box, start: [number, number], resources: Record<string, Record<string, PdfLib.PDFRef>>, text?: { value: string; size: number; multiline: boolean; color: readonly [number, number, number] }): boolean => {
+			if (!fields || !fieldIds.has(stamp.id) || !linked(stamp)) return false;
+			const b = stampDisplayRect(geom.box, geom.rotation, stamp.blank.box);
+			const blank = { left: b.left, top: b.top, right: b.left + b.width, bottom: b.top + b.height };
+			if (!onBlank(blank, start)) {
+				fields.plain.set(stamp.id, 'off-blank');
+				return false;
+			}
+			const shown = {
+				left: Math.max(0, Math.min(blank.left, ink.x0)),
+				top: Math.max(0, Math.min(blank.top, ink.y0)),
+				right: Math.min(shownSize.width, Math.max(blank.right, ink.x1)),
+				bottom: Math.min(shownSize.height, Math.max(blank.bottom, ink.y1))
+			};
+			const rect = displayRectToPdf(geom, shown.left, shown.top, shown.right, shown.bottom);
+			const n = fields.made.filter((f) => f.page === job.pageIndex).length + 1;
+			const name = uniqueName(fieldNames, job.pageIndex, n);
+			const ref = makeWidget(lib, ctx, { kind: text ? 'text' : 'check', name, page: job.pageIndex, pageRef: page.ref, rect, rotation: geom.rotation, ops, resources, ...(text ? { value: text.value, multiline: text.multiline, fontSize: text.size, color: text.color } : {}) }, drFonts);
+			pageWidgets.push(ref);
+			fields.made.push({
+				stampId: stamp.id,
+				page: job.pageIndex,
+				name,
+				kind: text ? 'text' : 'check',
+				value: text?.value ?? '',
+				rect: { x0: r4(rect.x0), y0: r4(rect.y0), x1: r4(rect.x1), y1: r4(rect.y1) },
+				shown: { x0: shown.left / shownSize.width, y0: shown.top / shownSize.height, x1: shown.right / shownSize.width, y1: shown.bottom / shownSize.height }
+			});
+			return true;
+		};
 
 		// Highlights first, so anything else on the page stays on top of them.
 		for (const stamp of job.stamps) {
@@ -259,21 +322,38 @@ export async function applyStamps(
 				body.push(ops.pushGraphicsState(), cm(ops, m), ops.drawObject(xname), ops.popGraphicsState());
 				drawn.push(stampPdfRect(geom.box, geom.rotation, stamp.box));
 			} else if (stamp.kind === 'mark') {
-				body.push(...markOps(ops, geom, stamp));
+				const mo = markOps(ops, geom, stamp);
+				const r = stampDisplayRect(geom.box, geom.rotation, stamp.box);
+				const ink = { x0: r.left, y0: r.top, x1: r.left + r.width, y1: r.top + r.height };
+				if (asField(stamp, [ops.pushGraphicsState(), ops.setGraphicsState('GS0'), ...mo, ops.popGraphicsState()], ink, [r.left + r.width / 2, r.top + r.height / 2], { ExtGState: { GS0: gsRef } })) continue;
+				body.push(...mo);
 				drawn.push(stampPdfRect(geom.box, geom.rotation, stamp.box));
 			} else if (stamp.kind === 'text') {
 				const f = await getFont();
+				const size = stamp.size * shownSize.height;
+				const text = normalizeStampText(stamp.text);
+				const lines = text.split('\n');
+				const w = Math.max(...lines.map((l) => f.widthOfTextAtSize(l, size)));
+				const x = stamp.x * shownSize.width;
+				const y = stamp.y * shownSize.height;
+				if (fieldIds.has(stamp.id)) {
+					// Every line's ascent to descent, and a margin, so the field clips nothing.
+					const m = TEXT_MARGIN_PT / geom.userUnit;
+					const top = y + (STAMP_BASELINE_EM - STAMP_FONT.ascent) * size;
+					const bottom = y + ((lines.length - 1) * STAMP_FONT.lineHeight + STAMP_BASELINE_EM + STAMP_FONT.descent) * size;
+					const ink = { x0: x - m, y0: Math.min(y, top) - m, x1: x + w + m, y1: Math.max(y + lines.length * STAMP_FONT.lineHeight * size, bottom) + m };
+					const fo = textOps(ops, geom, stamp, f, 'F0');
+					const color = STAMP_COLORS[stamp.color];
+					const start: [number, number] = [x, y + STAMP_BASELINE_EM * size];
+					const asText = { value: text, size: size * geom.userUnit, multiline: lines.length > 1, color };
+					if (asField(stamp, [ops.pushGraphicsState(), ops.setGraphicsState('GS0'), ...fo, ops.popGraphicsState()], ink, start, { Font: { F0: f.ref }, ExtGState: { GS0: gsRef } }, asText)) continue;
+				}
 				if (!fontName) {
 					fonts ??= sub('Font');
 					fontName = name(fonts, 'PgsF');
 					fonts.set(PDFName.of(fontName), f.ref);
 				}
 				body.push(...textOps(ops, geom, stamp, f, fontName));
-				const size = stamp.size * shownSize.height;
-				const lines = normalizeStampText(stamp.text).split('\n');
-				const w = Math.max(...lines.map((l) => f.widthOfTextAtSize(l, size)));
-				const x = stamp.x * shownSize.width;
-				const y = stamp.y * shownSize.height;
 				drawn.push(displayRectToPdf(geom, x, y, x + w, y + lines.length * STAMP_FONT.lineHeight * size));
 			}
 		}
@@ -293,6 +373,20 @@ export async function applyStamps(
 		if (warnings && coveredByAnnotation(lib, leaf, drawn)) {
 			warnings.push(`On page ${job.pageIndex + 1}, an annotation on the page (such as a comment, sticker or form field) lies over a stamp and may hide part of it.`);
 		}
+		if (pageWidgets.length) {
+			// A page-local /Annots array (it may be shared with another page), with the new widgets.
+			let annots: PdfLib.PDFArray | undefined;
+			try {
+				annots = leaf.lookupMaybe(PDFName.of('Annots'), PDFArray);
+			} catch {
+				annots = undefined;
+			}
+			const list = ctx.obj([]);
+			if (annots) for (let k = 0; k < annots.size(); k++) list.push(annots.get(k));
+			for (const r of pageWidgets) list.push(r);
+			leaf.set(PDFName.of('Annots'), list);
+			widgetRefs.push(...pageWidgets);
+		}
 
 		const pre = ctx.register(PDFContentStream.of(ctx.obj({}), Array.from({ length: pushes }, () => ops.pushGraphicsState()), false));
 		const tail = ctx.register(
@@ -311,6 +405,8 @@ export async function applyStamps(
 		);
 		leaf.set(PDFName.of('Contents'), ctx.obj([pre, ...kept, tail]));
 	}
+
+	if (widgetRefs.length) registerFields(lib, doc, widgetRefs, drFonts);
 
 	return doc.save({ useObjectStreams: false, addDefaultPage: false, updateFieldAppearances: false, objectsPerTick: Infinity });
 }

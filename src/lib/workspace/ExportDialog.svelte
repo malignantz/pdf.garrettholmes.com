@@ -254,7 +254,8 @@
 		forms: 'Form answers',
 		numbering: 'Page numbers',
 		visual: 'Pages look the same',
-		'target-size': 'File size'
+		'target-size': 'File size',
+		'blank-fields': 'Filled blanks'
 	};
 
 	function headline(r: ExportResult): string {

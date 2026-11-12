@@ -1616,5 +1616,21 @@
 		"label": "jpeg-broken",
 		"expect": "unreadable",
 		"note": "JPEGs that do not decode cleanly (truncated, 12-bit, arithmetic, lossless, junk before SOI); export refuses the file; the repack leaves them byte for byte"
+	},
+	"fill-fields-form.pdf": {
+		"pages": 2,
+		"note": "p1 an AcroForm text field \"Name\" and checkbox \"Agree\" (pdf-lib); p2 a flat form for snap on tap: a line after \"Full name\" (y 102, x 130-400), a line after \"City\" (y 142, x 100-300), a box with a corner label (72,170)-(400,200), squares (130,231)-(139,240) and (180,231)-(189,240)"
+	},
+	"fill-fields-clash.pdf": {
+		"pages": 2,
+		"note": "as fill-fields-form.pdf, plus a field named \"blank_p2_1\" on p1 and /AcroForm /DR /Helv pointing at Courier"
+	},
+	"fill-fields-redraw.pdf": {
+		"pages": 2,
+		"note": "as fill-fields-form.pdf with /NeedAppearances true: viewers are asked to redraw every field"
+	},
+	"fill-fields-rotated.pdf": {
+		"pages": 1,
+		"note": "one page stored 612x792 with /Rotate 90 (shown 792x612), the flat form of fill-fields-form.pdf p2 drawn upright as displayed"
 	}
 }

@@ -342,6 +342,8 @@ export function plainCheck(
 			return /target was/i.test(c.detail) || /could not be reached/i.test(c.detail)
 				? 'This is the smallest the file can get without damaging text.'
 				: 'It fits the size you asked for.';
+		case 'blank-fields':
+			return c.ok ? 'Every filled blank is a form field with your answer.' : 'Some filled blanks did not come out as form fields.';
 	}
 }
 

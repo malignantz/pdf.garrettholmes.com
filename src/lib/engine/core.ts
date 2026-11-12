@@ -51,6 +51,7 @@ import { QPDF_ERROR, QPDF_OK, QPDF_WARNINGS, Qpdf, type QpdfLoader, type QpdfRes
 import { applyRedactions, verifyRedactions, type RedactJob } from './redact';
 import { shrinkToTarget, type ShrinkReport } from './shrink';
 import { applyStamps, type StampJob } from './stamps';
+import { linked, precheck, proveFields, verifyBlankFields, type BlankFieldsJob, type MadeField, type PlainReason } from './blank-fields';
 import { cleanupWithMupdf, cleanupWorthIt, estimateCleanup, sameStructure } from './cleanup';
 import { libdeflate, libdeflateZlib } from './libdeflate';
 import { dumpStreams, isSigned, nativeDeflate, packStreams, type Deflater } from './pack';
@@ -497,16 +498,58 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			);
 			if (stamps.length) jobs.push({ pageIndex: i, stamps, expected: expected[i] });
 		});
+		// Keep filled blanks editable: linked stamps that may become fields (blank-fields.ts).
+		const blanks = options.blankFields === true && !options.flattenForms ? { ids: new Set<string>(), plain: new Map<string, PlainReason>(), total: 0 } : null;
+		if (blanks) {
+			pages.forEach((ref, i) => {
+				for (const s of ref.stamps) {
+					if (!linked(s)) continue;
+					blanks.total++;
+					const why = precheck(s, expected[i].height);
+					if (why) blanks.plain.set(s.id, why);
+					else blanks.ids.add(s.id);
+				}
+			});
+		}
+		let made: MadeField[] = [];
 		if (jobs.length || numbering) {
 			const [lib, fk] = await Promise.all([pdfLib(), font.fontkit()]);
-			bytes = await applyStamps(
-				{ lib, fontkit: fk, fontBytes: () => font.bytes() },
-				bytes,
-				jobs,
-				assetList,
-				numbering ?? undefined,
-				warnings
-			);
+			const stampDeps = { lib, fontkit: fk, fontBytes: () => font.bytes() };
+			const assembled = bytes;
+			const stampWarnings: string[] = [];
+			const ordinary = await applyStamps(stampDeps, assembled, jobs, assetList, numbering ?? undefined, stampWarnings);
+			bytes = ordinary;
+			if (blanks && blanks.ids.size) {
+				// Build with fields, prove them against the ordinary build, and draw any that fail
+				// as plain stamps (a second round without them); if that fails too, all are drawn.
+				const t0 = now();
+				const ids = new Set(blanks.ids);
+				for (let round = 0; round < 2 && ids.size; round++) {
+					const job: BlankFieldsJob = { ids, made: [], plain: new Map() };
+					const w: string[] = [];
+					const out = await applyStamps(stampDeps, assembled, jobs, assetList, numbering ?? undefined, w, job);
+					for (const [id, why] of job.plain) {
+						blanks.plain.set(id, why);
+						ids.delete(id);
+					}
+					if (job.made.length === 0) break;
+					const bad = await proveFields(deps, ordinary, out, job.made);
+					if (bad.size === 0) {
+						bytes = out;
+						made = job.made;
+						stampWarnings.length = 0;
+						stampWarnings.push(...w);
+						break;
+					}
+					for (const [id, why] of bad) {
+						debug(`blank-fields: ${why}`);
+						blanks.plain.set(id, 'not-verified');
+						ids.delete(id);
+					}
+				}
+				debug(`blank-fields: ${made.length} fields, ${blanks.total - made.length} plain, ${Math.round(now() - t0)} ms`);
+			}
+			warnings.push(...stampWarnings);
 		}
 
 		// (e) [Shrink →] finalize.
@@ -533,6 +576,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			if (formsRan) checks.push(...(await verifyForms(deps, file, formsCtx, password)));
 			if (redactJobs.length) checks.push(...(await verifyRedactions(deps, file, redactJobs, allowedText, password, (shrink?.imagesChanged ?? 0) > 0)));
 			if (numbering) checks.push(...(await verifyNumbering(deps, file, numbering.labels, password, numbering.numbering)));
+			if (made.length) checks.push(await verifyBlankFields(deps, file, made, password));
 			checks.push(...stageChecks);
 			return checks;
 		};
@@ -560,6 +604,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			elapsedMs: Math.round(now() - started)
 		};
 		if (shrink) result.shrink = shrink;
+		if (blanks) result.blankFields = { fields: made.length, plain: blanks.total - made.length };
 		return result;
 	}
 
@@ -995,6 +1040,7 @@ function validateStamps(pageNo: number, stamps: Stamp[], assetIds: Set<string>) 
 			if (typeof s.text !== 'string' || !fin(s.x, s.y, s.size)) throw bad();
 			if (!inUnit(s.x) || !inUnit(s.y) || !(s.size > 0 && s.size <= 1)) throw bad();
 			if (!['black', 'blue', 'red'].includes(s.color)) throw new EngineError('internal', 'Unknown text color.');
+			validateBlank(pageNo, s);
 		} else {
 			// image, mark, highlight, redact: a box inside the page with a positive size.
 			const b = s.box;
@@ -1004,6 +1050,7 @@ function validateStamps(pageNo: number, stamps: Stamp[], assetIds: Set<string>) 
 				throw new EngineError('internal', `A stamp on page ${pageNo + 1} uses an image that is missing.`);
 			}
 			if (s.kind === 'mark' && !['check', 'cross', 'dot'].includes(s.mark)) throw new EngineError('internal', 'Unknown mark.');
+			if (s.kind === 'mark') validateBlank(pageNo, s);
 			if (s.kind === 'highlight' && !HIGHLIGHT_COLORS.includes(s.color)) throw new EngineError('internal', 'Unknown highlight colour.');
 			if (s.kind === 'highlight' && s.pen !== undefined) {
 				// A pen stroke: 2+ points on the page and inside its box (the box is what
@@ -1027,6 +1074,28 @@ function validateStamps(pageNo: number, stamps: Stamp[], assetIds: Set<string>) 
 				}
 			}
 		}
+	}
+}
+
+/** Snap on tap's link to a blank (Stamp `blank`): the stamp's kind and a box inside the page. */
+function validateBlank(pageNo: number, s: Extract<Stamp, { kind: 'text' | 'mark' }>) {
+	if (s.blank === undefined) return;
+	const eps = 1e-6;
+	const b = s.blank?.box;
+	const want = s.kind === 'text' ? 'text' : s.mark === 'check' ? 'check' : null;
+	const fin = (...n: number[]) => n.every((v) => typeof v === 'number' && Number.isFinite(v));
+	if (
+		!s.blank ||
+		s.blank.kind !== want ||
+		!b ||
+		!fin(b.x, b.y, b.w, b.h) ||
+		!(b.w > 0 && b.h > 0) ||
+		b.x < -eps ||
+		b.y < -eps ||
+		b.x + b.w > 1 + eps ||
+		b.y + b.h > 1 + eps
+	) {
+		throw new EngineError('internal', `A stamp on page ${pageNo + 1} has a bad link to its blank.`);
 	}
 }
 

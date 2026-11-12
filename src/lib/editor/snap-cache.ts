@@ -11,7 +11,7 @@
  * fillable form widget (a form page is filled through its fields, never snapped),
  * and its fields are known (while the form is still being read: no snap).
  */
-import type { Engine, FormField, PageBlanks, PageRef, Source, StampBox } from '../core/types';
+import type { Engine, FormField, PageBlanks, PageRef, Source, StampBlank, StampBox } from '../core/types';
 import type { TapData } from '../engine/snap-tap';
 import type * as Snap from './snap';
 
@@ -56,28 +56,30 @@ function ready(source: Source, pageIndex: number): { data: TapData; blanks: Page
 	return { data: e.blanks.data as TapData, blanks: e.blanks };
 }
 
+const fraction = ([x0, y0, x1, y1]: readonly number[], W: number, H: number): StampBox => ({ x: x0 / W, y: y0 / H, w: (x1 - x0) / W, h: (y1 - y0) / H });
+
 /**
  * Text stamp origin and size (page fractions, as the Text tool stores them) for a tap
- * at `f`, or null to place plainly. Only for a page `snapEligible` accepted.
+ * at `f`, with the blank it snapped into (the stamp's `blank`), or null to place
+ * plainly. Only for a page `snapEligible` accepted.
  */
-export function snappedText(source: Source, ref: PageRef, f: { x: number; y: number }): { x: number; y: number; size: number } | null {
+export function snappedText(source: Source, ref: PageRef, f: { x: number; y: number }): { x: number; y: number; size: number; blank: StampBlank } | null {
 	const r = ready(source, ref.pageIndex);
 	if (!r || !snap) return null;
 	const { width: W, height: H } = r.blanks;
 	const at = snap.textAt(r.data, [f.x * W, f.y * H]);
 	if (!at) return null;
-	return { x: at.x / W, y: snap.lineTop(at) / H, size: at.size / H };
+	return { x: at.x / W, y: snap.lineTop(at) / H, size: at.size / H, blank: { kind: 'text', box: fraction(at.snap.rect, W, H) } };
 }
 
-/** Mark box (page fractions) for a Check tap at `f` on a drawn checkbox, or null to place plainly. */
-export function snappedTick(source: Source, ref: PageRef, f: { x: number; y: number }): StampBox | null {
+/** Mark box (page fractions) for a Check tap at `f` on a drawn checkbox, with the checkbox (the stamp's `blank`), or null to place plainly. */
+export function snappedTick(source: Source, ref: PageRef, f: { x: number; y: number }): { box: StampBox; blank: StampBlank } | null {
 	const r = ready(source, ref.pageIndex);
 	if (!r || !snap) return null;
 	const { width: W, height: H } = r.blanks;
 	const at = snap.tickAt(r.data, [f.x * W, f.y * H]);
 	if (!at) return null;
-	const [x0, y0, x1, y1] = at.box;
-	return { x: x0 / W, y: y0 / H, w: (x1 - x0) / W, h: (y1 - y0) / H };
+	return { box: fraction(at.box, W, H), blank: { kind: 'check', box: fraction(at.snap.rect, W, H) } };
 }
 
 /** Tests: forget everything. */

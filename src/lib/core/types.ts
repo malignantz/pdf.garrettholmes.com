@@ -59,8 +59,10 @@ export type Stamp =
 			/** Font size as a fraction of the displayed page height. */
 			size: number;
 			color: 'black' | 'blue' | 'red';
+			/** The drawn blank this text was snapped into (see StampBlank). */
+			blank?: StampBlank;
 	  }
-	| { id: string; kind: 'mark'; mark: 'check' | 'cross' | 'dot'; box: StampBox }
+	| { id: string; kind: 'mark'; mark: 'check' | 'cross' | 'dot'; box: StampBox; blank?: StampBlank }
 	/**
 	 * Translucent colour over the page; what is under it stays readable and stays in the file.
 	 * Without `pen` the whole box is filled (a box highlight). With `pen` it is a freehand
@@ -78,6 +80,21 @@ export type Stamp =
 	 * checks the result or refuses to export.
 	 */
 	| { id: string; kind: 'redact'; box: StampBox };
+
+/**
+ * Snap on tap (2026-11-12, "Filled blanks as form fields"): the drawn blank a text or
+ * tick stamp was snapped into, kept while the stamp still belongs to it. `box` is the
+ * blank's rectangle in stamp space (fractions of the page as displayed). Only a text
+ * stamp has kind 'text' and only a check mark kind 'check'. DocStore drops it when the
+ * stamp is moved or resized, when a one-line blank gets a second line of text, when
+ * the page is rotated, and on copies of the stamp. With ExportOptions.blankFields the
+ * export turns such a stamp into a form field over the blank; otherwise, or when the
+ * field cannot be verified, the stamp is drawn as usual.
+ */
+export interface StampBlank {
+	kind: 'text' | 'check';
+	box: StampBox;
+}
 
 export type HighlightColor = 'yellow' | 'green' | 'pink';
 
@@ -213,6 +230,12 @@ export interface ExportOptions {
 	 * ExportResult.shrink.reached is false.
 	 */
 	targetBytes?: number;
+	/**
+	 * Keep filled blanks editable: text and ticks with a live Stamp `blank` become AcroForm
+	 * fields (text fields, checkboxes) instead of page content. Ignored with flattenForms
+	 * (and so with redaction). ExportResult.blankFields says how many became fields.
+	 */
+	blankFields?: boolean;
 }
 
 export interface ExportPlan {
@@ -237,7 +260,9 @@ export interface VerifyCheck {
 		/** After shrinking images, every page still looks like it did before. */
 		| 'visual'
 		/** Reports the final size. ok even when the target was not reached; ExportResult.shrink.reached says which. */
-		| 'target-size';
+		| 'target-size'
+		/** Every filled blank made into a form field reads back with its answer and rectangle. */
+		| 'blank-fields';
 	ok: boolean;
 	detail: string;
 }
@@ -258,6 +283,11 @@ export interface ExportResult {
 		/** Resolution cap that was applied, in pixels per inch; 0 when no image was changed. */
 		dpi: number;
 	};
+	/**
+	 * Present when ExportOptions.blankFields was on: linked stamps that became form fields,
+	 * and those drawn as plain text or ticks instead (they could not be made or verified).
+	 */
+	blankFields?: { fields: number; plain: number };
 }
 
 export type EngineErrorCode =

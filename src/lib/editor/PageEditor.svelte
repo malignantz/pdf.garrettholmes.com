@@ -586,7 +586,7 @@
 		} else if (isMark(t)) {
 			const sz = squareBoxSize(aspect, 0.026);
 			const snapped = t === 'check' && !byKeyboard && snapOk && source ? snappedTick(source, page, f) : null;
-			const id = store.addStamp(pid, { kind: 'mark', mark: t, box: snapped ?? boxAround(f, sz.width, sz.height) });
+			const id = store.addStamp(pid, snapped ? { kind: 'mark', mark: t, box: snapped.box, blank: snapped.blank } : { kind: 'mark', mark: t, box: boxAround(f, sz.width, sz.height) });
 			if (byKeyboard) {
 				disarm();
 				select(id, true);
@@ -620,7 +620,7 @@
 			const size = snapped?.size ?? textSize;
 			gestureBegin('Add text');
 			// Starts as a selected placeholder, so the box is visible and typing replaces it.
-			const id = store.addStamp(pid, { kind: 'text', text: PLACEHOLDER, size, color: 'black', ...(snapped ? { x: snapped.x, y: snapped.y } : textOrigin(f, size)) });
+			const id = store.addStamp(pid, { kind: 'text', text: PLACEHOLDER, size, color: 'black', ...(snapped ? { x: snapped.x, y: snapped.y, blank: snapped.blank } : textOrigin(f, size)) });
 			selectedId = id;
 			editing = { id, isNew: true };
 			untouched = true;
@@ -992,12 +992,14 @@
 		finishEditing(true);
 		const off = 0.02;
 		let ns: NewStamp;
+		// A copy sits beside the original, so it is not the answer for its blank (no `blank`).
 		if (s.kind === 'text') {
-			const { id: _id, ...rest } = s;
+			const { id: _id, blank: _blank, ...rest } = s;
 			const b = clampBox({ ...boxOf(s), x: s.x + off, y: s.y + off });
 			ns = { ...rest, x: b.x, y: b.y };
 		} else {
 			const { id: _id, ...rest } = s;
+			if ('blank' in rest) delete rest.blank;
 			ns = { ...rest, ...reboxPatch(s, moveBox(s.box, off, off)) } as NewStamp;
 		}
 		const id = store.transaction('Duplicate stamp', () => store.addStamp(page!.id, ns));
