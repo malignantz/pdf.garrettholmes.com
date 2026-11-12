@@ -328,7 +328,9 @@ export async function packStream(
 	const base: Dict = { ...dict };
 	if (!flate) base['/Filter'] = '/FlateDecode';
 	// What each candidate deflates, and the dictionary that goes with it.
-	const cands: { input: Uint8Array; dict: Dict; predicted: boolean }[] = [{ input: decoded, dict: base, predicted: false }];
+	const cands: { input: Uint8Array; dict: Dict; predicted: boolean; check?: (input: Uint8Array) => boolean }[] = [
+		{ input: decoded, dict: base, predicted: false }
+	];
 
 	if (resolve(objects, dict['/Subtype']) === '/Image' && resolve(objects, dict['/ImageMask']) !== true) {
 		const w = resolve(objects, dict['/Width']);
@@ -343,12 +345,17 @@ export async function packStream(
 				// filters its rows (then the producer has made this choice already).
 				const same = pred && pred.predictor >= 10 && pred.colors === n && pred.bpc === 8 && pred.columns === w;
 				if (!same || !filtersRows(decoded, w * n)) {
-					const predicted = pngPredict(pixels, w, h, n);
-					const back = unpredict(predicted, png);
-					if (back && sameBytes(back, pixels)) {
-						const parms: Dict = { '/BitsPerComponent': 8, '/Colors': n, '/Columns': w, '/Predictor': 15 };
-						cands.push({ input: predicted, dict: { ...base, '/Filter': '/FlateDecode', '/DecodeParms': parms }, predicted: true });
-					}
+					const parms: Dict = { '/BitsPerComponent': 8, '/Colors': n, '/Columns': w, '/Predictor': 15 };
+					cands.push({
+						input: pngPredict(pixels, w, h, n),
+						dict: { ...base, '/Filter': '/FlateDecode', '/DecodeParms': parms },
+						predicted: true,
+						// Checked only if chosen: a viewer's un-prediction gives back the pixels.
+						check: (input) => {
+							const back = unpredict(input, png);
+							return back !== null && sameBytes(back, pixels);
+						}
+					});
 				}
 				// C2: the plain pixels (what qpdf wrote).
 				if (pred) {
@@ -362,15 +369,17 @@ export async function packStream(
 
 	// Every candidate is deflated in full: picking by samples chose badly on large images
 	// with flat areas (a survey file came out 9% bigger than qpdf's).
-	let best: Choice | null = null;
+	let best: (Choice & { check?: (input: Uint8Array) => boolean }) | null = null;
 	for (const c of cands) {
 		const data = await deflate.zlib(c.input);
 		// A changed dictionary costs a few bytes too; demand a clear gain for it.
 		const dictCost = c.dict['/DecodeParms'] !== dict['/DecodeParms'] || c.dict['/Filter'] !== dict['/Filter'] ? 72 : 0;
 		if (data.length + dictCost < (best ? best.data.length : raw.length)) best = { ...c, data };
 	}
-	if (best && !checks(best.data, best.input)) return null;
-	return best;
+	if (!best) return null;
+	if (best.check && !best.check(best.input)) return null;
+	if (!checks(best.data, best.input)) return null;
+	return { input: best.input, data: best.data, dict: best.dict, predicted: best.predicted };
 }
 
 /** True when inflating `data` gives exactly `input`. */

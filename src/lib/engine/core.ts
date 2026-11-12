@@ -676,13 +676,14 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			{
 				deflate,
 				polish,
-				// Budgets. The fast pass (libdeflate 6) stops after 15 s plus 0.1 s per MB on this
-				// device's clock; streams left then stay as they are. Polishing (libdeflate 12, about
-				// 4 MB/s on a desktop, perhaps 1 MB/s on a phone) takes the biggest streams first, up
-				// to 2 MB plus twice the file's size and at most 12 MB of data, and never past 8 s.
-				deadline: t0 + 15_000 + 100 * mb,
+				// Budgets ("avoid, don't fail": what is left over stays as it is). The fast pass
+				// (libdeflate 6) stops 6 s plus 0.1 s per MB after the passes began, on this device's
+				// clock. Polishing (libdeflate 12, about 4 MB/s on a desktop, perhaps 1 MB/s on a
+				// phone) takes the biggest streams first, up to 2 MB plus twice the file's size and
+				// at most 12 MB of data, and stops after 4 s.
+				deadline: t0 + 6_000 + 100 * mb,
 				polishBytes: Math.min(12e6, 2e6 + 2 * bytes.length),
-				polishMs: 8_000,
+				polishMs: 4_000,
 				note: debug
 			},
 			dump
