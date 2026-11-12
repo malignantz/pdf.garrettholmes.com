@@ -32,8 +32,10 @@
 				server, even if the code tried to.
 			</li>
 			<li>
-				<strong>Nothing comes from elsewhere.</strong> The PDF engines (qpdf, PDF.js, pdf-lib), fonts and icons
-				are part of the site itself. There is no CDN, no web font service and no third-party script.
+				<strong>Nothing comes from elsewhere.</strong> The PDF engines (qpdf, PDF.js, pdf-lib, MuPDF), fonts and
+				icons are part of the site itself, and so is the text reader (Tesseract) that makes scanned pages
+				searchable, which runs on your computer like everything else. There is no CDN, no web font service and no
+				third-party script.
 			</li>
 			<li>
 				<strong>No analytics, no tracking.</strong> No cookies, no analytics script, no telemetry. The site does

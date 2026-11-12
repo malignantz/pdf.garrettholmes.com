@@ -19,6 +19,20 @@ compatible with this project's AGPL-3.0-or-later.
 | fontkit dependencies: restructure, brotli, dfa, fflate | see package-lock.json | MIT | Bundled with fontkit |
 | [Noto Sans](https://github.com/notofonts/latin-greek-cyrillic) Regular (`src/lib/engine/fonts/NotoSans-Regular.ttf`, from `@expo-google-fonts/noto-sans` 0.4.2) | Noto LGC | SIL Open Font License 1.1 (`src/lib/engine/fonts/OFL.txt`) | Text stamps (embedded as a subset) |
 
+## OCR for "Make scanned pages searchable" (`src/lib/engine/ocr/`)
+
+Loaded only when an export uses the option (desktop), from this site, and kept by the
+service worker after first use. About 9 MB as served (the language data is gzipped by us;
+one core of each kind is fetched).
+
+| Component | Version | License | Used for |
+|---|---|---|---|
+| [tesseract.js](https://github.com/naptha/tesseract.js) worker script (`dist/worker.min.js`) | 7.0.0 | Apache-2.0 (bundles buffer, regenerator-runtime, zlib.js: MIT; ieee754: BSD-3-Clause) | Runs the OCR engine in its own worker. Its main-thread API is not used: `ocr/tess.ts` speaks the worker's message protocol, so no URL of its own (jsDelivr by default) is ever built |
+| [tesseract.js-core](https://github.com/naptha/tesseract.js-core): Tesseract (a fork with wasm build changes) and Leptonica, with libpng and zlib, compiled to WebAssembly | 7.0.0; the `.wasm.js` builds (wasm inside): LSTM-only (`relaxedsimd-lstm`, `simd-lstm`, `lstm`) for reading, legacy (`relaxedsimd`, `simd`, plain) for orientation detection | Apache-2.0 (Tesseract, the package); Leptonica: BSD-2-Clause; libpng: libpng License; zlib: zlib License | Reading text, deskew, Sauvola binarisation, orientation and script detection |
+| [tessdata_fast](https://github.com/tesseract-ocr/tessdata_fast) `eng.traineddata` and `osd.traineddata` (`src/lib/engine/vendor/tesseract/*.gz`, gzipped by us; SHA-256 of the unpacked files `7d4322bd…70b2` and `9cf5d576…0ff`, as in tools/ocr/fetch-models.sh) | main branch (2019 files) | Apache-2.0 (`src/lib/engine/vendor/tesseract/LICENSE-Apache-2.0.txt`) | English `fast` LSTM model; orientation and script data |
+| Tesseract's glyphless font `pdf.ttf` (572 bytes, as base64 in `src/lib/engine/ocr/glyphless.ts`, SHA-256 checked by a test) | Tesseract 5 | Apache-2.0 | The invisible text layer: every character drawn with a blank glyph |
+| wasm-feature-detect probes (two byte strings in `ocr/browser.ts`) | 1.8.0 | Apache-2.0 | Choosing the relaxed-SIMD, SIMD or plain core |
+
 ## Handwriting fonts for typed signatures (`src/lib/editor/fonts/`)
 
 Loaded only when the signature pad's Type tab opens. Latin and Latin Extended subsets,

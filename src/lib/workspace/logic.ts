@@ -342,6 +342,8 @@ export function plainCheck(
 			return /target was/i.test(c.detail) || /could not be reached/i.test(c.detail)
 				? 'This is the smallest the file can get without damaging text.'
 				: 'It fits the size you asked for.';
+		case 'text-layer':
+			return c.ok ? 'The searchable text reads back on every page that got it.' : 'The searchable text did not read back.';
 	}
 }
 
@@ -416,6 +418,8 @@ export interface ExportForm {
 	prefix: string;
 	digits: string;
 	lockForms: boolean;
+	/** Make scanned pages searchable (offered on desktops only, for files with scanned pages). */
+	ocr: boolean;
 }
 
 export const DEFAULT_FORM: Omit<ExportForm, 'filename'> = {
@@ -432,7 +436,8 @@ export const DEFAULT_FORM: Omit<ExportForm, 'filename'> = {
 	size: 'medium',
 	prefix: '',
 	digits: '6',
-	lockForms: false
+	lockForms: false,
+	ocr: false
 };
 
 /** Number of redaction boxes on the pages of a plan. */
@@ -488,7 +493,7 @@ export type OptionsResult = { ok: true; options: ExportOptions } | { ok: false; 
  */
 export function buildExportOptions(
 	f: ExportForm,
-	ctx: { pageCount: number; redactions: number; hasForm: boolean }
+	ctx: { pageCount: number; redactions: number; hasForm: boolean; scanned?: number }
 ): OptionsResult {
 	const redacting = ctx.redactions > 0;
 	const options: ExportOptions = {
@@ -508,6 +513,7 @@ export function buildExportOptions(
 		options.numbering = r.numbering;
 	}
 	if ((ctx.hasForm && f.lockForms) || redacting) options.flattenForms = true;
+	if (f.ocr && (ctx.scanned ?? 0) > 0) options.ocr = true;
 	return { ok: true, options };
 }
 
