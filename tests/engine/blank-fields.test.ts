@@ -127,7 +127,11 @@ describe('filled blanks as form fields: what is made', () => {
 				expect(w.type).toBe('text');
 				// The rectangle covers the blank from 2 pt before the text (PDF space: y up from the bottom of the 792 pt page).
 				const b = s.blank!.box;
-				expect(w.rect[0]).toBeCloseTo(Math.max(b.x * 612, s.x * 612 - 2), 3);
+				// (Corners are rounded outward to quarter points.)
+				const left = Math.max(b.x * 612, s.x * 612 - 2);
+				expect(w.rect[0]).toBeLessThanOrEqual(left + 1e-6);
+				expect(w.rect[0]).toBeGreaterThan(left - 0.25);
+				expect(w.rect.every((v) => Number.isInteger(v * 4))).toBe(true);
 				expect(w.rect[2]).toBeGreaterThanOrEqual((b.x + b.w) * 612 - 1e-3);
 				expect(w.rect[1]).toBeLessThanOrEqual(792 - (b.y + b.h) * 792 + 1e-3);
 				expect(w.rect[3]).toBeGreaterThanOrEqual(792 - b.y * 792 - 1e-3);

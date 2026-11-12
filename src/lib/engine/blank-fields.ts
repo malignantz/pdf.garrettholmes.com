@@ -549,14 +549,15 @@ function comparePage(m: Mupdf, a: MDoc, b: MDoc, p: number, list: MadeField[]): 
 			return bad;
 		}
 		for (const bx of boxes) if (bx.n >= MIN_DIFF_PIXELS) bad.set(bx.id, `looks different from the plain stamp (${bx.n} pixels)`);
-		// Not drawn twice: the page's own content (no widgets) lost the field's characters.
+		// Not drawn twice: the page's own content (no widgets) lost exactly the text fields' characters.
 		da = pa.toDisplayList(false);
 		db = pb.toDisplayList(false);
-		for (const f of list) {
-			if (f.kind !== 'text' || bad.has(f.stampId)) continue;
-			const before = squash(charsIn(m, da, bounds, f.shown));
-			const after = squash(charsIn(m, db, bounds, f.shown));
-			if (before.length - after.length !== squash(f.value).length) bad.set(f.stampId, 'the page content still has the text');
+		const texts = list.filter((f) => f.kind === 'text');
+		if (texts.length) {
+			const whole = { x0: -1, y0: -1, x1: 2, y1: 2 };
+			const lost = squash(charsIn(m, da, bounds, whole)).length - squash(charsIn(m, db, bounds, whole)).length;
+			const want = texts.reduce((n, f) => n + squash(f.value).length, 0);
+			if (lost !== want) for (const f of texts) bad.set(f.stampId, `the page content did not lose exactly the fields' text (${lost} characters, ${want} expected)`);
 		}
 	} finally {
 		destroy(xa);

@@ -307,7 +307,10 @@ export async function applyStamps(
 				right: Math.min(shownSize.width, Math.max(lane.right, ink.x1)),
 				bottom: Math.min(shownSize.height, Math.max(blank.bottom, ink.y1))
 			};
-			const rect = displayRectToPdf(geom, shown.left, shown.top, shown.right, shown.bottom);
+			// Corners on whole quarter points (outward): exact in binary, so the appearance's
+			// own translation cancels exactly and the text lands on the same pixels as drawn.
+			const q = displayRectToPdf(geom, shown.left, shown.top, shown.right, shown.bottom);
+			const rect = { x0: Math.floor(q.x0 * 4) / 4, y0: Math.floor(q.y0 * 4) / 4, x1: Math.ceil(q.x1 * 4) / 4, y1: Math.ceil(q.y1 * 4) / 4 };
 			const n = fields.made.filter((f) => f.page === job.pageIndex).length + 1;
 			const name = uniqueName(fieldNames, job.pageIndex, n);
 			const ref = makeWidget(lib, ctx, { kind: text ? 'text' : 'check', name, page: job.pageIndex, pageRef: page.ref, rect, rotation: geom.rotation, ops, resources, ...(text ? { value: text.value, multiline: text.multiline, fontSize: text.size, color: text.color } : {}) }, drFonts);
