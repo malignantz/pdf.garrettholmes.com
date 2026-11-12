@@ -338,7 +338,9 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 
 		exportPlan: (plan, sources, assets) => guard(() => exportPlan(plan, sources, assets)),
 
-		formFields: (source) => guard(async () => (source.hasForm === true ? listFormFields(deps, source) : []))
+		formFields: (source) => guard(async () => (source.hasForm === true ? listFormFields(deps, source) : [])),
+
+		pageBlanks: (source, pageIndex) => guard(async () => (await import('./snap-tap')).pageBlanks(deps, source, pageIndex))
 	};
 
 	async function exportPlan(plan: ExportPlan, sources: Source[], assetList: Asset[]): Promise<ExportResult> {

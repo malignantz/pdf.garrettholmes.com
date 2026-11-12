@@ -7,6 +7,7 @@
  *   npm run forms:snap -- ink --sample S.json     # page ink + truth → <out>/ink/*.json.gz (MuPDF, pool)
  *   npm run forms:snap -- run                     # simulated taps on the cache → report.md, report.json, taps.jsonl.gz
  *   npm run forms:snap -- render --files L        # PNGs of failing taps (L: lines "sha:page" from fails.tsv)
+ *   npm run forms:snap -- wired --from D --out O  # the shipped snap on tap (wired.ts) on D's cache → O/wired.md
  *
  * Options: --out DIR, --sample FILE (ink: copied to <out>/sample.json), --max-pages 6
  * (forms; non-forms 3), --workers 3 (at most 3), --mem-mb 1500, --timeout 120 (s),
@@ -99,10 +100,13 @@ switch (step) {
 	case 'run':
 		await (await import('./evaluate')).evaluate(args, out);
 		break;
+	case 'wired':
+		await (await import('./wired')).wired(args, out);
+		break;
 	case 'render':
 		await renderCommand(args, out);
 		break;
 	default:
-		console.error('usage: measure.ts <ink|run|render> [options]');
+		console.error('usage: measure.ts <ink|run|render|wired> [options]');
 		process.exit(2);
 }

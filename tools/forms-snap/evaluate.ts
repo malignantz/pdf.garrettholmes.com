@@ -102,7 +102,7 @@ interface Fail {
 	source: string;
 }
 
-function rng(seed: number) {
+export function rng(seed: number) {
 	let s = seed >>> 0 || 1;
 	return () => {
 		s ^= s << 13;
@@ -113,7 +113,7 @@ function rng(seed: number) {
 		return s / 0x100000000;
 	};
 }
-function seedOf(sha: string, page: number, salt: number) {
+export function seedOf(sha: string, page: number, salt: number) {
 	return (parseInt(sha.slice(0, 8), 16) ^ (page * 7919) ^ (salt * 104729)) >>> 0;
 }
 const U = (r: () => number, a: number, b: number) => a + (b - a) * r();
@@ -143,7 +143,7 @@ function labelSide(page: SnapPage, t: Truth): { side: 'left' | 'above' | 'below'
 	return b ? { side: b.side, w: b.w } : null;
 }
 
-function tapsFor(page: SnapPage, t: Truth, r: () => number): { model: Model; p: [number, number]; side: string }[] {
+export function tapsFor(page: SnapPage, t: Truth, r: () => number): { model: Model; p: [number, number]; side: string }[] {
 	const [x0, y0, x1, y1] = t.rect;
 	const out: { model: Model; p: [number, number]; side: string }[] = [{ model: 'centre', p: [(x0 + x1) / 2, (y0 + y1) / 2], side: '' }];
 	const text = textLike(t.type);
@@ -202,7 +202,7 @@ function classify(t: Truth, s: SnapResult | null, truths: Truth[], neutral: Rect
  * straight from the page's ink (not from the snap rules), for the "drawn checkboxes"
  * population.
  */
-function shapeCue(ink: InkFile['pages'][number]['ink'], r: Rect): boolean {
+export function shapeCue(ink: InkFile['pages'][number]['ink'], r: Rect): boolean {
 	const ok = (b: Rect) => {
 		const w = b[2] - b[0];
 		const h = b[3] - b[1];
@@ -214,7 +214,7 @@ function shapeCue(ink: InkFile['pages'][number]['ink'], r: Rect): boolean {
 }
 
 /** Places that are not blanks, on one page. */
-function harmTaps(page: SnapPage, ink: InkFile['pages'][number], form: boolean, r: () => number): { place: HarmPlace; p: [number, number] }[] {
+export function harmTaps(page: SnapPage, ink: InkFile['pages'][number], form: boolean, r: () => number): { place: HarmPlace; p: [number, number] }[] {
 	const out: { place: HarmPlace; p: [number, number] }[] = [];
 	const ws = page.geo.ws;
 	if (!ws.length) return out;
@@ -295,7 +295,7 @@ interface Like {
 	foundSame: number;
 }
 
-function readInk(file: string): InkFile | null {
+export function readInk(file: string): InkFile | null {
 	if (!fs.existsSync(file)) return null;
 	return JSON.parse(zlib.gunzipSync(fs.readFileSync(file)).toString('utf8')) as InkFile;
 }

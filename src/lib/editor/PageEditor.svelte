@@ -30,6 +30,7 @@
 	import { ensureStampFont, stampName, cssColor, HIGHLIGHT_COLORS, HIGHLIGHT_CSS, paintOrder } from './stamp-view';
 	import { stampForPage } from './copy';
 	import { defaultStroke, finishStroke, penBox, reboxPatch, type Pt } from './pen';
+	import { requestBlanks, snapEligible, snappedText, snappedTick } from './snap-cache';
 	import {
 		arrowDelta,
 		boxAround,
@@ -539,7 +540,8 @@
 			announce(`${label} placed.`);
 		} else if (isMark(t)) {
 			const sz = squareBoxSize(aspect, 0.026);
-			const id = store.addStamp(pid, { kind: 'mark', mark: t, box: boxAround(f, sz.width, sz.height) });
+			const snapped = t === 'check' && !byKeyboard && snapOk && source ? snappedTick(source, page, f) : null;
+			const id = store.addStamp(pid, { kind: 'mark', mark: t, box: snapped ?? boxAround(f, sz.width, sz.height) });
 			if (byKeyboard) {
 				disarm();
 				select(id, true);
@@ -567,10 +569,12 @@
 			addBox(boxAround(f, sz.width, sz.height), byKeyboard);
 		} else if (t === 'text') {
 			disarm();
-			const size = textSize;
+			// On a flat form, a tap on or beside a drawn blank puts the text in it (snap-cache.ts).
+			const snapped = !byKeyboard && snapOk && source ? snappedText(source, page, f) : null;
+			const size = snapped?.size ?? textSize;
 			gestureBegin('Add text');
 			// Starts as a selected placeholder, so the box is visible and typing replaces it.
-			const id = store.addStamp(pid, { kind: 'text', text: PLACEHOLDER, size, color: 'black', ...textOrigin(f, size) });
+			const id = store.addStamp(pid, { kind: 'text', text: PLACEHOLDER, size, color: 'black', ...(snapped ? { x: snapped.x, y: snapped.y } : textOrigin(f, size)) });
 			selectedId = id;
 			editing = { id, isNew: true };
 			untouched = true;
@@ -613,6 +617,12 @@
 			showNote('Redacted areas are removed from the file when you export, not just covered.');
 		}
 	}
+
+	// Snap on tap: read the page's blanks in the engine worker once Text or Check is armed on it.
+	const snapOk = $derived(snapEligible(source, page, formFieldsOf(app.engine, source)));
+	$effect(() => {
+		if ((armed === 'text' || armed === 'check') && snapOk && source && page) requestBlanks(app.engine, source, page.pageIndex);
+	});
 
 	/** Text placed so the middle of its first line sits on the tapped point. */
 	function textOrigin(f: Point, size: number) {

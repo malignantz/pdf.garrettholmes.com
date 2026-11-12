@@ -41,7 +41,8 @@ export const METHODS: readonly EngineMethod[] = [
 	'blankPage',
 	'exportPlan',
 	'unsupportedChars',
-	'formFields'
+	'formFields',
+	'pageBlanks'
 ];
 
 export function isRequest(data: unknown): data is EngineRequest {
