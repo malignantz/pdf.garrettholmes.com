@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>OCR bench</title>
+<!-- Same rule as the app: nothing may load from another origin. Workers from our origin only (no blob: URLs). -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; img-src 'self' data: blob:" />
+</head>
+<body>
+<p id="status">ready</p>
+<script type="module" src="/bench.js"></script>
+</body>
+</html>

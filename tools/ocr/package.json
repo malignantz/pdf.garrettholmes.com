@@ -1,0 +1,11 @@
+{
+	"name": "ocr-measure-harness",
+	"private": true,
+	"type": "module",
+	"description": "Measurement harness only (not part of the app bundle): in-browser OCR with tesseract.js.",
+	"dependencies": {
+		"@tesseract.js-data/eng": "1.0.0",
+		"tesseract.js": "7.0.0",
+		"tesseract.js-core": "7.0.0"
+	}
+}

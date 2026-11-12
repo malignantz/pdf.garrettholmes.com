@@ -23,7 +23,14 @@
 		"survey:report": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/survey/survey.ts report",
 		"forms:measure": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/forms-detect/measure.ts",
 		"forms:snap": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/forms-snap/measure.ts",
-		"hltext:measure": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/hl-text/measure.ts"
+		"hltext:measure": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/hl-text/measure.ts",
+		"ocr:setup": "npm --prefix tools/ocr ci --no-audit --no-fund && sh tools/ocr/fetch-models.sh",
+		"ocr:measure": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/ocr/measure.ts",
+		"ocr:scans": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/ocr/scans.ts",
+		"ocr:browser": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/ocr/browser/bench.ts",
+		"ocr:grade": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/ocr/grade.ts",
+		"ocr:osd": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/ocr/osd.ts",
+		"ocr:gate": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/ocr/gate.ts"
 	},
 	"devDependencies": {
 		"@playwright/test": "^1.65.0",
