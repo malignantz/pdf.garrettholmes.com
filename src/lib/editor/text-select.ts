@@ -142,6 +142,25 @@ export function selectionRects(layout: TextLayout, a: number, b: number): StampB
 	const lineOf = new Map<number, ShownLine>();
 	for (const l of lines) lineOf.set(words[l.first].line, l);
 	const cross = (box: StampBox, across: boolean) => (across ? box.h : box.w * aspect);
+	/**
+	 * A merged box must not cover a word that is not selected (right-to-left text whose
+	 * last full stop sits at the far end, a letter the file draws separately): the
+	 * rectangle then ends before it.
+	 */
+	const coversOther = (u: StampBox, lines: number[]) => {
+		for (const ln of lines) {
+			const l = lineOf.get(ln);
+			if (!l) continue;
+			for (let k = l.first; k <= l.last; k++) {
+				if (k >= i0 && k <= i1) continue;
+				const b = words[k].box;
+				const cx = b.x + b.w / 2;
+				const cy = b.y + b.h / 2;
+				if (cx > u.x && cx < u.x + u.w && cy > u.y && cy < u.y + u.h) return true;
+			}
+		}
+		return false;
+	};
 	const out: { box: StampBox; line: number; across: boolean }[] = [];
 	for (let i = i0; i <= i1; i++) {
 		const w = words[i];
@@ -149,7 +168,7 @@ export function selectionRects(layout: TextLayout, a: number, b: number): StampB
 		const last = out[out.length - 1];
 		if (last && last.line === w.line) {
 			const u = union(last.box, w.box);
-			if (cross(u, across) <= MERGE_SLACK * Math.max(cross(last.box, across), cross(w.box, across))) {
+			if (cross(u, across) <= MERGE_SLACK * Math.max(cross(last.box, across), cross(w.box, across)) && !coversOther(u, [w.line])) {
 				last.box = u;
 				continue;
 			}
@@ -160,7 +179,7 @@ export function selectionRects(layout: TextLayout, a: number, b: number): StampB
 	const merged: StampBox[] = [];
 	let prev: (typeof out)[number] | null = null;
 	for (const r of out) {
-		if (prev && prev.line !== r.line && prev.across === r.across && sameBand(prev.box, r.box, r.across, aspect)) {
+		if (prev && prev.line !== r.line && prev.across === r.across && sameBand(prev.box, r.box, r.across, aspect) && !coversOther(union(prev.box, r.box), [prev.line, r.line])) {
 			prev.box = union(prev.box, r.box);
 			merged[merged.length - 1] = prev.box;
 			continue;

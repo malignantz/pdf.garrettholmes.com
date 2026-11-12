@@ -153,6 +153,8 @@ interface LChar {
 	base: number;
 	nom: Span;
 	ink: Span | null;
+	/** [line, char] in the raw lines. */
+	at: [number, number];
 }
 
 interface LLine {
@@ -170,6 +172,13 @@ interface LLine {
 }
 
 const blank = (c: string) => c.trim() === '';
+/** A character box with no width along its line (its height is the font's). */
+const noAdvance = (q: number[]) => Math.hypot(q[2] - q[0], q[3] - q[1]) < 0.01 * Math.hypot(q[4] - q[0], q[5] - q[1]);
+/** Control codes (other than tab and space-like ones) and the replacement character. */
+const isJunk = (c: string) => {
+	const k = c.codePointAt(0) ?? 0;
+	return (k < 0x20 && k !== 9) || (k >= 0x7f && k < 0xa0) || k === 0xfffd;
+};
 const median = (v: number[]) => {
 	const s = [...v].sort((a, b) => a - b);
 	return s.length ? s[Math.floor(s.length / 2)] : 0;
@@ -180,32 +189,50 @@ const median = (v: number[]) => {
  * size in points (MuPDF page space is [0 0 width height]).
  */
 export function layoutWords(raw: RawLine[], width: number, height: number): PageText {
+	const { words, skipped } = layoutWordsDetailed(raw, width, height);
+	return { words, skipped };
+}
+
+/**
+ * layoutWords, plus for each word the raw characters it is made of (as [line, char]
+ * indices into `raw`), for measurements that need to find each word's glyphs.
+ */
+export function layoutWordsDetailed(raw: RawLine[], width: number, height: number): PageText & { chars: [number, number][][] } {
 	let skipped = 0;
+	const wordChars: [number, number][][] = [];
 	let total = 0;
 	for (const l of raw) total += l.chars.length;
 	if (total > MAX_CHARS || !(width > 0 && height > 0)) {
-		return { words: [], skipped: raw.reduce((n, l) => n + l.chars.filter((c) => !blank(c.c)).length, 0) };
+		return { words: [], skipped: raw.reduce((n, l) => n + l.chars.filter((c) => !blank(c.c)).length, 0), chars: [] };
 	}
 
 	// 1. Lines in their own frames; tilted lines and unusable glyphs are left out.
 	const lines: LLine[] = [];
-	for (const l of raw) {
+	raw.forEach((l, rawLine) => {
 		const visible = l.chars.filter((c) => !blank(c.c)).length;
+		// A line with many control codes or U+FFFD has no usable text
+		// (a font without a Unicode map): its words cannot be told apart, so it is not offered.
+		// Visible characters with no advance count too (each glyph listed as two characters).
+		const junk = l.chars.filter((c) => isJunk(c.c) || (!blank(c.c) && noAdvance(c.quad))).length;
+		if (junk > 0 && junk >= 0.2 * l.chars.length) {
+			skipped += visible;
+			return;
+		}
 		const [dx, dy] = l.dir;
 		const len = Math.hypot(dx, dy);
 		if (!(len > 0) || !Number.isFinite(len)) {
 			skipped += visible;
-			continue;
+			return;
 		}
 		const angle = (Math.atan2(dy, dx) * 180) / Math.PI;
 		const off = Math.abs(angle - 90 * Math.round(angle / 90));
 		if (off > MAX_TILT) {
 			skipped += visible;
-			continue;
+			return;
 		}
 		const frame = { c: dx / len, s: dy / len };
 		const chars: LChar[] = [];
-		for (const ch of l.chars) {
+		l.chars.forEach((ch, rawChar) => {
 			const nom = quadSpan(frame, ch.quad);
 			const isBlank = blank(ch.c);
 			const h = nom.v1 - nom.v0;
@@ -214,18 +241,32 @@ export function layoutWords(raw: RawLine[], width: number, height: number): Page
 			const ink = ch.ink ? quadSpan(frame, ch.ink) : null;
 			if (!isBlank && !(h > 0.05 * em) && !ink) {
 				skipped++;
-				continue;
+				return;
 			}
 			if (![nom.u0, nom.u1, nom.v0, nom.v1].every(Number.isFinite) || !(em > 0)) {
 				if (!isBlank) skipped++;
-				continue;
+				return;
 			}
 			const [, base] = toFrame(frame, ch.origin[0], ch.origin[1]);
-			chars.push({ c: ch.c, blank: isBlank, font: ch.font, em, base, nom, ink });
+			chars.push({ c: ch.c, blank: isBlank, font: ch.font, em, base, nom, ink, at: [rawLine, rawChar] });
+		});
+		// One structured-text line can hold text of two visual lines (seen in a display
+		// heading): it is split where the baseline jumps by more than half an em.
+		let part: LChar[] = [];
+		let base = NaN;
+		const flush = () => {
+			if (part.some((c) => !c.blank)) lines.push({ angle, frame, chars: part, top: 0, bottom: 0, inkTop: 0, inkBottom: 0, u0: 0, u1: 0, em: 0 });
+			part = [];
+		};
+		for (const ch of chars) {
+			if (!ch.blank) {
+				if (Number.isFinite(base) && Math.abs(ch.base - base) > 0.5 * ch.em) flush();
+				base = ch.base;
+			}
+			part.push(ch);
 		}
-		if (!chars.some((c) => !c.blank)) continue;
-		lines.push({ angle, frame, chars, top: 0, bottom: 0, inkTop: 0, inkBottom: 0, u0: 0, u1: 0, em: 0 });
-	}
+		flush();
+	});
 
 	// 2. How tall each font's ink is on this page, in ems above and below the baseline.
 	const inkUp = new Map<string, number>();
@@ -289,11 +330,26 @@ export function layoutWords(raw: RawLine[], width: number, height: number): Page
 	lines.forEach((l, li) => {
 		const groups: LChar[][] = [];
 		let cur: LChar[] = [];
+		let spaced = false;
 		for (const ch of l.chars) {
 			if (ch.blank) {
-				if (cur.length) groups.push(cur);
-				cur = [];
-			} else cur.push(ch);
+				spaced = true;
+				continue;
+			}
+			const prev = cur[cur.length - 1];
+			if (prev) {
+				const gap = Math.max(ch.nom.u0 - prev.nom.u1, prev.nom.u0 - ch.nom.u1);
+				const em = Math.max(prev.em, ch.em);
+				// A space cuts a word only where the letters on either side are apart (Word draws
+				// a space under a ligature); and letters far apart are cut without one
+				// (bidirectional text whose full stop the file puts at the far end).
+				if ((spaced && gap > 0.08 * em) || gap > 0.25 * em) {
+					groups.push(cur);
+					cur = [];
+				}
+			}
+			spaced = false;
+			cur.push(ch);
 		}
 		if (cur.length) groups.push(cur);
 		const spans = groups.map((g) => {
@@ -335,6 +391,7 @@ export function layoutWords(raw: RawLine[], width: number, height: number): Page
 				skipped += g.length;
 				return;
 			}
+			wordChars.push(g.map((c) => c.at));
 			words.push({
 				text: g.map((c) => c.c).join(''),
 				box: { x: x0 / width, y: y0 / height, w: (x1 - x0) / width, h: (y1 - y0) / height },
@@ -352,7 +409,7 @@ export function layoutWords(raw: RawLine[], width: number, height: number): Page
 		}
 		w.line = n;
 	}
-	return { words, skipped };
+	return { words, skipped, chars: wordChars };
 }
 
 /** Same direction within the tilt limit. */
