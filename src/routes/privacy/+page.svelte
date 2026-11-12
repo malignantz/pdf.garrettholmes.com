@@ -51,6 +51,28 @@
 	</section>
 
 	<section>
+		<h2>What is kept on this device</h2>
+		<p class="para">
+			So you can pick up where you left off, the files you open and your changes are saved in this browser, on this
+			device only. They are never sent anywhere.
+		</p>
+		<ul class="points">
+			<li>
+				<strong>Deleted after 7 days</strong> without changes, and at once when you choose Discard, Forget my work or
+				Start over, or turn off “Keep my work on this device” (in the workspace, under Settings).
+			</li>
+			<li>
+				<strong>Passwords are never kept.</strong> A file you opened with a password is kept as you gave it, still
+				locked, and asks for the password again.
+			</li>
+			<li>
+				<strong>Private windows</strong> keep nothing once closed. Some browsers, Safari among them, may also clear
+				it when the site has not been used for a while.
+			</li>
+		</ul>
+	</section>
+
+	<section>
 		<h2>Check it yourself</h2>
 		<ol class="steps">
 			<li>
@@ -116,6 +138,10 @@
 
 	h2 {
 		font-size: 1.0625rem;
+		margin-bottom: var(--s-4);
+	}
+
+	.para {
 		margin-bottom: var(--s-4);
 	}
 

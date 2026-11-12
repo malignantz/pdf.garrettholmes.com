@@ -71,6 +71,14 @@ export interface DocState {
 	readonly isDirty: boolean;
 }
 
+/** The document part of the state, as `restore` takes it. */
+export interface DocSnapshot {
+	readonly sources: readonly Source[];
+	readonly pages: readonly PageRef[];
+	readonly assets: readonly Asset[];
+	readonly formValues: FormValues;
+}
+
 export interface DocStoreOptions {
 	/** Max undo steps kept. Default 200. */
 	maxHistory?: number;
@@ -123,6 +131,13 @@ export interface DocStore {
 	clear(): boolean;
 	/** Drop everything including history; releases all sources. Not undoable. */
 	reset(): void;
+	/**
+	 * Replace everything with a saved document ("pick up where you left off"). History
+	 * is cleared and the step is not undoable. Validated like the commands (sources,
+	 * page refs, stamps, assets, form answers); on any problem it throws and the store
+	 * is unchanged. `clean`: the saved document had been exported (isDirty false).
+	 */
+	restore(snapshot: DocSnapshot, opts?: { clean?: boolean }): void;
 
 	// selection
 	select(id: PageId): void;
@@ -709,6 +724,76 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 		changed();
 	}
 
+	function restore(snapshot: DocSnapshot, opts: { clean?: boolean } = {}): void {
+		if (gesture) throw new Error('DocStore: cannot restore during a gesture');
+		const sources = [...snapshot.sources];
+		const srcIds = new Set<string>();
+		for (const s of sources) {
+			if (!s || typeof s.id !== 'string' || !s.id || srcIds.has(s.id)) throw new Error('DocStore: bad or duplicate source in a saved document');
+			if (!(s.bytes instanceof Uint8Array) || !Array.isArray(s.pages) || s.pages.length === 0)
+				throw new Error(`DocStore: saved source ${s.id} has no bytes or pages`);
+			srcIds.add(s.id);
+		}
+		const assets = [...snapshot.assets];
+		const assetIds = new Set<string>();
+		for (const a of assets) {
+			if (!a || typeof a.id !== 'string' || assetIds.has(a.id) || !(a.png instanceof Uint8Array))
+				throw new Error('DocStore: bad or duplicate asset in a saved document');
+			assetIds.add(a.id);
+		}
+		const probe: Doc = { sources, pages: [], assets, formValues: EMPTY_VALUES };
+		const pageIds = new Set<string>();
+		const stampIds = new Set<string>();
+		const pages = snapshot.pages.map((r) => {
+			if (!r || typeof r.id !== 'string' || !r.id || pageIds.has(r.id)) throw new Error('DocStore: bad or duplicate page id in a saved document');
+			pageIds.add(r.id);
+			if (!srcIds.has(r.sourceId)) throw new Error(`DocStore: unknown source ${r.sourceId}`);
+			if (!Array.isArray(r.stamps)) throw new Error('DocStore: page stamps must be a list');
+			for (const s of r.stamps) {
+				if (!s || typeof s.id !== 'string' || stampIds.has(s.id)) throw new Error('DocStore: bad or duplicate stamp id in a saved document');
+				stampIds.add(s.id);
+			}
+			const copy: PageRef = { ...r, stamps: r.stamps.map((s) => cloneStamp(s, s.id)) };
+			checkRef(probe, copy);
+			return copy;
+		});
+		const used = new Set(pages.map((p) => p.sourceId));
+		if (sources.some((s) => !used.has(s.id))) throw new Error('DocStore: a saved source has no pages');
+		const values: FormValues = {};
+		for (const [id, fields] of Object.entries(snapshot.formValues ?? {})) {
+			if (!srcIds.has(id)) throw new Error(`DocStore: form answers for unknown source ${id}`);
+			const out: Record<string, FormValue> = {};
+			for (const [name, v] of Object.entries(fields ?? {})) {
+				if (!name || !isFormValue(v)) throw new Error('DocStore: bad form answer in a saved document');
+				out[name] = copyValue(v);
+			}
+			if (Object.keys(out).length) values[id] = Object.freeze(out);
+		}
+
+		gesture = null;
+		doc = { sources, pages, assets, formValues: Object.freeze(values) };
+		cleanDoc = opts.clean ? doc : EMPTY_DOC;
+		undoStack = [];
+		redoStack = [];
+		selection = EMPTY_SET;
+		anchor = null;
+		lastEvent = null;
+		fillStep = null;
+		sweep();
+		for (const s of sources) {
+			const old = registry.get(s.id);
+			registry.set(s.id, s);
+			if (old && old !== s) {
+				try {
+					options.onSourceReleased?.(s.id);
+				} catch (err) {
+					console.error('DocStore: onSourceReleased threw', err);
+				}
+			}
+		}
+		changed();
+	}
+
 	// ---- selection
 
 	function setSel(next: ReadonlySet<PageId>, a: PageId | null): void {
@@ -927,6 +1012,7 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 		clearFormValues,
 		clear,
 		reset,
+		restore,
 		select,
 		toggle,
 		selectRange,

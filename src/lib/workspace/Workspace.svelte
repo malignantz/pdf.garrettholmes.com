@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, tick, type Component } from 'svelte';
+	import { onMount, tick, untrack, type Component } from 'svelte';
 	import { version } from '$app/env';
 	import { describeError } from '../ui/error-report';
 	import type { PageId } from '../core/types';
@@ -19,12 +19,21 @@
 	import PageGrid from './PageGrid.svelte';
 	import PasswordDialog from './PasswordDialog.svelte';
 	import ShortcutSheet from './ShortcutSheet.svelte';
+	import RestoreCard from '../session/RestoreCard.svelte';
+	import SaveDialog from '../session/SaveDialog.svelte';
+	import SaveLine from '../session/SaveLine.svelte';
+	import { getSession, useSession } from '../session/index.svelte';
+	import { BROKEN_MESSAGE } from '../session/session';
+	import { exportForm } from './export-form.svelte';
 	import { play, snapshot } from './flip';
 	import { createIntake, type PasswordAsk } from './intake.svelte';
 	import { addedMessage, keyboardMoveSlot, pastTense, plural, slotAfterSelection } from './logic';
 
 	const { store, engine, renderer } = getApp();
 	const doc = useDocStore(store);
+	const session = getSession();
+	const saved = useSession(session);
+	let saveOpen = $state(false);
 
 	const ACCEPT = 'application/pdf,.pdf,image/png,image/jpeg,image/webp,image/gif,image/bmp,image/heic,image/heif,.heic,.heif,image/*';
 	const THUMB_KEY = 'pdf-workspace.thumb';
@@ -64,11 +73,8 @@
 	const intake = createIntake({
 		store,
 		engine,
-		askPassword: (ask) =>
-			new Promise((resolve) => {
-				pwAsk = ask;
-				pwResolve = resolve;
-			}),
+		onOpened: (source, info) => session.noteOpened(source, info),
+		askPassword,
 		notify: (m) => toasts.show({ message: m.message, tone: m.tone }),
 		onFirstPages: async (ids) => {
 			await tick();
@@ -81,6 +87,13 @@
 			say(msg);
 		}
 	});
+
+	function askPassword(ask: PasswordAsk): Promise<string | null> {
+		return new Promise((resolve) => {
+			pwAsk = ask;
+			pwResolve = resolve;
+		});
+	}
 
 	function answerPassword(pw: string | null) {
 		const r = pwResolve;
@@ -166,8 +179,64 @@
 		sync();
 		mq.addEventListener('change', sync);
 		mod = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? 'Cmd' : 'Ctrl';
-		return () => mq.removeEventListener('change', sync);
+		// One small read: is there saved work to offer? Never restores by itself.
+		void session.init();
+		const hide = () => session.pageHide();
+		addEventListener('pagehide', hide);
+		const vis = () => document.visibilityState === 'hidden' && session.pageHide();
+		document.addEventListener('visibilitychange', vis);
+		return () => {
+			mq.removeEventListener('change', sync);
+			removeEventListener('pagehide', hide);
+			document.removeEventListener('visibilitychange', vis);
+		};
 	});
+
+	// The export options are saved with the work (never the password).
+	$effect(() => {
+		JSON.stringify(exportForm);
+		untrack(() => session.touch());
+	});
+
+	// ------------------------------------------------------------ saved work
+
+	async function restoreSaved() {
+		if (intake.busy || store.state.pages.length) return;
+		const r = await session.restore(askPassword);
+		if (r.ok) {
+			const n = store.state.pages.length;
+			const msg = r.skipped
+				? `Restored ${plural(n, 'page')}. ${plural(r.skipped, 'file')} with a password ${r.skipped === 1 ? 'was' : 'were'} left out.`
+				: `Restored ${plural(n, 'page')}.`;
+			toasts.show({ message: msg, tone: 'ok' });
+			say(msg);
+		} else if (r.reason === 'broken') {
+			toasts.show({ message: BROKEN_MESSAGE, tone: 'error' });
+		} else if (r.reason === 'skipped') {
+			toasts.show({ message: 'Nothing was restored. Your saved work is still here.' });
+		} else if (!saved.offer) {
+			toasts.show({ message: 'The saved work is no longer here.' });
+		}
+	}
+
+	async function discardSaved() {
+		await session.discard();
+		toasts.show({ message: 'Saved work deleted.' });
+	}
+
+	async function setKeep(on: boolean) {
+		await session.setKeep(on);
+		toasts.show({ message: on ? 'Your work will be kept on this device.' : 'Your work is no longer kept on this device. What was saved is deleted.' });
+	}
+
+	async function forgetWork() {
+		const ok = await session.forget();
+		toasts.show(
+			ok
+				? { message: 'Your work was removed from this device.' }
+				: { message: 'Could not remove saved work. Clear this site’s data in your browser settings.', tone: 'error' }
+		);
+	}
 
 	// ------------------------------------------------------------ commands
 
@@ -515,7 +584,8 @@
 	}
 
 	function onbeforeunload(e: BeforeUnloadEvent) {
-		if (store.state.isDirty && store.state.pages.length > 0) {
+		// Work kept on this device is not lost by leaving; anything else still asks.
+		if (store.state.isDirty && store.state.pages.length > 0 && !session.safeToLeave) {
 			e.preventDefault();
 			e.returnValue = '';
 		}
@@ -574,6 +644,7 @@
 			{ label: 'Insert blank page', icon: 'blank-page', onselect: insertBlank, disabled: !hasPages },
 			'separator',
 			{ label: 'Keyboard shortcuts', hint: '?', onselect: () => (shortcutsOpen = true) },
+			{ label: 'Your work on this device', icon: 'shield-check', onselect: () => (saveOpen = true) },
 			{ label: 'Start over', icon: 'trash', danger: true, onselect: startOver, disabled: !hasPages }
 		];
 	});
@@ -637,6 +708,7 @@
 
 <div class="workspace" inert={!!editorId}>
 	{#if hasPages}
+		<SaveLine saved={saved.saving} line={saved.line} onopen={() => (saveOpen = true)} />
 		<PageGrid
 			bind:this={grid}
 			{pages}
@@ -661,7 +733,13 @@
 			announce={say}
 		/>
 	{:else}
-		<EmptyDesk onfiles={addFiles} accept={ACCEPT} />
+		<EmptyDesk onfiles={addFiles} accept={ACCEPT}>
+			{#snippet top()}
+				{#if saved.offer}
+					<RestoreCard offer={saved.offer} restoring={saved.restoring} onrestore={restoreSaved} ondiscard={discardSaved} />
+				{/if}
+			{/snippet}
+		</EmptyDesk>
 	{/if}
 
 	{#if showFloat}
@@ -745,6 +823,14 @@
 	}}
 />
 <ShortcutSheet bind:open={shortcutsOpen} />
+<SaveDialog
+	bind:open={saveOpen}
+	keep={saved.keep}
+	line={saved.line}
+	canForget={saved.state !== 'off'}
+	onkeep={(on) => void setKeep(on)}
+	onforget={() => void forgetWork()}
+/>
 
 <div class="visually-hidden" aria-live="polite" aria-atomic="true">{live}</div>
 

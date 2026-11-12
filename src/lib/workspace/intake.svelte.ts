@@ -32,6 +32,12 @@ export interface IntakeDeps {
 	onBatchDone: (result: { ids: PageId[]; insertedAt: number; anchored: boolean }) => void;
 	/** The first page of a batch exists (scroll it into view early). */
 	onFirstPages?: (ids: PageId[]) => void;
+	/**
+	 * A file opened, before its pages are added. `original` is the file as given;
+	 * `needsPassword` says the user had to type a password to open it (the password
+	 * itself is never passed on).
+	 */
+	onOpened?: (source: Source, info: { original: Uint8Array; needsPassword: boolean }) => void;
 }
 
 const MAX_IMAGE_PIXELS = 100_000_000;
@@ -134,6 +140,17 @@ export function createIntake(deps: IntakeDeps) {
 		}
 	}
 
+	function reportOpened(source: Source, original: Uint8Array, needsPassword: boolean): Source {
+		if (source.pages.length) {
+			try {
+				deps.onOpened?.(source, { original, needsPassword });
+			} catch (e) {
+				console.warn('onOpened failed', e);
+			}
+		}
+		return source;
+	}
+
 	async function openFile(file: File, name: string, jobId: number): Promise<Source | null> {
 		const bytes = new Uint8Array(await file.arrayBuffer());
 		if (bytes.length === 0) throw new EngineError('unreadable', `${name} is empty.`);
@@ -142,10 +159,10 @@ export function createIntake(deps: IntakeDeps) {
 			case 'unsupported':
 				throw new EngineError('unsupported', kind.reason);
 			case 'image':
-				return call(engine.openImage(bytes, kind.mime, name));
+				return reportOpened(await call(engine.openImage(bytes, kind.mime, name)), bytes, false);
 			case 'convert': {
 				const png = await toPng(file, name);
-				return call(engine.openImage(png, 'image/png', pngName(name)));
+				return reportOpened(await call(engine.openImage(png, 'image/png', pngName(name))), png, false);
 			}
 			case 'pdf':
 				return openPdf(bytes, name, jobId);
@@ -154,7 +171,7 @@ export function createIntake(deps: IntakeDeps) {
 
 	async function openPdf(bytes: Uint8Array, name: string, jobId: number): Promise<Source | null> {
 		try {
-			return await call(engine.openPdf(bytes, name));
+			return reportOpened(await call(engine.openPdf(bytes, name)), bytes, false);
 		} catch (e) {
 			if (!(e instanceof EngineError) || e.code !== 'password-required') throw e;
 		}
@@ -165,7 +182,7 @@ export function createIntake(deps: IntakeDeps) {
 			if (pw === null) return null;
 			setStatus(jobId, 'opening');
 			try {
-				return await call(engine.openPdf(bytes, name, pw));
+				return reportOpened(await call(engine.openPdf(bytes, name, pw)), bytes, true);
 			} catch (e) {
 				if (e instanceof EngineError && (e.code === 'password-wrong' || e.code === 'password-required')) {
 					error = 'That password did not open the file. Check it and try again.';
