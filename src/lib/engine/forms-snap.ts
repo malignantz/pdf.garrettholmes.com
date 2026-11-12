@@ -1,7 +1,8 @@
 /**
- * Tap to snap on flat forms: a measured prototype, not wired into the app. See the
- * plan, "Stretch: make a flat form fillable", for the method and the numbers
- * (tools/forms-snap/ measures it against real AcroForm widgets).
+ * Tap to snap on flat forms. See the plan, "Stretch: make a flat form fillable",
+ * for the method and the numbers (tools/forms-snap/ measures it against real
+ * AcroForm widgets). The editor's snap on tap (editor/snap.ts) uses `snapAt` with
+ * its own gates; `similarTo` is not wired.
  *
  * The user points; this only snaps. With the Text tool the user taps roughly where
  * they want to write. `snapAt` returns the field rectangle near the tap that the

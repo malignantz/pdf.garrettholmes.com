@@ -1283,7 +1283,7 @@
 		]
 	},
 	"forms-snap.pdf": {
-		"pages": 1,
-		"note": "flat form (no AcroForm) for tap-to-snap: two labelled lines on one row, two stacked address lines, a 3×3 grid (header + 2 empty rows), Yes/No squares, a column of three squares 4 pt apart, six comb boxes, an underscore run, a box with a corner label; a paragraph and a filled 2×2 table that are not blanks"
+		"pages": 2,
+		"note": "p1 flat form (no AcroForm) for tap-to-snap: two labelled lines on one row, two stacked address lines, a 3×3 grid (header + 2 empty rows), Yes/No squares, a column of three squares 4 pt apart, six comb boxes, an underscore run, a box with a corner label, a 60 pt tall box and a 9 pt short box; a paragraph and a filled 2×2 table that are not blanks; p2 a full-page scan (JPEG) with a label and a drawn line over it"
 	}
 }

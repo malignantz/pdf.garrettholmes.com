@@ -258,6 +258,23 @@ export interface Engine {
 	unsupportedChars(text: string): Promise<string>;
 	/** Fillable fields of a source; [] when Source.hasForm is not true. */
 	formFields(source: Source): Promise<FormField[]>;
+	/** What the blank detector reads on one page, for snap on tap (see PageBlanks). Never throws for an odd page: it declines. */
+	pageBlanks(source: Source, pageIndex: number): Promise<PageBlanks>;
+}
+
+/**
+ * Blanks of one source page for "snap on tap" (the editor's Text and Check tools on
+ * flat forms; engine/snap-tap.ts, editor/snap.ts). Page space: points, origin
+ * top-left, the page as displayed before PageRef.rotation. `declined`: nothing to
+ * snap to (scanned page, too detailed to read within the time and size budget,
+ * page size not matching the source); `data` is null then. Otherwise `data` is
+ * engine/snap-tap.ts `TapData`, read only by editor/snap.ts.
+ */
+export interface PageBlanks {
+	width: number;
+	height: number;
+	declined: boolean;
+	data: unknown;
 }
 
 export interface RenderRequest {

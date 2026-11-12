@@ -9,6 +9,7 @@
  */
 import type * as MU from 'mupdf';
 import type { PageInk } from '../../src/lib/engine/forms-detect';
+import { cueAt } from '../../src/lib/engine/forms-cue';
 import type { Rect, TruthType } from './match';
 
 const HIDDEN = 2 | 32; // Hidden, NoView
@@ -46,43 +47,7 @@ export function pageWidgets(page: MU.PDFPage): { kept: { type: TruthType; rect: 
 	return { kept, neutral };
 }
 
-/** Something drawn in the page content marks this widget's spot. */
+/** Something drawn in the page content marks this widget's spot (src/lib/engine/forms-cue.ts). */
 export function hasCue(ink: PageInk, t: { type: TruthType; rect: Rect }): boolean {
-	const r = t.rect;
-	const w = r[2] - r[0];
-	const h = r[3] - r[1];
-	const g = Math.max(3, 0.3 * h);
-	// Horizontal ink along the widget's top or bottom covering half its width (pieces add up).
-	let cover = 0;
-	for (const l of ink.lines) {
-		if (l.light > 0.92) continue;
-		if (l.dir === 'h') {
-			const o = Math.min(l.x1, r[2]) - Math.max(l.x0, r[0]);
-			if (o > 0 && l.y0 >= r[1] - g && l.y0 <= r[3] + g) cover += o;
-		} else if (t.type === 'checkbox' || t.type === 'radio') {
-			const o = Math.min(l.y1, r[3]) - Math.max(l.y0, r[1]);
-			if (o >= 0.5 * h && l.x0 >= r[0] - g && l.x0 <= r[2] + g) return true;
-		}
-	}
-	if (cover >= 0.5 * w) return true;
-	for (const b of ink.boxes) {
-		const ox = Math.min(b.r[2], r[2]) - Math.max(b.r[0], r[0]);
-		const oy = Math.min(b.r[3], r[3]) - Math.max(b.r[1], r[1]);
-		if (ox <= 0 || oy <= 0) continue;
-		const bArea = (b.r[2] - b.r[0]) * (b.r[3] - b.r[1]);
-		// A box about the widget's size (not a page-wide background).
-		if ((ox * oy) / (w * h) >= 0.5 && bArea <= 6 * w * h && (b.stroked || b.light < 0.97)) return true;
-	}
-	for (const c of ink.circles) {
-		const ox = Math.min(c[2], r[2]) - Math.max(c[0], r[0]);
-		const oy = Math.min(c[3], r[3]) - Math.max(c[1], r[1]);
-		if (ox > 0 && oy > 0) return true;
-	}
-	for (const gl of ink.glyphs) {
-		const ox = Math.min(gl.r[2], r[2]) - Math.max(gl.r[0], r[0]);
-		const oy = Math.min(gl.r[3], r[3]) - Math.max(gl.r[1], r[1]);
-		if (ox <= 0 || oy <= 0) continue;
-		if (gl.ch === '_' || gl.shape) return true;
-	}
-	return false;
+	return cueAt(ink, t.rect, t.type === 'checkbox' || t.type === 'radio');
 }

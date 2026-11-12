@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PDFDocument, StandardFonts, rgb } from '@cantoo/pdf-lib';
+import { jpeg, scanGray } from './generate-shrink.mjs';
 
 const H = 792;
 
@@ -67,6 +68,11 @@ async function snapForm() {
 	// A box with a small label in its corner.
 	box(72, 340, 300, 372);
 	text('Employer name', 75, 348, 7);
+	// Snap on tap (editor/snap.ts): a tall box (text keeps the tapped line) and a short box (text steps down).
+	text('Comments', 72, 548);
+	box(72, 552, 300, 612);
+	text('Initials', 320, 560);
+	box(360, 552, 420, 561);
 	// Not blanks: a paragraph and a filled table.
 	const para = [
 		'This paragraph explains the form. Tapping on its words must not place',
@@ -81,13 +87,20 @@ async function snapForm() {
 		['North', '1,200'],
 		['South', '980']
 	].forEach((row, r) => row.forEach((s, c) => text(s, tc[c] + 4, tr[r] + 12, 9)));
+	// Page 2: a scanned form (a full-page image) with a drawn line and a label over it, as
+	// an OCR tool leaves it: a scan is never snapped to, whatever is drawn on top.
+	const p2 = doc.addPage([612, H]);
+	const scan = await doc.embedJpg(jpeg(scanGray(153, 198, 5), 153, 198, 1, 60));
+	p2.drawImage(scan, { x: 0, y: 0, width: 612, height: H });
+	p2.drawText('Name', { x: 72, y: H - 100, size: 10, font, color: black });
+	p2.drawLine({ start: { x: 110, y: H - 102 }, end: { x: 300, y: H - 102 }, thickness: 0.75, color: black });
 	return doc.save({ useObjectStreams: false });
 }
 
 export default async function generateFormsSnapCorpus(write) {
 	write('forms-snap.pdf', await snapForm(), {
-		pages: 1,
-		note: 'flat form (no AcroForm) for tap-to-snap: two labelled lines on one row, two stacked address lines, a 3×3 grid (header + 2 empty rows), Yes/No squares, a column of three squares 4 pt apart, six comb boxes, an underscore run, a box with a corner label; a paragraph and a filled 2×2 table that are not blanks'
+		pages: 2,
+		note: 'p1 flat form (no AcroForm) for tap-to-snap: two labelled lines on one row, two stacked address lines, a 3×3 grid (header + 2 empty rows), Yes/No squares, a column of three squares 4 pt apart, six comb boxes, an underscore run, a box with a corner label, a 60 pt tall box and a 9 pt short box; a paragraph and a filled 2×2 table that are not blanks; p2 a full-page scan (JPEG) with a label and a drawn line over it'
 	});
 }
 
