@@ -79,6 +79,65 @@ async function digest(d: Uint8Array): Promise<string> {
 	return s;
 }
 
+const REFS = /"(\d+ \d+ R)"/g;
+
+/**
+ * Bytes MuPDF's merging could save: streams with the same data and dictionary, and
+ * other objects that are equal once the objects they point to are merged (a few
+ * rounds, like MuPDF's own repeated pass). Pages are never merged.
+ */
+async function duplicateBytes(dump: StreamDump): Promise<number> {
+	const { objects, data } = dump;
+	const canon = new Map<string, string>();
+	const ref = (key: string) => key.slice(4); // "obj:12 0 R" → "12 0 R"
+	const hashes = new Map<string, string>();
+	// Stream data: same length first (cheap), then a digest.
+	const byLength = new Map<number, string[]>();
+	for (const [key, d] of data) {
+		const list = byLength.get(d.length);
+		if (list) list.push(key);
+		else byLength.set(d.length, [key]);
+	}
+	for (const [, keys] of byLength) {
+		if (keys.length < 2) continue;
+		for (const key of keys) hashes.set(key, await digest(data.get(key)!));
+	}
+	let total = 0;
+	for (let round = 0; round < 4; round++) {
+		const groups = new Map<string, string>();
+		let merged = 0;
+		for (const [key, o] of Object.entries(objects)) {
+			if (key === 'trailer' || canon.has(key)) continue;
+			const d = dictOf(o);
+			if (d && (d['/Type'] === '/Page' || d['/Type'] === '/Pages')) continue;
+			const text = JSON.stringify(o.stream ? o.stream.dict : (o.value ?? null)).replace(REFS, (_, r: string) => `"${canon.get(`obj:${r}`) ?? r}"`);
+			let sig: string;
+			let size: number;
+			if (o.stream) {
+				const raw = data.get(key);
+				if (!raw) continue;
+				const h = hashes.get(key);
+				if (!h) continue; // a unique length: no twin
+				sig = `s${h}|${text}`;
+				size = raw.length + text.length;
+			} else {
+				if (text.length < 24) continue;
+				sig = `o${text}`;
+				size = text.length;
+			}
+			const first = groups.get(sig);
+			if (first === undefined) groups.set(sig, key);
+			else {
+				canon.set(key, ref(first));
+				total += size;
+				merged++;
+			}
+		}
+		if (merged === 0) break;
+	}
+	return total;
+}
+
 /** What the cleanup could save, from a qpdf dump alone. */
 export async function estimateCleanup(dump: StreamDump): Promise<CleanupEstimate> {
 	const { objects, data } = dump;
@@ -98,24 +157,7 @@ export async function estimateCleanup(dump: StreamDump): Promise<CleanupEstimate
 			if (!/^\/[A-Z]{6}\+/.test(name)) fullFontBytes += n;
 		}
 	}
-	// Duplicates: same length first (cheap), then same bytes and dictionary.
-	const byLength = new Map<number, string[]>();
-	for (const [key, d] of data) {
-		if (d.length < 1024) continue;
-		const list = byLength.get(d.length);
-		if (list) list.push(key);
-		else byLength.set(d.length, [key]);
-	}
-	let dupBytes = 0;
-	for (const [len, keys] of byLength) {
-		if (keys.length < 2) continue;
-		const seen = new Set<string>();
-		for (const key of keys) {
-			const id = `${await digest(data.get(key)!)}|${JSON.stringify(objects[key].stream?.dict ?? null)}`;
-			if (seen.has(id)) dupBytes += len;
-			else seen.add(id);
-		}
-	}
+	const dupBytes = await duplicateBytes(dump);
 	const subset = !needsFormFonts(objects);
 	// Calibrated on the research sample (2026-11-11): whole embedded fonts shrink to
 	// about a third; subset-tagged ones rarely shrink (they already are subsets).
@@ -153,8 +195,26 @@ export async function cleanupWithMupdf(deps: EngineDeps, bytes: Uint8Array, subs
 			note('cleanup: MuPDF needed a password or had to repair the file; skipped');
 			return null;
 		}
-		if (subset) doc.subsetFonts();
-		const buf = doc.saveToBuffer('garbage=4');
+		if (subset) {
+			// A font MuPDF cannot read cleanly is not subset (it may be damaged): any warning
+			// while subsetting, and the fonts are left whole.
+			const problems: string[] = [];
+			m.setLog({ error: (s) => problems.push(s), warning: (s) => problems.push(s) });
+			try {
+				doc.subsetFonts();
+			} finally {
+				m.setLog(null);
+			}
+			if (problems.length) {
+				note(`cleanup: MuPDF reported "${problems[0]}" while subsetting; fonts left whole`);
+				doc.destroy();
+				doc = new m.PDFDocument(bytes);
+			}
+		}
+		// garbage=4: drop unused objects, renumber, merge equal objects and equal streams.
+		// compress-fonts: new (subset) font programs are written compressed; nothing else is
+		// recompressed here (the stream pass does that).
+		const buf = doc.saveToBuffer('garbage=4,compress-fonts');
 		const out = buf.asUint8Array().slice();
 		buf.destroy();
 		return out;
