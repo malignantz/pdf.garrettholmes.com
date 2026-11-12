@@ -12,6 +12,7 @@ export interface StampJson {
 	color?: string;
 	pen?: { points: { x: number; y: number }[]; width: number };
 	rects?: { x: number; y: number; w: number; h: number }[];
+	blank?: { kind: 'text' | 'check'; box: { x: number; y: number; w: number; h: number } };
 }
 
 /** Open the dev harness on a fixture page and wait until the page is drawn. */
