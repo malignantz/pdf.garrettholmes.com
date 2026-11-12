@@ -58,7 +58,8 @@ if (step === 'run') {
 	await new Promise((r) => setTimeout(r, 1500));
 	const base = `http://127.0.0.1:${port}`;
 	const browser = await chromium.launch({ executablePath: '/opt/google/chrome/chrome', headless: true });
-	const pid = (browser as unknown as { process?: () => { pid: number } }).process?.()?.pid;
+	// Chrome's processes are this script's descendants (the server is excluded below).
+	const pid = process.pid;
 	const tree = (root: number): number[] => {
 		const out = [root];
 		for (const line of execFileSync('ps', ['-eo', 'pid=,ppid=']).toString().trim().split('\n')) {
@@ -76,6 +77,7 @@ if (step === 'run') {
 		if (!pid) return 0;
 		let kb = 0;
 		for (const p of tree(pid)) {
+			if (p === pid || p === server.pid) continue;
 			try {
 				const m = /VmRSS:\s+(\d+)/.exec(fs.readFileSync(`/proc/${p}/status`, 'utf8'));
 				if (m) kb += Number(m[1]);
