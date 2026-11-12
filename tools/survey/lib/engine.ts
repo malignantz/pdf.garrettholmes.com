@@ -48,7 +48,10 @@ export function engine(): Engine {
 	const env = process.env.SURVEY_LOSSLESS;
 	const on = env === undefined ? null : new Set(env.split(',').filter(Boolean));
 	const lossless = on ? { pack: on.has('pack'), level9: on.has('level9'), cleanup: on.has('cleanup-always') ? ('always' as const) : on.has('cleanup'), libdeflate: on.has('libdeflate') } : undefined;
-	shared ??= createCoreEngine(nodeAssets(), { debug: (n) => debugNotes.push(n), lossless });
+	// SURVEY_MUPDF=download: behave like a first visit in the browser (MuPDF not on the device yet).
+	const assets = nodeAssets();
+	if (process.env.SURVEY_MUPDF === 'download') assets.mupdfCached = async () => false;
+	shared ??= createCoreEngine(assets, { debug: (n) => debugNotes.push(n), lossless });
 	return shared;
 }
 

@@ -159,9 +159,10 @@ export async function estimateCleanup(dump: StreamDump): Promise<CleanupEstimate
 	}
 	const dupBytes = await duplicateBytes(dump);
 	const subset = !needsFormFonts(objects);
-	// Calibrated on the research sample (2026-11-11): whole embedded fonts shrink to
-	// about a third; subset-tagged ones rarely shrink (they already are subsets).
-	const gain = dupBytes + (subset ? 0.6 * fullFontBytes + 0.05 * (fontBytes - fullFontBytes) : 0);
+	// Fitted on the research sample (112 survey files, 2026-11-11; MuPDF run on all):
+	// saving ≈ 1.4 × duplicates (merging also frees what only the copies used)
+	// + 0.7 × whole fonts + 0.33 × subset-tagged fonts (often subsets of many pages).
+	const gain = 1.4 * dupBytes + (subset ? 0.7 * fullFontBytes + 0.33 * (fontBytes - fullFontBytes) : 0);
 	return { fontBytes, fullFontBytes, dupBytes, subset, gain };
 }
 
@@ -171,7 +172,9 @@ export async function estimateCleanup(dump: StreamDump): Promise<CleanupEstimate
  * (about 3.6 MB over the network the first time).
  */
 export function cleanupWorthIt(est: CleanupEstimate, size: number, cost: 'loaded' | 'cached' | 'download'): boolean {
-	const [abs, rel] = cost === 'loaded' ? [8_000, 0.005] : cost === 'cached' ? [32_000, 0.01] : [200_000, 0.03];
+	// On the research sample these let MuPDF run on 77, 51 and 24 of 112 files and keep
+	// 99%, 93% and 82% of what running it on every file saves.
+	const [abs, rel] = cost === 'loaded' ? [8_000, 0.005] : cost === 'cached' ? [32_000, 0.01] : [100_000, 0.02];
 	return est.gain >= abs && est.gain >= rel * size;
 }
 
@@ -199,7 +202,13 @@ export async function cleanupWithMupdf(deps: EngineDeps, bytes: Uint8Array, subs
 			// A font MuPDF cannot read cleanly is not subset (it may be damaged): any warning
 			// while subsetting, and the fonts are left whole.
 			const problems: string[] = [];
-			m.setLog({ error: (s) => problems.push(s), warning: (s) => problems.push(s) });
+			// Notes that are not about reading a font or a page: MuPDF skipping one font on
+			// its own, and fonts that are not embedded (nothing to subset).
+			const harmless = /Skipping subsetting|^non-embedded font/;
+			const keep = (s: string) => {
+				if (!harmless.test(s)) problems.push(s);
+			};
+			m.setLog({ error: keep, warning: keep });
 			try {
 				doc.subsetFonts();
 			} finally {
