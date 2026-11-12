@@ -65,7 +65,7 @@ async function renderCommand(args: Args, out: string) {
 	const marksFile = args.get('marks') ?? path.join(out, 'marks.json');
 	const marks = JSON.parse(fs.readFileSync(marksFile, 'utf8')) as Record<string, Record<number, DrawMark[]>>;
 	const list = fs.readFileSync(args.get('files') ?? '', 'utf8').split('\n').map((l) => l.trim()).filter(Boolean);
-	const pngDir = path.join(out, 'png');
+	const pngDir = path.join(out, args.get('png') ?? 'png');
 	const want = new Map<string, Record<number, DrawMark[]>>();
 	for (const l of list) {
 		const [sha, pg] = l.split(/[:\t]/);
