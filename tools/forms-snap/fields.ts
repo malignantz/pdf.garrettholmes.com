@@ -6,7 +6,7 @@
  *
  *   npm run forms:snap -- fields --from DIR --out OUT [--workers 2] [--limit N] [--keep 20] [--only sha,sha]
  *
- * --keep N keeps both exports of the first N forms with fields in OUT/keep/ for the
+ * --keep N keeps both exports of the first N forms in OUT/keep/ for the
  * independent poppler/qpdf check; delete them when done.
  */
 import fs from 'node:fs';
@@ -29,7 +29,7 @@ export async function fields(args: Args, out: string) {
 		.filter((j) => !args.get('only') || args.get('only')!.split(',').some((p) => j.sha256.startsWith(p)));
 	jobs = jobs.slice(0, args.num('limit', Infinity));
 	jobs.forEach((j, i) => {
-		if (i < keep * 2) (j as FieldsJob).keepDir = path.join(out, 'keep');
+		if (i < keep) (j as FieldsJob).keepDir = path.join(out, 'keep');
 	});
 	const resultsFile = path.join(out, 'results.jsonl');
 	fs.writeFileSync(resultsFile, '');
