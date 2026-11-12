@@ -97,19 +97,24 @@ export function wordNear(layout: TextLayout, p: Pt, maxDist: number): number {
 }
 
 /**
- * Where a drag that is now at p ends: the nearest line (0 when p is on it), then the
- * nearest word of that line. Always a word when the page has any.
+ * Where a drag that is now at p ends: the nearest line level with p (whose height
+ * spans p, as when the pointer runs past the end of a line), else the nearest line;
+ * then the nearest word of that line. Always a word when the page has any.
  */
 export function wordAtEnd(layout: TextLayout, p: Pt): number {
 	const { lines, words, aspect } = layout;
 	if (!lines.length) return -1;
 	let li = 0;
 	let ld = Infinity;
+	let level = false;
 	lines.forEach((l, i) => {
-		const d = boxDistance(l.box, p, aspect);
-		if (d < ld) {
+		const b = l.box;
+		const isLevel = l.across ? p.y >= b.y && p.y <= b.y + b.h : p.x >= b.x && p.x <= b.x + b.w;
+		const d = boxDistance(b, p, aspect);
+		if ((isLevel && !level) || (isLevel === level && d < ld)) {
 			ld = d;
 			li = i;
+			level = isLevel;
 		}
 	});
 	const l = lines[li];

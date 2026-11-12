@@ -4,6 +4,7 @@ import { createEngine, type WorkerLike } from '../../src/lib/engine/client';
 import { serveEngine, type ServeOptions } from '../../src/lib/engine/host';
 import type { Engine } from '../../src/lib/core/types';
 import { EngineError } from '../../src/lib/engine/errors';
+import { NEED_BYTES } from '../../src/lib/engine/protocol';
 import { corpus, defaultOptions, engine } from './helpers';
 
 /** A "worker" made of a MessageChannel, served in this thread by the real core engine. */
@@ -143,6 +144,37 @@ describe('client ↔ worker protocol', () => {
 		expect(workers).toHaveLength(2);
 		expect(workers[0].terminated).toBe(true);
 		expect(await client.unsupportedChars('next')).toBe('w2:next');
+		client.terminate();
+	}, 30_000);
+
+	it('pageText sends the bytes of a source once per worker, and again when the worker no longer has the file', async () => {
+		const seen: (number | undefined)[] = [];
+		const real = engine();
+		let forget = false;
+		const spy = {
+			pageText: (source: Parameters<Engine['pageText']>[0], i: number) => {
+				seen.push(source.bytes?.byteLength);
+				// A worker that dropped the file (more files opened since) asks for it again.
+				if (forget && !source.bytes) return Promise.reject(new EngineError('internal', NEED_BYTES));
+				return real.pageText(source, i);
+			}
+		} as unknown as Engine;
+		const client = createEngine({ createWorker: () => channelWorker(spy) });
+		const src = await real.openPdf(corpus('hl-text.pdf'), 'hl-text.pdf');
+		const n = src.bytes.byteLength;
+		const a = await client.pageText(src, 0);
+		const b = await client.pageText(src, 1);
+		expect(a.words.length).toBeGreaterThan(10);
+		expect(b.words.map((w) => w.text)).toEqual(a.words.slice(0, b.words.length).map((w) => w.text));
+		expect(seen).toEqual([n, undefined]);
+		forget = true;
+		expect((await client.pageText(src, 2)).words.length).toBeGreaterThan(0);
+		expect(seen).toEqual([n, undefined, undefined, n]);
+		// A new worker (after a restart) is sent the bytes first.
+		forget = false;
+		client.terminate();
+		await client.pageText(src, 2);
+		expect(seen.at(-1)).toBe(n);
 		client.terminate();
 	}, 30_000);
 });

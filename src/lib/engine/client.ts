@@ -53,6 +53,7 @@ export function createEngine(options: { createWorker?: () => WorkerLike } = {}):
 	const reset = (message: string) => {
 		const w = worker;
 		worker = null;
+		textSent = new Set();
 		try {
 			w?.terminate();
 		} catch {
@@ -65,6 +66,7 @@ export function createEngine(options: { createWorker?: () => WorkerLike } = {}):
 	// answered go to a new worker, each at most twice.
 	const replace = (w: WorkerLike) => {
 		worker = null;
+		textSent = new Set();
 		try {
 			w.terminate();
 		} catch {
@@ -150,8 +152,10 @@ export function createEngine(options: { createWorker?: () => WorkerLike } = {}):
 					if (!(e instanceof EngineError && e.message === NEED_BYTES)) throw e;
 				}
 			}
+			const pending = call<Awaited<ReturnType<EngineClient['pageText']>>>('pageText', [source, pageIndex]);
+			// The set of the worker this call went to (it may have just been started).
 			const sent = textSent;
-			const res = await call<Awaited<ReturnType<EngineClient['pageText']>>>('pageText', [source, pageIndex]);
+			const res = await pending;
 			sent.add(source.id);
 			return res;
 		},
