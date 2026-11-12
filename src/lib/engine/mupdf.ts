@@ -105,6 +105,11 @@ export function mupdfLoaded(): boolean {
 	return current !== null;
 }
 
+/** The MuPDF module in use, if loaded (for code that holds a page of it but not the module). */
+export function currentMupdf(): Mupdf | null {
+	return current;
+}
+
 /** True for a WebAssembly trap (from any realm), as opposed to an error MuPDF reported. */
 export function isWasmFault(e: unknown): boolean {
 	if (typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.RuntimeError) return true;

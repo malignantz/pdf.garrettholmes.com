@@ -4,6 +4,9 @@
  * generator drew the words (tests/corpus/generate-ocr.mjs), so no OCR engine runs here.
  */
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import zlib from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import * as PL from '@cantoo/pdf-lib';
 import { mupdf } from '../../src/lib/engine/mupdf';
@@ -15,7 +18,7 @@ import { GLYPHLESS_TTF_SHA256, glyphlessTtf } from '../../src/lib/engine/ocr/gly
 import { cleanText, writeLayers, type LayerPage } from '../../src/lib/engine/ocr/layer';
 import { norm, type OcrWord } from '../../src/lib/engine/ocr/gate';
 import type { OcrLine, OcrRead } from '../../src/lib/engine/ocr/tess';
-import { corpus, loadPdfjs, manifest, nodeAssets } from './helpers';
+import { corpus, loadPdfjs, manifest, nodeAssets, root } from './helpers';
 
 const meta = manifest['ocr-scans.pdf'] as { words: { t: string; box: [number, number, number, number] }[]; eligible: number[] };
 const DPI = 300;
@@ -159,6 +162,13 @@ describe('OCR: writing the text layer', () => {
 		expect(createHash('sha256').update(ttf).digest('hex')).toBe(GLYPHLESS_TTF_SHA256);
 	});
 
+	it('ships the measured tessdata_fast English and orientation data', () => {
+		const sha = (name: string) => createHash('sha256').update(zlib.gunzipSync(fs.readFileSync(path.join(root, 'src/lib/engine/vendor/tesseract', name)))).digest('hex');
+		// The SHA-256s tools/ocr/fetch-models.sh pinned for the measurement.
+		expect(sha('eng.traineddata.gz')).toBe('7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2');
+		expect(sha('osd.traineddata.gz')).toBe('9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff');
+	});
+
 	it('cleans text the font cannot carry', () => {
 		expect(cleanText('ab\u0000c')).toBe('abc');
 		expect(cleanText('�')).toBe('');
@@ -225,5 +235,52 @@ describe('OCR: writing the text layer', () => {
 		expect(r.bytes).toBe(src);
 		expect(r.written.size).toBe(0);
 		expect(r.skipped.get(0)).toBe('no words to write');
+	});
+});
+
+describe('highlighter over an OCR layer (invisible glyphless text)', () => {
+	it('keeps each line band off the next one where their font boxes overlap', async () => {
+		// Two tight lines: the first has a deep descender ("gypsy"), the second a tall capital,
+		// so the em boxes the writer gives them overlap by about 3 pt.
+		const line = (y0: number, y1: number, base: number, words: [string, number, number][]) => ({
+			baseline: [words[0][1], base, words[words.length - 1][2], base] as [number, number, number, number],
+			words: words.map(([t, x0, x1]) => [t, x0, t === 'gypsy' ? y0 : y0 + 8, x1, t === 'gypsy' ? y1 : base, 95] as OcrWord)
+		});
+		const read: OcrRead = {
+			width: 1800,
+			height: 1200,
+			rotate: 0,
+			lines: [line(100, 160, 145, [['gypsy', 125, 300], ['jump', 320, 460]]), line(130, 200, 190, [['Tall', 125, 280], ['hat', 300, 400]])]
+		};
+		read.lines[1].words[0][2] = 125; // the capital reaches up into the line above
+		const doc = await PL.PDFDocument.create();
+		doc.addPage([432, 288]);
+		const blank = await doc.save();
+		const r = await writeLayers(PL, blank, [job(read)]);
+		const m = await mupdf();
+		const d = m.Document.openDocument(r.bytes, 'application/pdf');
+		try {
+			const words = (opts: { inklessCut?: boolean }) => {
+				const ws = pageTextOf(d, 0, { ...opts, m }).words;
+				const box = (t: string) => ws.find((w) => w.text === t)!.box;
+				return { gypsy: box('gypsy'), Tall: box('Tall') };
+			};
+			const old = words({ inklessCut: false });
+			expect(old.gypsy.y + old.gypsy.h).toBeGreaterThan(old.Tall.y + 0.005);
+			const now = words({});
+			expect(now.gypsy.y + now.gypsy.h).toBeLessThanOrEqual(now.Tall.y + 1e-9);
+		} finally {
+			d.destroy();
+		}
+	});
+
+	it('leaves visible text and fonts drawn without outlines as they were', async () => {
+		const m = await mupdf();
+		const d = m.Document.openDocument(corpus('hl-text.pdf'), 'application/pdf');
+		try {
+			for (let p = 0; p < 10; p++) expect(pageTextOf(d, p, { m })).toEqual(pageTextOf(d, p, { m, inklessCut: false }));
+		} finally {
+			d.destroy();
+		}
 	});
 });

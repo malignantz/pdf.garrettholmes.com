@@ -1,3 +1,4 @@
+// @ts-nocheck -- plain Node worker script (CommonJS, untyped tesseract.js internals)
 'use strict';
 // tesseract.js worker script for Node (tests and measurements): tesseract.js's own
 // worker-script with the core build named by the parent (workerData.core), loaded from

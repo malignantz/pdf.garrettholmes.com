@@ -33,6 +33,13 @@ import type { OcrRead } from './tess';
 
 /** Lines whose baseline is this close to level (degrees) are written level. */
 export const SNAP_DEG = 0.2;
+/**
+ * A word's height above the baseline counts towards its line's em box up to this many
+ * times the line's median (ascenders and capitals are within 1.5× of a line's typical
+ * height); below the baseline up to this share of it (descenders reach about a third).
+ */
+export const MAX_UP = 1.5;
+export const MAX_DOWN = 0.6;
 
 export interface LayerPage {
 	/** 0-based page of the assembled file. */
@@ -122,14 +129,23 @@ export function layoutLines(read: OcrRead, dpi: number): LaidLine[] {
 		const c = Math.cos(th);
 		const s = Math.sin(th);
 		// The em box (ascent 1 em, descent 0) spans the line's deepest descender to its
-		// tallest ascender, measured across the baseline.
-		let asc = 1;
-		let desc = 0;
+		// tallest ascender, measured across the baseline. Word boxes that stick far out of
+		// the line (OCR merged a word with ink above or below it) do not count: they would
+		// give every word of the line a band reaching into the lines around it.
+		const ups: number[] = [];
+		const downs: number[] = [];
 		for (const w of words) {
 			const b = baseAt((w[1] + w[3]) / 2);
 			const rise = (Math.abs(slope) * (w[3] - w[1])) / 2;
-			asc = Math.max(asc, b - w[2] - rise);
-			desc = Math.max(desc, w[4] - b - rise);
+			ups.push(b - w[2] - rise);
+			downs.push(w[4] - b - rise);
+		}
+		const scale = Math.max(1, [...ups].sort((x, y) => x - y)[Math.floor(ups.length / 2)]);
+		let asc = 1;
+		let desc = 0;
+		for (let i = 0; i < words.length; i++) {
+			if (ups[i] <= MAX_UP * scale) asc = Math.max(asc, ups[i]);
+			if (downs[i] <= MAX_DOWN * scale) desc = Math.max(desc, downs[i]);
 		}
 		const size = Math.max(1, (asc + desc) * k);
 		// Origin in the turned image: the first word's left edge on the baseline, moved down by desc.

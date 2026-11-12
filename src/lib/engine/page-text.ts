@@ -18,7 +18,10 @@
  *  - Across the line (v): from the font's ascent to its descent, but no further than the
  *    tallest ink that font has on this page (plus a margin), and never short of this
  *    line's own ink; then kept off the ink of the lines next to it (the band stops
- *    halfway between the two inks).
+ *    halfway between the two inks). A line with no ink at all (invisible OCR text in a
+ *    glyphless font, as "Make scanned pages searchable" writes it) has only its font
+ *    boxes, which overlap the next line's on tightly set scans: two such bands are cut
+ *    where they meet, halfway through the overlap, so a selection stays on its line.
  *  - Along the line (u): each word's advance box (and ink) plus a margin that stays
  *    within half the gap to the next word.
  * A word's box is that frame rectangle turned back to the page and boxed.
@@ -26,7 +29,7 @@
 
 import type * as MU from 'mupdf';
 import type { PageText, TextWord } from '../core/types';
-import type { Mupdf } from './mupdf';
+import { currentMupdf, disown, type Mupdf } from './mupdf';
 
 /** Lines this far (degrees) or less from a page axis are offered; others are not. */
 export const MAX_TILT = 3;
@@ -59,8 +62,46 @@ const destroy = (o: unknown) => {
 	}
 };
 
-/** The structured-text lines of a page's own content, nominal and ink boxes paired. */
-export function readRawLines(page: MU.PDFPage): RawLine[] {
+/** Origins (keyed to 0.05 pt) of glyphs drawn as invisible text (render mode 3) in a display list. */
+function invisibleGlyphs(m: Mupdf, dl: MU.DisplayList): Set<string> {
+	const keys = new Set<string>();
+	const dev = new m.Device({
+		ignoreText(text, ctm) {
+			const c = ctm as number[];
+			text.walk({
+				showGlyph(_font, trm) {
+					const t = trm as number[];
+					keys.add(glyphKey(t[4] * c[0] + t[5] * c[2] + c[4], t[4] * c[1] + t[5] * c[3] + c[5]));
+				}
+			});
+		},
+		fillShade(shade) {
+			// See mupdf.ts: the borrowed shade must not be freed by its wrapper.
+			disown(shade);
+		}
+	});
+	try {
+		dl.run(dev, m.Matrix.identity);
+	} finally {
+		try {
+			dev.close();
+		} catch {
+			// Closed.
+		}
+		destroy(dev);
+	}
+	return keys;
+}
+
+const glyphKey = (x: number, y: number) => `${Math.round(x * 20)},${Math.round(y * 20)}`;
+
+/**
+ * The structured-text lines of a page's own content, nominal and ink boxes paired.
+ * `m` is the MuPDF module the page belongs to (default: the one mupdf.ts loaded); with
+ * it, invisible glyphs without an outline (OCR layers in a glyphless font) are told
+ * apart and given no ink.
+ */
+export function readRawLines(page: MU.PDFPage, m: Mupdf | null = currentMupdf()): RawLine[] {
 	const dl = page.toDisplayList(false);
 	try {
 		const read = (opts: string) => {
@@ -93,17 +134,32 @@ export function readRawLines(page: MU.PDFPage): RawLine[] {
 		const flatN = nominal.flatMap((l) => l.chars);
 		const flatI = ink.flatMap((l) => l.chars);
 		const paired = flatN.length === flatI.length && flatN.every((x, i) => x.c === flatI[i].c);
+		// Only when some glyph's ink is its font box: then see which glyphs are invisible.
+		let invisible: Set<string> | null = null;
+		if (paired && m && page instanceof m.PDFPage && flatN.some((x, i) => sameQuad(flatI[i].quad, x.quad, x.size))) invisible = invisibleGlyphs(m, dl);
 		let k = 0;
 		return nominal.map((l) => ({
 			dir: l.dir,
 			chars: l.chars.map((ch) => {
 				const q = paired ? flatI[k++].quad : ch.quad;
-				return { ...ch, ink: hasArea(q) ? q : null };
+				// An invisible glyph without an outline (the glyphless font of OCR layers) gets
+				// its font box as its "ink": that is no ink at all.
+				const none = invisible !== null && sameQuad(q, ch.quad, ch.size) && invisible.has(glyphKey(ch.origin[0], ch.origin[1]));
+				return { ...ch, ink: hasArea(q) && !none ? q : null };
 			})
 		}));
 	} finally {
 		destroy(dl);
 	}
+}
+
+/**
+ * The two quads are the same box, within 0.5% of the font size: the glyphless font's
+ * descent (1/1000 em) is in its font box but not in the "ink" MuPDF makes from it.
+ */
+function sameQuad(a: number[], b: number[], size: number): boolean {
+	const tol = 0.01 + 0.005 * (Number.isFinite(size) ? Math.abs(size) : 0);
+	return a.length === b.length && a.every((v, i) => Math.abs(v - b[i]) < tol);
 }
 
 function hasArea(q: number[]): boolean {
@@ -161,6 +217,8 @@ interface LLine {
 	angle: number;
 	frame: Frame;
 	chars: LChar[];
+	/** Some character of the line has ink (false for invisible OCR text in a glyphless font). */
+	hasInk: boolean;
 	/** Band across the line, after trimming. */
 	top: number;
 	bottom: number;
@@ -188,8 +246,13 @@ const median = (v: number[]) => {
  * Words of a page from its raw lines. `width` and `height` are the page's displayed
  * size in points (MuPDF page space is [0 0 width height]).
  */
-export function layoutWords(raw: RawLine[], width: number, height: number): PageText {
-	const { words, skipped } = layoutWordsDetailed(raw, width, height);
+export interface LayoutOptions {
+	/** Cut overlapping bands of lines without ink halfway (default true; off only to measure the rule). */
+	inklessCut?: boolean;
+}
+
+export function layoutWords(raw: RawLine[], width: number, height: number, opts: LayoutOptions = {}): PageText {
+	const { words, skipped } = layoutWordsDetailed(raw, width, height, opts);
 	return { words, skipped };
 }
 
@@ -197,7 +260,7 @@ export function layoutWords(raw: RawLine[], width: number, height: number): Page
  * layoutWords, plus for each word the raw characters it is made of (as [line, char]
  * indices into `raw`), for measurements that need to find each word's glyphs.
  */
-export function layoutWordsDetailed(raw: RawLine[], width: number, height: number): PageText & { chars: [number, number][][] } {
+export function layoutWordsDetailed(raw: RawLine[], width: number, height: number, opts: LayoutOptions = {}): PageText & { chars: [number, number][][] } {
 	let skipped = 0;
 	const wordChars: [number, number][][] = [];
 	let total = 0;
@@ -255,7 +318,7 @@ export function layoutWordsDetailed(raw: RawLine[], width: number, height: numbe
 		let part: LChar[] = [];
 		let base = NaN;
 		const flush = () => {
-			if (part.some((c) => !c.blank)) lines.push({ angle, frame, chars: part, top: 0, bottom: 0, inkTop: 0, inkBottom: 0, u0: 0, u1: 0, em: 0 });
+			if (part.some((c) => !c.blank)) lines.push({ angle, frame, chars: part, hasInk: part.some((c) => !c.blank && c.ink !== null), top: 0, bottom: 0, inkTop: 0, inkBottom: 0, u0: 0, u1: 0, em: 0 });
 			part = [];
 		};
 		for (const ch of chars) {
@@ -323,7 +386,7 @@ export function layoutWordsDetailed(raw: RawLine[], width: number, height: numbe
 
 	// 4. Keep each band off the ink of the lines beside it (same direction, overlapping
 	//    along the line): it stops halfway between the two inks.
-	trimBands(lines);
+	trimBands(lines, opts.inklessCut !== false);
 
 	// 5. Words, with a margin along the line that stays within half the gap to the next word.
 	const words: TextWord[] = [];
@@ -418,7 +481,7 @@ const sameDir = (a: LLine, b: LLine) => {
 	return d <= 2 * MAX_TILT;
 };
 
-function trimBands(lines: LLine[]) {
+function trimBands(lines: LLine[], inklessCut: boolean) {
 	const limits = lines.map((l) => ({ top: l.top, bottom: l.bottom }));
 	// Group by direction, then sweep pairs whose bands could touch.
 	const buckets = new Map<number, number[]>();
@@ -450,7 +513,7 @@ function trimBands(lines: LLine[]) {
 			for (let b = a + 1; b < ids.length; b++) {
 				if (ext.get(ids[b])![0] > lb) break;
 				if (!sameDir(L, lines[ids[b]])) continue;
-				trimPair(lines, limits, ids[a], ids[b]);
+				trimPair(lines, limits, ids[a], ids[b], inklessCut);
 			}
 		}
 	}
@@ -460,8 +523,12 @@ function trimBands(lines: LLine[]) {
 	});
 }
 
-/** Two lines whose bands overlap: if they are distinct lines side by side across the writing direction, split at the gap between their inks. */
-function trimPair(lines: LLine[], limits: { top: number; bottom: number }[], i: number, j: number) {
+/**
+ * Two lines whose bands overlap: if they are distinct lines side by side across the
+ * writing direction, split at the gap between their inks. When either line has no ink
+ * (its "ink" is its font boxes), they are split halfway even where those overlap.
+ */
+function trimPair(lines: LLine[], limits: { top: number; bottom: number }[], i: number, j: number, inklessCut: boolean) {
 	const A = lines[i];
 	const B = lines[j];
 	// Along-the-line overlap, in A's frame (B's corners mapped into it).
@@ -479,7 +546,8 @@ function trimPair(lines: LLine[], limits: { top: number; bottom: number }[], i: 
 	// The same line split in two (one baseline), or text on text: nothing to keep apart.
 	if (Math.abs(ca - cb) < 0.3 * Math.min(A.inkBottom - A.inkTop, B.inkBottom - B.inkTop)) return;
 	const [upper, lower, ui, li] = ca < cb ? [A, B, i, j] : [B, A, j, i];
-	const cut = upper.inkBottom <= lower.inkTop ? (upper.inkBottom + lower.inkTop) / 2 : null;
+	const inkless = inklessCut && (!upper.hasInk || !lower.hasInk);
+	const cut = upper.inkBottom <= lower.inkTop || inkless ? (upper.inkBottom + lower.inkTop) / 2 : null;
 	limits[ui].bottom = Math.min(limits[ui].bottom, cut ?? upper.inkBottom);
 	limits[li].top = Math.max(limits[li].top, cut ?? lower.inkTop);
 }
@@ -488,11 +556,11 @@ function trimPair(lines: LLine[], limits: { top: number; bottom: number }[], i: 
 // Pages of an opened document
 
 /** Words of page `index` of an opened MuPDF document. */
-export function pageTextOf(doc: MU.Document, index: number): PageText {
+export function pageTextOf(doc: MU.Document, index: number, opts: LayoutOptions & { m?: Mupdf } = {}): PageText {
 	const page = doc.loadPage(index) as MU.PDFPage;
 	try {
 		const [x0, y0, x1, y1] = page.getBounds();
-		const raw = readRawLines(page);
+		const raw = readRawLines(page, opts.m ?? currentMupdf());
 		// Page space starts at the bounds' corner (always 0 0 for a PDF page; kept general).
 		if (x0 !== 0 || y0 !== 0)
 			for (const l of raw)
@@ -501,7 +569,7 @@ export function pageTextOf(doc: MU.Document, index: number): PageText {
 					ch.quad = ch.quad.map((v, k) => v - (k % 2 ? y0 : x0));
 					if (ch.ink) ch.ink = ch.ink.map((v, k) => v - (k % 2 ? y0 : x0));
 				}
-		return layoutWords(raw, x1 - x0, y1 - y0);
+		return layoutWords(raw, x1 - x0, y1 - y0, opts);
 	} finally {
 		destroy(page);
 	}
