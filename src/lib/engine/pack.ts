@@ -197,21 +197,32 @@ function adler32(d: Uint8Array): number {
  * such a stream is left exactly as it is.
  */
 export function strictInflate(raw: Uint8Array, maxOut = Infinity): Uint8Array | null {
-	let end = raw.length;
-	while (end > 0 && (raw[end - 1] === 0x0a || raw[end - 1] === 0x0d || raw[end - 1] === 0x20 || raw[end - 1] === 0x09 || raw[end - 1] === 0x00)) end--;
-	if (end < 6) return null;
+	// The checksum's own last bytes may look like end-of-line padding: try the whole
+	// stream, then one padding byte less at a time (up to 15).
+	const pad = (b: number) => b === 0x0a || b === 0x0d || b === 0x20 || b === 0x09 || b === 0x00;
+	for (let end = raw.length, tries = 0; end > 0 && tries < 16; end--, tries++) {
+		const r = inflateExact(raw, end, maxOut);
+		if (r !== undefined) return r;
+		if (!pad(raw[end - 1])) return null;
+	}
+	return null;
+}
+
+/** raw[0, end) as one zlib stream: its data, null when too big, undefined when not exact. */
+function inflateExact(raw: Uint8Array, end: number, maxOut: number): Uint8Array | null | undefined {
+	if (end < 6) return undefined;
 	const cmf = raw[0];
 	const flg = raw[1];
-	if ((cmf & 0x0f) !== 8 || cmf >> 4 > 7 || ((cmf << 8) | flg) % 31 !== 0 || flg & 0x20) return null;
+	if ((cmf & 0x0f) !== 8 || cmf >> 4 > 7 || ((cmf << 8) | flg) % 31 !== 0 || flg & 0x20) return undefined;
 	let out: Uint8Array;
 	try {
 		out = inflateSync(raw.subarray(2, end - 4));
 	} catch {
-		return null;
+		return undefined;
 	}
-	if (out.length > maxOut) return null;
 	const want = ((raw[end - 4] << 24) | (raw[end - 3] << 16) | (raw[end - 2] << 8) | raw[end - 1]) >>> 0;
-	return adler32(out) === want ? out : null;
+	if (adler32(out) !== want) return undefined;
+	return out.length > maxOut ? null : out;
 }
 
 function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
