@@ -22,6 +22,19 @@ describe('strictInflate', () => {
 		expect(strictInflate(z(data))).toEqual(data);
 		expect(strictInflate(cat(z(data), [13, 10]))).toEqual(data);
 	});
+	it('inflates a stream whose checksum ends in a byte that looks like padding (0x00, 0x0a, 0x20)', () => {
+		for (const last of [0x00, 0x0a, 0x20]) {
+			let d: Uint8Array | null = null;
+			for (let i = 0; i < 100_000 && !d; i++) {
+				const c = new TextEncoder().encode(`stream ${i} `.repeat(8) + String.fromCharCode(65 + (i % 7)));
+				const zz = z(c);
+				if (zz[zz.length - 1] === last) d = c;
+			}
+			expect(d).not.toBeNull();
+			expect(strictInflate(z(d!))).toEqual(d);
+			expect(strictInflate(cat(z(d!), [10]))).toEqual(d);
+		}
+	});
 	it('refuses truncated data, junk after the end, a wrong checksum and a bad header', () => {
 		const good = z(data);
 		expect(strictInflate(good.subarray(0, good.length - 9))).toBeNull();

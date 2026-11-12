@@ -1,5 +1,6 @@
 /** Export dialog, phase 2 options: page numbers, size target, remembered options, small screens. */
 import { readFileSync } from 'node:fs';
+import * as mupdf from 'mupdf';
 import { fileURLToPath } from 'node:url';
 import type { Locator, Page } from '@playwright/test';
 import { test, expect } from './fixtures';
@@ -163,5 +164,42 @@ test('compress (the default) repacks losslessly in the browser worker: smaller, 
 	expect(await pageTexts(bytes)).toEqual(['predictor p1']);
 	// libdeflate (vendored wasm) loaded and ran inside the module worker.
 	await expect.poll(() => notes.join('\n')).toMatch(/pack: .*polished/);
+	expect(notes.join('\n')).not.toMatch(/did not load/);
+});
+
+/** Every page rendered by MuPDF in Node (RGB, 1.5 px per point). */
+function renders(bytes: Uint8Array): string[] {
+	const doc = new mupdf.PDFDocument(bytes.slice());
+	try {
+		const out: string[] = [];
+		for (let i = 0; i < doc.countPages(); i++) {
+			const pix = doc.loadPage(i).toPixmap(mupdf.Matrix.scale(1.5, 1.5), mupdf.ColorSpace.DeviceRGB, false, true);
+			out.push(Buffer.from(pix.getPixels()).toString('base64'));
+			pix.destroy();
+		}
+		return out;
+	} finally {
+		doc.destroy();
+	}
+}
+
+test('compress repacks JPEG images losslessly in the browser worker: smaller, pages identical, nothing fetched from elsewhere', async ({ page }) => {
+	test.setTimeout(90_000);
+	const notes: string[] = [];
+	page.on('console', (msg) => {
+		if (msg.text().startsWith('[engine]')) notes.push(msg.text());
+	});
+	const dialog = await open(page, 'jpeg-kinds.pdf', 11);
+	await expect(dialog.getByRole('switch', { name: 'Compress' })).toBeChecked();
+	await exportButton(dialog).click();
+	const done = page.getByRole('dialog', { name: 'Your file is ready' });
+	await expect(done.getByText('Checked: 11 pages, opens cleanly.')).toBeVisible({ timeout: 60_000 });
+	const [download] = await Promise.all([page.waitForEvent('download'), done.getByRole('button', { name: 'Download' }).click()]);
+	const bytes = new Uint8Array(readFileSync((await download.path())!));
+	const input = new Uint8Array(readFileSync(corpus('jpeg-kinds.pdf')));
+	expect(bytes.length).toBeLessThan(input.length * 0.9);
+	expect(renders(bytes)).toEqual(renders(input));
+	// The repack module (vendored wasm) loaded and ran inside the module worker.
+	await expect.poll(() => notes.join('\n')).toMatch(/pack: JPEG 12 repacked/);
 	expect(notes.join('\n')).not.toMatch(/did not load/);
 });
