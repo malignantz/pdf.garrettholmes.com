@@ -233,6 +233,8 @@ export async function applyStamps(
 					ys.push(y);
 				}
 				drawn.push({ x0: Math.min(...xs) - half, y0: Math.min(...ys) - half, x1: Math.max(...xs) + half, y1: Math.max(...ys) + half });
+			} else if (stamp.rects) {
+				for (const r of stamp.rects) drawn.push(stampPdfRect(geom.box, geom.rotation, r));
 			} else drawn.push(stampPdfRect(geom.box, geom.rotation, stamp.box));
 		}
 		for (const stamp of job.stamps) {
@@ -540,27 +542,33 @@ function highlightOps(ops: typeof PdfLib, geom: PageGeometry, stamp: Extract<Sta
 		}
 		out.push(ops.stroke());
 	} else {
-		const r = stampPdfRect(geom.box, geom.rotation, stamp.box);
-		const rad = highlightRadius(shown.height, r.x1 - r.x0, r.y1 - r.y0);
-		// Bezier quarter circles: k is the usual 4/3·(√2−1).
-		const k = rad * (1 - 0.5522847498);
-		out.push(
-			ops.setFillingRgbColor(cr, cg, cb),
-			ops.moveTo(r4(r.x0 + rad), r4(r.y0)),
-			ops.lineTo(r4(r.x1 - rad), r4(r.y0)),
-			ops.appendBezierCurve(r4(r.x1 - k), r4(r.y0), r4(r.x1), r4(r.y0 + k), r4(r.x1), r4(r.y0 + rad)),
-			ops.lineTo(r4(r.x1), r4(r.y1 - rad)),
-			ops.appendBezierCurve(r4(r.x1), r4(r.y1 - k), r4(r.x1 - k), r4(r.y1), r4(r.x1 - rad), r4(r.y1)),
-			ops.lineTo(r4(r.x0 + rad), r4(r.y1)),
-			ops.appendBezierCurve(r4(r.x0 + k), r4(r.y1), r4(r.x0), r4(r.y1 - k), r4(r.x0), r4(r.y1 - rad)),
-			ops.lineTo(r4(r.x0), r4(r.y0 + rad)),
-			ops.appendBezierCurve(r4(r.x0), r4(r.y0 + k), r4(r.x0 + k), r4(r.y0), r4(r.x0 + rad), r4(r.y0)),
-			ops.closePath(),
-			ops.fill()
-		);
+		// A box, or a text highlight's rectangles: each a box, all in one path filled once
+		// (nonzero), so where two overlap the colour does not get darker.
+		out.push(ops.setFillingRgbColor(cr, cg, cb));
+		for (const b of stamp.rects ?? [stamp.box]) out.push(...roundedRect(ops, stampPdfRect(geom.box, geom.rotation, b), shown.height));
+		out.push(ops.fill());
 	}
 	out.push(ops.popGraphicsState());
 	return out;
+}
+
+/** A closed rectangle with slightly rounded corners (always the same direction, for nonzero fills). */
+function roundedRect(ops: typeof PdfLib, r: Box, pageHeight: number): PdfLib.PDFOperator[] {
+	const rad = highlightRadius(pageHeight, r.x1 - r.x0, r.y1 - r.y0);
+	// Bezier quarter circles: k is the usual 4/3·(√2−1).
+	const k = rad * (1 - 0.5522847498);
+	return [
+		ops.moveTo(r4(r.x0 + rad), r4(r.y0)),
+		ops.lineTo(r4(r.x1 - rad), r4(r.y0)),
+		ops.appendBezierCurve(r4(r.x1 - k), r4(r.y0), r4(r.x1), r4(r.y0 + k), r4(r.x1), r4(r.y0 + rad)),
+		ops.lineTo(r4(r.x1), r4(r.y1 - rad)),
+		ops.appendBezierCurve(r4(r.x1), r4(r.y1 - k), r4(r.x1 - k), r4(r.y1), r4(r.x1 - rad), r4(r.y1)),
+		ops.lineTo(r4(r.x0 + rad), r4(r.y1)),
+		ops.appendBezierCurve(r4(r.x0 + k), r4(r.y1), r4(r.x0), r4(r.y1 - k), r4(r.x0), r4(r.y1 - rad)),
+		ops.lineTo(r4(r.x0), r4(r.y0 + rad)),
+		ops.appendBezierCurve(r4(r.x0), r4(r.y0 + k), r4(r.x0 + k), r4(r.y0), r4(r.x0 + rad), r4(r.y0)),
+		ops.closePath()
+	];
 }
 
 function numberOps(

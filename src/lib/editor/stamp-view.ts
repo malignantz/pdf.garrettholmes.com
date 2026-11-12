@@ -84,6 +84,38 @@ export function penSvg(box: StampBox, pen: PenStroke, aspect: number): PenSvg {
 	return { viewBox: `0 0 ${f(box.w * a)} ${f(box.h)}`, d, width: pen.width };
 }
 
+export interface RectsSvg {
+	viewBox: string;
+	/** One path: every rectangle, rounded like a box highlight, filled once (nonzero). */
+	d: string;
+}
+
+/**
+ * SVG for a text highlight's rectangles in its own box. viewBox units are page heights
+ * on both axes (x scaled by the page aspect), like penSvg; corners are rounded like a
+ * box highlight's (engine highlightRadius). Every rectangle runs clockwise, so with the
+ * nonzero rule overlaps are filled once, as in the export.
+ */
+export function rectsSvg(box: StampBox, rects: readonly StampBox[], aspect: number): RectsSvg {
+	const a = aspect > 0 && Number.isFinite(aspect) ? aspect : 1;
+	const f = (v: number) => v.toFixed(5);
+	const d = rects
+		.map((r) => {
+			const x0 = (r.x - box.x) * a;
+			const y0 = r.y - box.y;
+			const x1 = x0 + r.w * a;
+			const y1 = y0 + r.h;
+			const rad = Math.max(0, Math.min(HIGHLIGHT_RADIUS, 0.25 * Math.min(x1 - x0, y1 - y0)));
+			return (
+				`M${f(x0 + rad)} ${f(y0)}H${f(x1 - rad)}A${f(rad)} ${f(rad)} 0 0 1 ${f(x1)} ${f(y0 + rad)}` +
+				`V${f(y1 - rad)}A${f(rad)} ${f(rad)} 0 0 1 ${f(x1 - rad)} ${f(y1)}H${f(x0 + rad)}` +
+				`A${f(rad)} ${f(rad)} 0 0 1 ${f(x0)} ${f(y1 - rad)}V${f(y0 + rad)}A${f(rad)} ${f(rad)} 0 0 1 ${f(x0 + rad)} ${f(y0)}Z`
+			);
+		})
+		.join('');
+	return { viewBox: `0 0 ${f(box.w * a)} ${f(box.h)}`, d };
+}
+
 /**
  * Draw order matching the export: redaction is applied to the page itself, then
  * highlights are drawn, then every other stamp in its own order.

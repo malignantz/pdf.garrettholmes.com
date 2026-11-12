@@ -86,7 +86,8 @@ export const icons = {
 	],
 	dot: [{ d: 'M12 12h.01', width: 9 }],
 	highlight: ['M14 4.5l5.5 5.5-7 7H8.5L7 15.5V12z', 'M11 7.5l5.5 5.5', 'M7 15.5L4.5 18h5', 'M13 20h7'],
-	/** Highlight shapes: a freehand stroke, and a box. */
+	/** Highlight shapes: selected text (lines and a text cursor), a freehand stroke, and a box. */
+	'hl-text': ['M4 8h9', 'M4 12h7', 'M4 16h9', 'M17.5 6v12', 'M15.5 5.5h4', 'M15.5 18.5h4'],
 	'hl-pen': [{ d: 'M5 14.5c1.6-2.8 3.4-3.3 5-1.2s3.3 2.2 5 .1 2.6-2.6 4-1.9', width: 3.2 }],
 	'hl-box': ['M6.5 8h11A2.5 2.5 0 0 1 20 10.5v3a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 13.5v-3A2.5 2.5 0 0 1 6.5 8z'],
 	redact: ['M4 6h16', { d: 'M5.5 12h13', width: 5 }, 'M4 18h10'],

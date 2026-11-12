@@ -325,6 +325,41 @@ describe('stamps and assets', () => {
 		expect(copy.pen).not.toBe(s0.pen);
 		checkInvariants(store);
 	});
+	it('text highlights: rectangles stored as a copy, moved with their box in one step, checked', () => {
+		const { store } = setup(1);
+		const p = ids(store)[0];
+		const rects = [
+			{ x: 0.3, y: 0.1, w: 0.4, h: 0.02 },
+			{ x: 0.1, y: 0.12, w: 0.3, h: 0.02 }
+		];
+		const tb = { x: 0.1, y: 0.1, w: 0.6, h: 0.04 };
+		const sid = store.addStamp(p, { kind: 'highlight', color: 'yellow', box: tb, rects });
+		rects[0].x = 0.9; // the store kept its own copy
+		const s0 = store.state.pages[0].stamps[0] as Extract<Stamp, { kind: 'highlight' }>;
+		expect(s0.rects![0].x).toBe(0.3);
+		const moved = { ...tb, y: 0.5 };
+		const mr = s0.rects!.map((r) => ({ ...r, y: r.y + 0.4 }));
+		expect(store.updateStamp(p, sid, { box: moved, rects: mr })).toBe(true);
+		const s1 = store.state.pages[0].stamps[0] as typeof s0;
+		// Still an array (not turned into an object by the patch), and a copy.
+		expect(Array.isArray(s1.rects)).toBe(true);
+		expect(s1.rects).toEqual(mr);
+		expect(s1.rects).not.toBe(mr);
+		store.undo();
+		expect(store.state.pages[0].stamps[0]).toEqual(s0);
+		// A box that leaves its rectangles behind, an empty list, or a pen stroke too: refused.
+		expect(() => store.updateStamp(p, sid, { box: { ...tb, x: 0.5 } })).toThrow(/outside its box/);
+		expect(() => store.addStamp(p, { kind: 'highlight', color: 'yellow', box: tb, rects: [] })).toThrow();
+		expect(() =>
+			store.addStamp(p, { kind: 'highlight', color: 'yellow', box: tb, rects: s0.rects, pen: { points: [{ x: 0.2, y: 0.11 }, { x: 0.3, y: 0.11 }], width: 0.01 } })
+		).toThrow(/not both/);
+		// Duplicated pages get their own copy.
+		store.duplicatePages([p]);
+		const copy = store.state.pages[1].stamps[0] as typeof s0;
+		expect(copy.rects).toEqual(s0.rects);
+		expect(copy.rects).not.toBe(s0.rects);
+		checkInvariants(store);
+	});
 	it('only the stamped page changes identity', () => {
 		const { store } = setup(3);
 		const before = [...store.state.pages];

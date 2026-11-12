@@ -10,6 +10,7 @@
 
 import type { PenStroke, Stamp, StampBox } from '../core/types';
 import type { StampPatch } from '../doc/store';
+import { mapRects } from './text-select';
 
 export interface Pt {
 	x: number;
@@ -210,9 +211,10 @@ export function mapPen(pen: PenStroke, from: StampBox, to: StampBox): PenStroke 
 	};
 }
 
-/** Store patch that gives a boxed stamp a new box, moving a pen stroke's points with it. */
+/** Store patch that gives a boxed stamp a new box, moving a pen stroke's points or a text highlight's rectangles with it. */
 export function reboxPatch(s: Exclude<Stamp, { kind: 'text' }>, box: StampBox): StampPatch {
 	if (s.kind === 'highlight' && s.pen) return { box, pen: mapPen(s.pen, s.box, box) };
+	if (s.kind === 'highlight' && s.rects) return { box, rects: mapRects(s.rects, s.box, box) };
 	return { box };
 }
 

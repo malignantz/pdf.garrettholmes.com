@@ -11,6 +11,7 @@ export interface StampJson {
 	text?: string;
 	color?: string;
 	pen?: { points: { x: number; y: number }[]; width: number };
+	rects?: { x: number; y: number; w: number; h: number }[];
 }
 
 /** Open the dev harness on a fixture page and wait until the page is drawn. */
@@ -99,8 +100,8 @@ export async function makeSignature(page: Page, opts: { ink?: 'Black' | 'Blue'; 
 	await expect(dlg).toBeHidden();
 }
 
-/** With Highlight armed: pick the Pen or Box shape in the highlighter bar. */
-export async function highlightShape(page: Page, shape: 'Pen' | 'Box') {
+/** With Highlight armed: pick the Text, Pen or Box shape in the highlighter bar. */
+export async function highlightShape(page: Page, shape: 'Text' | 'Pen' | 'Box') {
 	const group = page.getByRole('radiogroup', { name: 'Highlight shape' });
 	await group.getByRole('radio', { name: shape }).click();
 	await expect(group.getByRole('radio', { name: shape })).toHaveAttribute('aria-checked', 'true');
