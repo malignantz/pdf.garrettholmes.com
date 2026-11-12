@@ -9,7 +9,10 @@
  *   A  the stream as it is;
  *   B  its inflated bytes deflated again, same /DecodeParms (any stream);
  *   C1 8-bit images: the pixels with a PNG predictor chosen per row (Predictor 15);
- *   C2 8-bit images that had a predictor: the pixels with none (what qpdf wrote).
+ *   C2 8-bit images that had a predictor: the pixels with none (what qpdf wrote);
+ *   J  JPEG images (/DCTDecode, alone or behind one /FlateDecode): the same DCT
+ *      coefficients with optimised Huffman tables, baseline (jpeg-repack.ts), kept
+ *      only when every check below passes and the stored stream is smaller.
  *
  * Every candidate is decoded again before it is used and must give back exactly
  * the bytes it was made from (for C1, through the same PNG un-prediction a viewer
@@ -28,6 +31,8 @@
 import { inflateSync, zlibSync } from 'fflate';
 import { QPDF_OK, QPDF_WARNINGS, type Qpdf } from './qpdf';
 import { pngPredict } from './shrink';
+import { outputRefusal, parseJpeg, repackRefusal } from './jpeg';
+import { loadJpegRepack, repackJpeg, verifyJpeg } from './jpeg-repack';
 
 /** zlib-format (RFC 1950) compressor. */
 export interface Deflater {
@@ -61,9 +66,28 @@ export interface PackOptions {
 	polishMs?: number;
 	/** Streams whose decoded size is above this are left as they are. Default 64 MB. */
 	maxStreamBytes?: number;
+	/** Lossless JPEG repack of DCT images (jpeg-repack.ts); off when absent or false. */
+	jpeg?: JpegPassOptions | false;
 	/** Debug notes (never shown to the user). */
 	note?: (s: string) => void;
 }
+
+export interface JpegPassOptions {
+	/**
+	 * Images whose coefficient buffers would exceed this are left as they are (memory:
+	 * the check decodes input and output at once, so about twice this). Default 48 MB
+	 * (about 16 megapixels of 4:4:4 colour, 24 of 4:2:0, 25 of grey).
+	 */
+	maxCoefBytes?: number;
+	/** Wall-clock cap on all JPEG work of one export; images not started by then stay as they are. */
+	ms?: number;
+	/** JPEG bytes the repack may take in all (a work budget). */
+	bytes?: number;
+	/** The file is digitally signed: its images are left exactly as they are. */
+	signed?: boolean;
+}
+
+const JPEG_MAX_COEF = 48 * 1024 * 1024;
 
 export interface PackStats {
 	streams: number;
@@ -77,6 +101,11 @@ export interface PackStats {
 	skipped: number;
 	outOfTime: number;
 	ms: number;
+	/** JPEG images repacked, left as they are (any reason), and the time spent on JPEGs. */
+	jpeg: number;
+	jpegSaved: number;
+	jpegKept: number;
+	jpegMs: number;
 }
 
 // --- qpdf JSON -------------------------------------------------------------------------
@@ -286,11 +315,13 @@ function filtersOf(objects: Record<string, QpdfObject>, f: Json | undefined): st
 const FLATE = new Set(['/FlateDecode', '/Fl']);
 
 interface Choice {
-	/** Bytes that were deflated (what a decoder gets back after inflating). */
+	/** Bytes that were deflated (what a decoder gets back after inflating); for a bare JPEG, the JPEG. */
 	input: Uint8Array;
 	data: Uint8Array;
 	dict: Dict;
 	predicted: boolean;
+	/** A repacked JPEG: never polished (bare: `data` is the JPEG itself). */
+	jpeg?: boolean;
 }
 
 /**
@@ -382,6 +413,82 @@ export async function packStream(
 	return { input: best.input, data: best.data, dict: best.dict, predicted: best.predicted };
 }
 
+const DCT = '/DCTDecode';
+
+/** True when the stream is a JPEG the pass may consider (an image, DCT last). */
+export function isJpegImage(objects: Record<string, QpdfObject>, dict: Dict): boolean {
+	const f = filtersOf(objects, dict['/Filter']);
+	return !!f && f.length > 0 && f[f.length - 1] === DCT && resolve(objects, dict['/Subtype']) === '/Image';
+}
+
+/**
+ * J: the repacked JPEG of one image stream, or the reason it stays as it is. Checks, in
+ * order: an image XObject with /DCTDecode alone or [/FlateDecode /DCTDecode] (no
+ * predictor, intact zlib data); the JPEG's markers (jpeg.ts: one 8-bit Huffman frame,
+ * SOI to EOI); the coefficient buffers under `maxCoef`; libjpeg reads it without a
+ * warning; the output is baseline with the same frame and the same colour segments byte
+ * for byte; the stored stream is smaller; and a second, separate decode of input and
+ * output finds every DCT coefficient identical. The dictionary is not changed.
+ */
+export async function packJpegStream(
+	objects: Record<string, QpdfObject>,
+	dict: Dict,
+	raw: Uint8Array,
+	deflate: Deflater,
+	maxCoef = JPEG_MAX_COEF,
+	maxStreamBytes = 64 * 1024 * 1024
+): Promise<{ choice: Choice } | { why: string }> {
+	if (resolve(objects, dict['/Subtype']) !== '/Image') return { why: 'not an image' };
+	if ('/F' in dict || '/FFilter' in dict) return { why: 'external' };
+	const filters = filtersOf(objects, dict['/Filter']);
+	if (!filters) return { why: 'filters' };
+	const flate = filters.length === 2 && FLATE.has(filters[0]) && filters[1] === DCT;
+	if (!(flate || (filters.length === 1 && filters[0] === DCT))) return { why: `filters ${filters.join(' ')}` };
+	if (flate) {
+		const parms = resolve(objects, dict['/DecodeParms']);
+		if (parms !== undefined && parms !== null) {
+			if (!Array.isArray(parms) || parms.length !== 2) return { why: 'decode parameters' };
+			if (predictorOf(objects, parms[0]) !== null) return { why: 'predictor on the Flate filter' };
+		}
+	}
+	const jpeg = flate ? strictInflate(raw, maxStreamBytes) : raw;
+	if (!jpeg) return { why: 'damaged Flate data' };
+	const parsed = parseJpeg(jpeg);
+	if (!parsed.ok) return { why: parsed.why };
+	const refusal = repackRefusal(parsed.info);
+	if (refusal) return { why: refusal };
+	if (parsed.info.coefBytes > maxCoef) return { why: 'too big' };
+	const r = await repackJpeg(jpeg, maxCoef);
+	if (!r.ok) return { why: `libjpeg: ${r.why}${r.code ? ` ${r.code}` : ''}` };
+	const out = parseJpeg(r.jpeg);
+	if (!out.ok) return { why: `output: ${out.why}` };
+	const changed = outputRefusal(parsed.info, out.info);
+	if (changed) return { why: changed };
+	const data = flate ? await deflate.zlib(r.jpeg) : r.jpeg;
+	if (data.length >= raw.length) return { why: 'not smaller' };
+	if (flate && !checks(data, r.jpeg)) return { why: 'deflate check' };
+	if (!(await verifyJpeg(jpeg, r.jpeg, maxCoef))) return { why: 'coefficients differ' };
+	return { choice: { input: r.jpeg, data, dict, predicted: false, jpeg: true } };
+}
+
+/**
+ * The rule the app uses for "this file is signed" (PDF.js IsSignaturesPresent: the
+ * AcroForm's /SigFlags bit 1), widened to any signature dictionary (/Type /Sig or a
+ * /ByteRange), since assembling may drop /SigFlags while keeping the fields.
+ */
+export function isSigned(objects: Record<string, QpdfObject>): boolean {
+	const look = (v: Json | undefined, depth: number): boolean => {
+		if (!isDict(v) || depth > 3) return false;
+		if (v['/Type'] === '/Sig' || '/ByteRange' in v) return true;
+		const flags = v['/SigFlags'];
+		if (typeof flags === 'number' && flags & 1) return true;
+		for (const x of Object.values(v)) if (isDict(x) && look(x, depth + 1)) return true;
+		return false;
+	};
+	for (const o of Object.values(objects)) if (!o.stream && look(o.value, 0)) return true;
+	return false;
+}
+
 /** True when inflating `data` gives exactly `input`. */
 function checks(data: Uint8Array, input: Uint8Array): boolean {
 	const back = strictInflate(data);
@@ -409,7 +516,7 @@ export async function packStreams(
 	const t0 = now();
 	const note = opts.note ?? (() => {});
 	const deflate = opts.deflate ?? nativeDeflate;
-	const stats: PackStats = { streams: 0, changed: 0, saved: 0, predicted: 0, polished: 0, skipped: 0, outOfTime: 0, ms: 0 };
+	const stats: PackStats = { streams: 0, changed: 0, saved: 0, predicted: 0, polished: 0, skipped: 0, outOfTime: 0, ms: 0, jpeg: 0, jpegSaved: 0, jpegKept: 0, jpegMs: 0 };
 	const done = (b: Uint8Array) => {
 		stats.ms = Math.round(now() - t0);
 		return { bytes: b, stats };
@@ -421,13 +528,29 @@ export async function packStreams(
 	}
 	const keys = [...d.data.keys()].sort((a, b) => d.data.get(b)!.length - d.data.get(a)!.length);
 	const chosen = new Map<string, Choice>();
+	const jpeg = await jpegPass(d, opts, note);
+	let deadline = opts.deadline;
 	for (const key of keys) {
 		const raw = d.data.get(key)!;
 		const obj = d.objects[key];
 		if (!obj.stream) continue;
 		stats.streams++;
 		if (raw.length < 16) continue;
-		if (opts.deadline !== undefined && now() > opts.deadline) {
+		if (isJpegImage(d.objects, obj.stream.dict)) {
+			// JPEG time has its own budget and does not count against the Flate deadline.
+			const t = now();
+			const c = await jpeg.one(key, obj.stream.dict, raw, deflate);
+			const dt = now() - t;
+			stats.jpegMs += dt;
+			if (deadline !== undefined) deadline += dt;
+			if (c) {
+				chosen.set(key, c);
+				stats.jpeg++;
+				stats.jpegSaved += raw.length - c.data.length;
+			} else stats.jpegKept++;
+			continue;
+		}
+		if (deadline !== undefined && now() > deadline) {
 			stats.outOfTime++;
 			continue;
 		}
@@ -442,6 +565,7 @@ export async function packStreams(
 		if (choice) chosen.set(key, choice);
 	}
 	if (stats.outOfTime) note(`pack: time budget spent, ${stats.outOfTime} streams left as they are`);
+	jpeg.done(stats);
 
 	// Polish: the same input through the stronger compressor, biggest first, while time remains.
 	const polishBy = opts.polishMs !== undefined ? now() + opts.polishMs : undefined;
@@ -454,6 +578,7 @@ export async function packStreams(
 		let spentBytes = 0;
 		for (const key of keys) {
 			const c = chosen.get(key) ?? null;
+			if (c?.jpeg) continue;
 			if (polishBy !== undefined && now() > polishBy) break;
 			const raw = d.data.get(key)!;
 			let input: Uint8Array | null = c?.input ?? null;
@@ -516,6 +641,72 @@ export async function packStreams(
 		return done(bytes);
 	}
 	return done(out);
+}
+
+/**
+ * The JPEG side of the pass: loads the module once (only when the file has a JPEG image),
+ * applies the file-level rules (signed files, module that does not load) and the budgets,
+ * and repacks one image at a time. Every refusal is a debug note; the stream stays as it is.
+ */
+async function jpegPass(d: StreamDump, opts: PackOptions, note: (s: string) => void) {
+	const o = opts.jpeg;
+	const reasons = new Map<string, number>();
+	const keep = (why: string) => {
+		reasons.set(why, (reasons.get(why) ?? 0) + 1);
+		return null;
+	};
+	let enabled = !!o;
+	let anyJpeg = false;
+	for (const [key, obj] of Object.entries(d.objects)) if (obj.stream && d.data.has(key) && isJpegImage(d.objects, obj.stream.dict)) anyJpeg = true;
+	if (enabled && anyJpeg && (o as JpegPassOptions).signed) {
+		note('pack: signed file, JPEG images left as they are');
+		enabled = false;
+	}
+	if (enabled && anyJpeg) {
+		try {
+			await loadJpegRepack();
+		} catch (e) {
+			note(`pack: JPEG repack did not load (${e instanceof Error ? e.message : String(e)}); JPEG images left as they are`);
+			enabled = false;
+		}
+	}
+	const cfg = o || {};
+	const maxCoef = cfg.maxCoefBytes ?? JPEG_MAX_COEF;
+	const start = now();
+	let bytesLeft = cfg.bytes ?? Infinity;
+	// Throughput (JPEG bytes per ms, repack and check), starting from a cautious guess,
+	// so an image that would run past the time cap is not started.
+	let rate = 2_000;
+	let spentMs = 0;
+	let spentBytes = 0;
+	return {
+		async one(key: string, dict: Dict, raw: Uint8Array, deflate: Deflater): Promise<Choice | null> {
+			if (!enabled) return keep(o ? 'off for this file' : 'off');
+			if (cfg.ms !== undefined && now() + raw.length / rate > start + cfg.ms) return keep('out of time');
+			if (raw.length > bytesLeft) return keep('over the work budget');
+			bytesLeft -= raw.length;
+			const t = now();
+			let r: Awaited<ReturnType<typeof packJpegStream>>;
+			try {
+				r = await packJpegStream(d.objects, dict, raw, deflate, maxCoef);
+			} catch (e) {
+				r = { why: `error ${e instanceof Error ? e.message : String(e)}` };
+			}
+			spentMs += now() - t;
+			spentBytes += raw.length;
+			if (spentMs > 50) rate = spentBytes / spentMs;
+			if ('why' in r) {
+				if (r.why === 'coefficients differ') note(`pack: ${key} JPEG repack failed its coefficient check; left as it is`);
+				return keep(r.why);
+			}
+			return r.choice;
+		},
+		done(stats: PackStats) {
+			if (!anyJpeg) return;
+			const why = [...reasons].map(([k, n]) => `${k} ${n}`).join(', ');
+			note(`pack: JPEG ${stats.jpeg} repacked (${stats.jpegSaved} bytes saved), ${stats.jpegKept} left as they are${why ? ` (${why})` : ''}, ${Math.round(stats.jpegMs)} ms`);
+		}
+	};
 }
 
 function now() {

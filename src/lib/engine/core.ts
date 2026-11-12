@@ -53,7 +53,7 @@ import { shrinkToTarget, type ShrinkReport } from './shrink';
 import { applyStamps, type StampJob } from './stamps';
 import { cleanupWithMupdf, cleanupWorthIt, estimateCleanup, sameStructure } from './cleanup';
 import { libdeflate, libdeflateZlib } from './libdeflate';
-import { dumpStreams, nativeDeflate, packStreams, type Deflater } from './pack';
+import { dumpStreams, isSigned, nativeDeflate, packStreams, type Deflater } from './pack';
 import { TextDocs, pageTextOf } from './page-text';
 import { NEED_BYTES } from './protocol';
 
@@ -93,6 +93,8 @@ export interface LosslessPasses {
 	cleanup?: boolean | 'always';
 	/** libdeflate for the stream pass (fflate / the platform's zlib otherwise). */
 	libdeflate?: boolean;
+	/** Lossless JPEG repack in the stream pass (jpeg-repack.ts). */
+	jpeg?: boolean;
 }
 
 const SIZE_TOLERANCE = 0.5;
@@ -114,7 +116,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 	const maxExport = options.maxExportBytes ?? 1.5 * 1024 ** 3;
 	const newId = options.newId ?? (() => crypto.randomUUID());
 	const debug = options.debug ?? (() => {});
-	const passes: Required<LosslessPasses> = { pack: true, level9: true, cleanup: true, libdeflate: true, ...options.lossless };
+	const passes: Required<LosslessPasses> = { pack: true, level9: true, cleanup: true, libdeflate: true, jpeg: true, ...options.lossless };
 
 	let pdfjsP: Promise<PdfjsLib> | null = null;
 	const pdfjs = () => {
@@ -514,7 +516,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		const alt: Alternative = {};
 		if (target !== undefined) {
 			// Shrinking finalizes every step it tries: the MuPDF cleanup runs once, here,
-			// and each step gets the stream pass only.
+			// and each step gets the stream pass only (no JPEG repack either).
 			const cleaned = await cleanupOnly(bytes);
 			const finalize = (b: Uint8Array) => finalizeBytes(b, options, warnings, undefined, false);
 			const r = await shrinkToTarget(deps, cleaned, target, finalize);
@@ -576,7 +578,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		options: { compress: boolean; stripMetadata: boolean; password?: string },
 		warnings: string[],
 		alt?: Alternative,
-		withCleanup = true
+		full = true
 	): Promise<Uint8Array> {
 		if (!options.compress) return finalizeRun(bytes, options, warnings);
 		const plainWarnings: string[] = [];
@@ -584,7 +586,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		const packWarnings: string[] = [];
 		let packed: Uint8Array | unknown;
 		try {
-			packed = await finalizeRun(await losslessPre(bytes, { cleanup: withCleanup, pack: true }), options, packWarnings);
+			packed = await finalizeRun(await losslessPre(bytes, { cleanup: full, pack: true, jpeg: full }), options, packWarnings);
 		} catch (e) {
 			if (isWasmFault(e)) throw e;
 			packed = e;
@@ -609,7 +611,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 	async function cleanupOnly(bytes: Uint8Array): Promise<Uint8Array> {
 		if (!passes.cleanup) return bytes;
 		try {
-			return await losslessPre(bytes, { cleanup: true, pack: false });
+			return await losslessPre(bytes, { cleanup: true, pack: false, jpeg: false });
 		} catch (e) {
 			if (isWasmFault(e)) throw e;
 			debug(`cleanup: failed (${e instanceof Error ? e.message : String(e)}); skipped`);
@@ -619,10 +621,10 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 
 	/**
 	 * The lossless passes before the compressed finalize: [MuPDF cleanup when worth it]
-	 * → stream pass. Each one that errors, runs out of time or would change the
+	 * → stream pass (with the JPEG repack when `which.jpeg`). Each one that errors, runs out of time or would change the
 	 * file's structure is skipped (debug note only); `bytes` is the fallback.
 	 */
-	async function losslessPre(bytes: Uint8Array, which = { cleanup: true, pack: true }): Promise<Uint8Array> {
+	async function losslessPre(bytes: Uint8Array, which = { cleanup: true, pack: true, jpeg: true }): Promise<Uint8Array> {
 		const doCleanup = passes.cleanup !== false && which.cleanup;
 		const doPack = passes.pack && which.pack;
 		if (!doPack && !doCleanup) return bytes;
@@ -684,12 +686,16 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 				deadline: t0 + 6_000 + 100 * mb,
 				polishBytes: Math.min(12e6, 2e6 + 2 * bytes.length),
 				polishMs: 4_000,
+				// JPEG repack (about 0.3 s per MB of JPEG on a desktop, repack and check, perhaps
+				// 1 s on a phone): its own clock, 4 s plus 0.15 s per MB of file, and at most 64 MB
+				// of JPEG data; images over 48 MB of coefficients stay as they are (pack.ts).
+				jpeg: passes.jpeg && which.jpeg ? { ms: 4_000 + 150 * mb, bytes: 64e6, signed: isSigned(dump.objects) } : false,
 				note: debug
 			},
 			dump
 		);
 		const st = r.stats;
-		debug(`pack: ${st.changed}/${st.streams} streams re-encoded (${st.predicted} predicted, ${st.polished} polished), ${st.saved} bytes saved, ${st.ms} ms`);
+		debug(`pack: ${st.changed}/${st.streams} streams re-encoded (${st.predicted} predicted, ${st.polished} polished, ${st.jpeg} JPEG repacked), ${st.saved} bytes saved, ${st.ms} ms`);
 		return r.bytes;
 	}
 
