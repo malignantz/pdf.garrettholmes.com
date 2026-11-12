@@ -355,34 +355,17 @@ export async function packStream(
 		}
 	}
 
-	// Several candidates: pick one by deflating samples of each, then deflate only that one.
-	let pick = cands[0];
-	if (cands.length > 1) {
-		let bestSize = Infinity;
-		for (const c of cands) {
-			const size = await sampleSize(c.input, deflate);
-			if (size < bestSize) {
-				bestSize = size;
-				pick = c;
-			}
-		}
+	// Every candidate is deflated in full: picking by samples chose badly on large images
+	// with flat areas (a survey file came out 9% bigger than qpdf's).
+	let best: Choice | null = null;
+	for (const c of cands) {
+		const data = await deflate.zlib(c.input);
+		// A changed dictionary costs a few bytes too; demand a clear gain for it.
+		const dictCost = c.dict['/DecodeParms'] !== dict['/DecodeParms'] || c.dict['/Filter'] !== dict['/Filter'] ? 72 : 0;
+		if (data.length + dictCost < (best ? best.data.length : raw.length)) best = { ...c, data };
 	}
-	const data = await deflate.zlib(pick.input);
-	// A changed dictionary costs a few bytes too; demand a clear gain for it.
-	const dictCost = pick.dict['/DecodeParms'] !== dict['/DecodeParms'] || pick.dict['/Filter'] !== dict['/Filter'] ? 72 : 0;
-	const best: Choice | null = data.length + dictCost < raw.length ? { ...pick, data } : null;
 	if (best && !checks(best.data, best.input)) return null;
 	return best;
-}
-
-const SAMPLE = 32 * 1024;
-
-/** Compressed size of three 32 KB windows (start, middle, end), or of the whole buffer when it is small. */
-async function sampleSize(d: Uint8Array, deflate: Deflater): Promise<number> {
-	if (d.length <= 3 * SAMPLE) return (await deflate.zlib(d)).length;
-	let n = 0;
-	for (const at of [0, Math.floor((d.length - SAMPLE) / 2), d.length - SAMPLE]) n += (await deflate.zlib(d.subarray(at, at + SAMPLE))).length;
-	return n;
 }
 
 /** True when inflating `data` gives exactly `input`. */

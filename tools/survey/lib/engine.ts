@@ -44,10 +44,10 @@ export const debugNotes: string[] = [];
 
 let shared: Engine | null = null;
 export function engine(): Engine {
-	// SURVEY_LOSSLESS=pack,level9 (a comma list of passes to keep on) is for measuring passes one at a time.
+	// SURVEY_LOSSLESS=pack,level9,cleanup,libdeflate (passes to keep on; cleanup-always: on every file) is for measuring passes one at a time.
 	const env = process.env.SURVEY_LOSSLESS;
 	const on = env === undefined ? null : new Set(env.split(',').filter(Boolean));
-	const lossless = on ? { pack: on.has('pack'), level9: on.has('level9'), cleanup: on.has('cleanup'), libdeflate: on.has('libdeflate') } : undefined;
+	const lossless = on ? { pack: on.has('pack'), level9: on.has('level9'), cleanup: on.has('cleanup-always') ? ('always' as const) : on.has('cleanup'), libdeflate: on.has('libdeflate') } : undefined;
 	shared ??= createCoreEngine(nodeAssets(), { debug: (n) => debugNotes.push(n), lossless });
 	return shared;
 }
