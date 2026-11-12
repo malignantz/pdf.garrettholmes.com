@@ -33,7 +33,7 @@ export interface CleanupEstimate {
 	fullFontBytes: number;
 	/** Bytes in streams that repeat another stream byte for byte (same dictionary too). */
 	dupBytes: number;
-	/** False when fonts must not be subset (form fields, widgets, free text). */
+	/** False when fonts must not be subset (form fields, widgets, free text, Type 1 fonts). */
 	subset: boolean;
 	/** Expected saving in bytes. */
 	gain: number;
@@ -143,10 +143,12 @@ export async function estimateCleanup(dump: StreamDump): Promise<CleanupEstimate
 	const { objects, data } = dump;
 	let fontBytes = 0;
 	let fullFontBytes = 0;
+	let type1 = false;
 	const fontFiles = new Set<string>();
 	for (const o of Object.values(objects)) {
 		const d = dictOf(o);
 		if (!d || d['/Type'] !== '/FontDescriptor') continue;
+		if (d['/FontFile'] !== undefined) type1 = true;
 		const name = typeof d['/FontName'] === 'string' ? d['/FontName'] : '';
 		for (const k of ['/FontFile', '/FontFile2', '/FontFile3']) {
 			const key = keyOf(d[k]);
@@ -158,7 +160,10 @@ export async function estimateCleanup(dump: StreamDump): Promise<CleanupEstimate
 		}
 	}
 	const dupBytes = await duplicateBytes(dump);
-	const subset = !needsFormFonts(objects);
+	// Not with Type 1 fonts (FontFile): on a survey paper MuPDF's Type 1 subsets drew
+	// differently in PDF.js and poppler (up to 194/255 at glyph edges), though not in
+	// MuPDF. TrueType and CFF subsets were identical in all three on every measured file.
+	const subset = !needsFormFonts(objects) && !type1;
 	// Fitted on the research sample (112 survey files, 2026-11-11; MuPDF run on all):
 	// saving ≈ 1.4 × duplicates (merging also frees what only the copies used)
 	// + 0.7 × whole fonts + 0.33 × subset-tagged fonts (often subsets of many pages).
@@ -327,6 +332,51 @@ function realsOf(d: StreamDump): Set<number> {
 }
 
 /**
+ * Objects whose identity matters, not just their content (a layer is the object a
+ * page's /OC points to; two layers can be equal and still be two layers), reached
+ * from the trailer, by kind. MuPDF's merging joins equal objects, so a count that
+ * goes down means two of them became one.
+ */
+function identityCounts(objects: Record<string, QpdfObject>): Record<string, number> {
+	const counts: Record<string, number> = {};
+	const seen = new Set<string>();
+	const stack: string[] = [];
+	const push = (v: Json | undefined, depth: number) => {
+		if (typeof v === 'string') {
+			const key = keyOf(v);
+			if (key && !seen.has(key) && objects[key]) {
+				seen.add(key);
+				stack.push(key);
+			}
+		} else if (Array.isArray(v)) {
+			if (depth < 64) for (const x of v) push(x, depth + 1);
+		} else if (isDict(v ?? null) && depth < 64) for (const x of Object.values(v as Dict)) push(x, depth + 1);
+	};
+	push(dictOf(objects.trailer) as Json, 0);
+	while (stack.length) {
+		const key = stack.pop()!;
+		const o = objects[key];
+		const d = dictOf(o);
+		if (d) {
+			const kind = identityKind(d);
+			if (kind) counts[kind] = (counts[kind] ?? 0) + 1;
+		}
+		push(o.stream ? o.stream.dict : o.value, 0);
+	}
+	return counts;
+}
+
+function identityKind(d: Dict): string | null {
+	const t = d['/Type'];
+	if (t === '/OCG' || t === '/OCMD' || t === '/Sig' || t === '/Bead' || t === '/Thread' || t === '/Filespec' || t === '/StructElem' || t === '/MCR' || t === '/OBJR') return t;
+	if (t === '/Annot' || (d['/Subtype'] !== undefined && d['/Rect'] !== undefined)) return 'annotation';
+	if (d['/FT'] !== undefined || (d['/T'] !== undefined && (d['/Kids'] !== undefined || d['/Parent'] !== undefined))) return 'field';
+	if (d['/S'] !== undefined && d['/P'] !== undefined && (d['/K'] !== undefined || d['/Pg'] !== undefined)) return 'structure';
+	if (d['/Title'] !== undefined && d['/Parent'] !== undefined) return 'outline item';
+	return null;
+}
+
+/**
  * Null when `after` keeps the structure of `before`, else what differs. MuPDF keeps
  * real numbers as 32-bit floats, so a value with more than about seven digits
  * (747.82195) is written rounded (747.82199): a result with any number the input
@@ -335,6 +385,11 @@ function realsOf(d: StreamDump): Set<number> {
 export function sameStructure(before: StreamDump, after: StreamDump): string | null {
 	const reals = realsOf(before);
 	for (const r of realsOf(after)) if (!reals.has(r)) return `number ${r} is new (rounded?)`;
+	const ia = identityCounts(before.objects);
+	const ib = identityCounts(after.objects);
+	for (const k of new Set([...Object.keys(ia), ...Object.keys(ib)])) {
+		if ((ia[k] ?? 0) !== (ib[k] ?? 0)) return `${k} objects ${ia[k] ?? 0} → ${ib[k] ?? 0}`;
+	}
 	const a = pagesOf(before.objects);
 	const b = pagesOf(after.objects);
 	if (!a || !b) return 'page tree unreadable';

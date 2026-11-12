@@ -263,6 +263,49 @@ describe('cleanup guard', () => {
 	);
 });
 
+describe('cleanup rules', () => {
+	it(
+		'keeps two equal layers two layers (a merged result is not used)',
+		async () => {
+			const doc = await PDFDocument.load(corpus('compress-dupes.pdf'));
+			const ctx = doc.context;
+			const a = ctx.register(ctx.obj({ Type: 'OCG', Name: PDFString.of('Names') }));
+			const b = ctx.register(ctx.obj({ Type: 'OCG', Name: PDFString.of('Names') }));
+			doc.catalog.set(PDFName.of('OCProperties'), ctx.obj({ OCGs: [a, b], D: { Order: [a, b], ON: [a, b] } }));
+			doc.getPages().forEach((p, i) => {
+				const res = p.node.Resources()!;
+				res.set(PDFName.of('Properties'), ctx.obj({ L: i === 0 ? a : b }));
+				p.pushOperators();
+				const contents = p.node.Contents()!;
+				(contents as unknown as { push: (r: unknown) => void }).push(ctx.register(ctx.stream('/OC /L BDC 0 0 m 10 10 l S EMC\n')));
+			});
+			const input = await doc.save({ useObjectStreams: false });
+			const src = await always.e.openPdf(input, 'oc.pdf');
+			always.notes.length = 0;
+			const plain = await exportAll(always.e, src, { compress: false });
+			const packed = await exportAll(always.e, src);
+			expect(always.notes.join('\n')).toMatch(/cleanup: result rejected \(\/OCG objects 2 → 1\)/);
+			const layers = (await facts(packed)).oc;
+			expect(layers).toEqual((await facts(plain)).oc);
+			expect(layers).toHaveLength(2);
+		},
+		T
+	);
+
+	it('does not subset when a Type 1 font is embedded', async () => {
+		const objects = {
+			trailer: { value: { '/Root': '1 0 R' } },
+			'obj:1 0 R': { value: { '/Type': '/Catalog' } },
+			'obj:2 0 R': { value: { '/Type': '/FontDescriptor', '/FontName': '/CMR10', '/FontFile': '3 0 R' } },
+			'obj:3 0 R': { stream: { dict: { '/Length1': 10 } } }
+		};
+		const est = await estimateCleanup({ header: {}, objects, data: new Map([['obj:3 0 R', new Uint8Array(5000)]]) });
+		expect(est.subset).toBe(false);
+		expect(est.fullFontBytes).toBe(5000);
+		expect(est.gain).toBe(0);
+	});
+});
+
 describe('stream pass limits', () => {
 	it('leaves every stream alone once the time budget is spent, and survives a failing compressor', async () => {
 		const input = corpus('compress-predictor.pdf');
