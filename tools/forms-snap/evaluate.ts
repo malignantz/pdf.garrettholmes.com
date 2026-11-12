@@ -32,6 +32,8 @@ import type { SampleFile } from '../forms-detect/measure';
 import type { Args } from '../survey/lib/common';
 import type { DrawMark, InkFile } from './worker';
 import { loadSample } from './sample';
+import { fillPlain, fillSnap, plainTickPlaced, printedBox, snapText } from './fill';
+import { d0, fillReport, oldGroup, writeFillFails, type FillFail, type FillJson, type FillTap } from './fill-report';
 
 type Model = 'centre' | 'sloppy' | 'near';
 type Outcome = 'good' | 'nosnap' | 'bad' | 'wrong';
@@ -304,6 +306,8 @@ export async function evaluate(args: Args, out: string) {
 	const taps: Tap[] = [];
 	const harms: Harm[] = [];
 	const scoped: Scoped[] = [];
+	const fills: FillTap[] = [];
+	const fillFails: FillFail[] = [];
 	const likes: Like[] = [];
 	const fails: Fail[] = [];
 	const prepMs: number[] = [];
@@ -344,15 +348,25 @@ export async function evaluate(args: Args, out: string) {
 							excluded[tp.model] = (excluded[tp.model] ?? 0) + 1;
 							continue;
 						}
+						const box = printedBox(pg, page, t.rect);
+						const plain = fillPlain(t, tp.p, pg, box, pg.truths);
+						const plainPos = textLike(t.type) ? plain === 'good' : plainTickPlaced(t.rect, box, tp.p);
+						const fillOf = (z: SnapResult | null, scope: string, extra: Partial<FillTap> = {}) =>
+							fills.push({ scope, model: tp.model, cls: textLike(t.type) ? 'text' : 'check', cue: t.cue, real: f.real, shape: shapes[ti], conf: z?.confidence ?? 0, tap: fillSnap(t, z, tp.p, 'tap', box), left: fillSnap(t, z, tp.p, 'left', box), plain, plainPos, old: '', ...extra });
 						for (const [name, rules] of SCOPES) {
 							if (!rules) continue;
 							const z = snapAt(page, tp.p, { ...sopts, rules });
 							scoped.push({ scope: name, model: tp.model, cls: textLike(t.type) ? 'text' : 'check', cue: t.cue, real: f.real, conf: z?.confidence ?? 0, outcome: classify(t, z, pg.truths, pg.neutral).outcome, shape: shapes[ti] });
+							if (name === SCOPES[1][0] || name === SCOPES[2][0]) fillOf(z, name);
 						}
 						const t1 = performance.now();
 						const s = snapAt(page, tp.p, sopts);
 						tapMs.push(performance.now() - t1);
 						const { outcome, detail } = classify(t, s, pg.truths, pg.neutral);
+						fillOf(s, 'all', { old: outcome === 'bad' ? oldGroup(t, s!, detail) : outcome });
+						const last = fills[fills.length - 1];
+						if (f.real && t.cue && tp.model === 'sloppy' && (last.tap === 'bad' || last.tap === 'wrong') && fillFails.length < 20000)
+							fillFails.push({ sha: f.sha256, page: pg.i + 1, fill: last.tap, cls: last.cls, rule: s?.rule ?? '-', truth: t.rect, tap: tp.p, snap: s!.rect, at: s!.kind === 'text' ? snapText(s!, tp.p, 'tap') : null, source: f.source });
 						if (tp.model === 'centre' && outcome === 'good') centreGood.push(ti);
 						const cls = textLike(t.type) ? 'text' : 'check';
 						taps.push({ model: tp.model, cls, cue: t.cue, real: f.real, source: f.source, rule: s?.rule ?? '-', conf: s?.confidence ?? 0, outcome, detail, side: tp.side, why: s?.why });
@@ -401,6 +415,14 @@ export async function evaluate(args: Args, out: string) {
 	}
 	// --cuts-from A/report.json: report this sample (B) also at the cutoffs chosen on the tuning sample.
 	const fixed = args.get('cuts-from') ? (JSON.parse(fs.readFileSync(args.get('cuts-from')!, 'utf8')) as { scopes: Record<string, { cut: number } & Record<string, { cut?: number }>> }).scopes : null;
+	const fixedFill = args.get('cuts-from') ? (JSON.parse(fs.readFileSync(path.join(path.dirname(args.get('cuts-from')!), 'fill-report.json'), 'utf8')) as FillJson) : null;
+	// Old (rectangle-standard) cutoffs: the tuning sample's, from --cuts-from, else this folder's last report.
+	const prevReport = path.join(out, 'report.json');
+	const oldCuts = fixed ?? (fs.existsSync(prevReport) ? (JSON.parse(fs.readFileSync(prevReport, 'utf8')) as { scopes: Record<string, { cut: number }> }).scopes : null);
+	const fr = fillReport(fills, d0(oldCuts), fixedFill);
+	fs.writeFileSync(path.join(out, 'fill-report.md'), fr.md);
+	fs.writeFileSync(path.join(out, 'fill-report.json'), JSON.stringify(fr.json, null, 1));
+	writeFillFails(out, fillFails);
 	const rep = buildReport({ fixed, scoped, excluded, taps, harms, likes, prepMs, tapMs, collectMs, pagesSeen, nFiles, files });
 	fs.writeFileSync(path.join(out, 'report.md'), rep.md);
 	if (args.flag('dump')) {
