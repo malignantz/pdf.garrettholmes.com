@@ -12,7 +12,9 @@ import type { Asset, ExportOptions, ExportResult, FormValues, PageRef, Source, S
 import type { TapData } from '../../src/lib/engine/snap-tap';
 import { lineTop, textAt, tickAt } from '../../src/lib/editor/snap';
 import { mupdf } from '../../src/lib/engine/mupdf';
-import { engine, openCorpus, ref } from './helpers';
+import { engine, loadPdfjs, openCorpus, ref } from './helpers';
+import { proveFields, verifyBlankFields, type MadeField } from '../../src/lib/engine/blank-fields';
+import type { EngineDeps } from '../../src/lib/engine/deps';
 import { compareThree } from './three-renders';
 
 const T = 180_000;
@@ -365,6 +367,51 @@ describe('filled blanks as form fields: pages and files', () => {
 			[2, 'blank_p3_2', 'Yes']
 		]);
 		await looksSame(withFields, plain, 'secret-pass');
+	}, T);
+});
+
+describe('filled blanks as form fields: with a size target', () => {
+	it('the fields survive the shrink stage and its own checks', async () => {
+		const source = await openCorpus('forms-snap.pdf');
+		const d = await tapData(source);
+		const res = await engine().exportPlan({ pages: [ref(source, 0, 0, [snapText(d, [150, 95], 'Small', 't')]), ref(source, 1)], options: opts(true, { compress: true, targetBytes: 60_000 }) }, [source], []);
+		expect(res.blankFields).toEqual({ fields: 1, plain: 0 });
+		expect(res.checks.every((c) => c.ok)).toBe(true);
+		expect(res.checks.map((c) => c.name)).toEqual(expect.arrayContaining(['visual', 'target-size', 'blank-fields']));
+		expect((await widgets(res.bytes)).map((w) => w.value)).toEqual(['Small']);
+	}, T);
+});
+
+describe('filled blanks as form fields: the proof itself', () => {
+	it('notices a wrong value, a wrong rectangle, a missing field and a different look', async () => {
+		const source = await openCorpus('forms-snap.pdf');
+		const d = await tapData(source);
+		const page = ref(source, 0, 0, [snapText(d, [150, 95], 'Proof', 't'), snapTick(d, [134, 263], 'c')]);
+		const { withFields, plain } = await both([page], [source]);
+		const ws = await widgets(withFields.bytes);
+		const made: MadeField[] = ws.map((w, k) => ({
+			stampId: `s${k}`,
+			page: 0,
+			name: w.name,
+			kind: w.type === 'text' ? 'text' : 'check',
+			value: w.type === 'text' ? w.value : '',
+			rect: { x0: w.rect[0], y0: w.rect[1], x1: w.rect[2], y1: w.rect[3] },
+			shown: { x0: w.rect[0] / 612, y0: 1 - w.rect[3] / 792, x1: w.rect[2] / 612, y1: 1 - w.rect[1] / 792 }
+		}));
+		const deps = { mupdf, pdfjs: loadPdfjs } as unknown as EngineDeps;
+		expect((await proveFields(deps, plain.bytes, withFields.bytes, made)).size).toBe(0);
+		expect((await verifyBlankFields(deps, withFields.bytes, made)).ok).toBe(true);
+		const wrongValue = made.map((f) => (f.kind === 'text' ? { ...f, value: 'Other' } : f));
+		expect([...(await proveFields(deps, plain.bytes, withFields.bytes, wrongValue)).values()].join()).toMatch(/value reads back differently/);
+		expect((await verifyBlankFields(deps, withFields.bytes, wrongValue)).ok).toBe(false);
+		const wrongRect = made.map((f) => ({ ...f, rect: { ...f.rect, x1: f.rect.x1 + 3 } }));
+		expect((await proveFields(deps, plain.bytes, withFields.bytes, wrongRect)).size).toBe(2);
+		// No fields at all (the plain file given as the one with fields).
+		expect((await proveFields(deps, plain.bytes, plain.bytes, made)).size).toBe(2);
+		// A look that differs: the fields file compared with an export without the stamps.
+		const bare = await engine().exportPlan({ pages: [ref(source, 0)], options: opts(false) }, [source], []);
+		const looks = await proveFields(deps, bare.bytes, withFields.bytes, made);
+		expect([...looks.values()].join()).toMatch(/looks different|did not lose/);
 	}, T);
 });
 
