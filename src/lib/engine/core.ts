@@ -42,7 +42,7 @@ import {
 	stripJpegMetadata,
 	type Orientation
 } from './images';
-import { discardMupdf, isWasmFault, mupdf as loadMupdf, type Mupdf } from './mupdf';
+import { discardMupdf, isWasmFault, mupdf as loadMupdf, mupdfLoaded, type Mupdf } from './mupdf';
 import { assemble } from './assemble';
 import { hasGenerationConflict, listPages } from './intake';
 import { numberingLabels, validateNumbering, verifyNumbering, type NumberingJob } from './numbering';
@@ -51,6 +51,9 @@ import { QPDF_ERROR, QPDF_OK, QPDF_WARNINGS, Qpdf, type QpdfLoader, type QpdfRes
 import { applyRedactions, verifyRedactions, type RedactJob } from './redact';
 import { shrinkToTarget, type ShrinkReport } from './shrink';
 import { applyStamps, type StampJob } from './stamps';
+import { cleanupWithMupdf, cleanupWorthIt, estimateCleanup, sameStructure } from './cleanup';
+import { libdeflate, libdeflateZlib } from './libdeflate';
+import { dumpStreams, nativeDeflate, packStreams, type Deflater } from './pack';
 import { TextDocs, pageTextOf } from './page-text';
 import { NEED_BYTES } from './protocol';
 
@@ -62,6 +65,11 @@ export interface EngineAssets {
 	pdfjs: () => Promise<PdfjsLib>;
 	/** MuPDF loader; defaults to mupdf.ts (works in Node and, once configured, in the worker). */
 	mupdf?: () => Promise<Mupdf>;
+	/**
+	 * Whether MuPDF's wasm is on this device already (the service worker's cache), so
+	 * loading it costs no download. Absent (Node): treated as on the device.
+	 */
+	mupdfCached?: () => Promise<boolean>;
 }
 
 export interface EngineOptions {
@@ -70,9 +78,26 @@ export interface EngineOptions {
 	/** Largest total of sources referenced by one export. Default 1.5 GiB. */
 	maxExportBytes?: number;
 	newId?: () => string;
+	/** Debug notes from stages that skip themselves silently ("avoid, don't fail"); never shown to the user. */
+	debug?: (note: string) => void;
+	/** Passes of lossless compression, all on by default (off only for measurements and tests). */
+	lossless?: LosslessPasses;
+}
+
+export interface LosslessPasses {
+	/** pack.ts stream pass. */
+	pack?: boolean;
+	/** qpdf --compression-level=9 for what qpdf compresses. */
+	level9?: boolean;
+	/** MuPDF cleanup (cleanup.ts) when its estimate says it is worth it ('always': on every file, for measuring). */
+	cleanup?: boolean | 'always';
+	/** libdeflate for the stream pass (fflate / the platform's zlib otherwise). */
+	libdeflate?: boolean;
 }
 
 const SIZE_TOLERANCE = 0.5;
+/** Files above this skip the lossless passes (memory); they still get object streams. */
+const MAX_PASS_BYTES = 256 * 1024 * 1024;
 /** Smallest ExportOptions.targetBytes accepted. */
 const MIN_TARGET_BYTES = 20_000;
 const STAMP_KINDS: readonly Stamp['kind'][] = ['image', 'text', 'mark', 'highlight', 'redact'];
@@ -88,6 +113,8 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 	const maxInput = options.maxInputBytes ?? 1024 ** 3;
 	const maxExport = options.maxExportBytes ?? 1.5 * 1024 ** 3;
 	const newId = options.newId ?? (() => crypto.randomUUID());
+	const debug = options.debug ?? (() => {});
+	const passes: Required<LosslessPasses> = { pack: true, level9: true, cleanup: true, libdeflate: true, ...options.lossless };
 
 	let pdfjsP: Promise<PdfjsLib> | null = null;
 	const pdfjs = () => {
@@ -481,25 +508,45 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		}
 
 		// (e) [Shrink →] finalize.
-		const finalize = (b: Uint8Array) => finalizeBytes(b, options, warnings);
 		let final: Uint8Array;
 		let shrink: ShrinkReport | undefined;
 		const stageChecks: VerifyCheck[] = [];
+		const alt: Alternative = {};
 		if (target !== undefined) {
-			const r = await shrinkToTarget(deps, bytes, target, finalize);
+			// Shrinking finalizes every step it tries: the MuPDF cleanup runs once, here,
+			// and each step gets the stream pass only.
+			const cleaned = await cleanupOnly(bytes);
+			const finalize = (b: Uint8Array) => finalizeBytes(b, options, warnings, undefined, false);
+			const r = await shrinkToTarget(deps, cleaned, target, finalize);
 			final = r.bytes;
 			shrink = r.shrink;
 			stageChecks.push(...r.checks);
 		} else {
-			final = await finalize(bytes);
+			final = await finalizeBytes(bytes, options, warnings, alt);
 		}
 
 		// (f) Verify.
-		const checks = await verify(final, expected, password, options.stripMetadata, used, warnings);
-		if (formsRan) checks.push(...(await verifyForms(deps, final, formsCtx, password)));
-		if (redactJobs.length) checks.push(...(await verifyRedactions(deps, final, redactJobs, allowedText, password, (shrink?.imagesChanged ?? 0) > 0)));
-		if (numbering) checks.push(...(await verifyNumbering(deps, final, numbering.labels, password, numbering.numbering)));
-		checks.push(...stageChecks);
+		const verifyAll = async (file: Uint8Array, w: string[]) => {
+			const checks = await verify(file, expected, password, options.stripMetadata, used, w);
+			if (formsRan) checks.push(...(await verifyForms(deps, file, formsCtx, password)));
+			if (redactJobs.length) checks.push(...(await verifyRedactions(deps, file, redactJobs, allowedText, password, (shrink?.imagesChanged ?? 0) > 0)));
+			if (numbering) checks.push(...(await verifyNumbering(deps, file, numbering.labels, password, numbering.numbering)));
+			checks.push(...stageChecks);
+			return checks;
+		};
+		let checks = await verifyAll(final, warnings);
+		if (!checks.every((c) => c.ok) && alt.bytes) {
+			// The compressed file failed a check: the same plan without compression may not.
+			debug(`compress: packed file failed verification (${checks.filter((c) => !c.ok).map((c) => c.name).join(', ')}); trying the uncompressed result`);
+			const w = [...warnings.filter((x) => !(alt.dropWarnings ?? []).includes(x)), ...(alt.warnings ?? [])];
+			const again = await verifyAll(alt.bytes, w);
+			if (again.every((c) => c.ok)) {
+				final = alt.bytes;
+				checks = again;
+				warnings.length = 0;
+				warnings.push(...w);
+			}
+		}
 		if (!checks.every((c) => c.ok)) {
 			throw new EngineError('verification-failed', 'The exported file did not pass its checks, so it was not saved.', checks);
 		}
@@ -514,8 +561,140 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		return result;
 	}
 
-	/** qpdf finalize: compression, metadata removal, AES-256. */
+	/**
+	 * Finalize: compression, metadata removal, AES-256.
+	 *
+	 * With `compress` (lossless): the stream pass (pack.ts) re-encodes each stream
+	 * only where that is smaller and exact, then qpdf packs objects into object
+	 * streams and compresses what is still uncompressed (level 9). The same plan
+	 * finalized without compression is built too, and whichever is smaller is
+	 * returned: a compressed export is never larger than the uncompressed one.
+	 * Any trouble in the new passes falls back to that uncompressed file.
+	 */
 	async function finalizeBytes(
+		bytes: Uint8Array,
+		options: { compress: boolean; stripMetadata: boolean; password?: string },
+		warnings: string[],
+		alt?: Alternative,
+		withCleanup = true
+	): Promise<Uint8Array> {
+		if (!options.compress) return finalizeRun(bytes, options, warnings);
+		const plainWarnings: string[] = [];
+		const plain = await finalizeRun(bytes, { ...options, compress: false }, plainWarnings).catch((e: unknown) => e);
+		const packWarnings: string[] = [];
+		let packed: Uint8Array | unknown;
+		try {
+			packed = await finalizeRun(await losslessPre(bytes, { cleanup: withCleanup, pack: true }), options, packWarnings);
+		} catch (e) {
+			if (isWasmFault(e)) throw e;
+			packed = e;
+		}
+		if (packed instanceof Uint8Array && (!(plain instanceof Uint8Array) || packed.length <= plain.length)) {
+			warnings.push(...packWarnings);
+			if (alt && plain instanceof Uint8Array) {
+				alt.bytes = plain;
+				alt.warnings = plainWarnings;
+				alt.dropWarnings = packWarnings;
+			}
+			return packed;
+		}
+		if (!(packed instanceof Uint8Array)) debug(`compress: packed finalize failed (${packed instanceof Error ? packed.message : String(packed)}); using the uncompressed result`);
+		else debug(`compress: packed ${packed.length} > uncompressed ${(plain as Uint8Array).length}; using the uncompressed result`);
+		if (!(plain instanceof Uint8Array)) throw plain;
+		warnings.push(...plainWarnings);
+		return plain;
+	}
+
+	/** The MuPDF cleanup alone (for the size-target path); `bytes` when it does not run or is rejected. */
+	async function cleanupOnly(bytes: Uint8Array): Promise<Uint8Array> {
+		if (!passes.cleanup) return bytes;
+		try {
+			return await losslessPre(bytes, { cleanup: true, pack: false });
+		} catch (e) {
+			if (isWasmFault(e)) throw e;
+			debug(`cleanup: failed (${e instanceof Error ? e.message : String(e)}); skipped`);
+			return bytes;
+		}
+	}
+
+	/**
+	 * The lossless passes before the compressed finalize: [MuPDF cleanup when worth it]
+	 * → stream pass. Each one that errors, runs out of time or would change the
+	 * file's structure is skipped (debug note only); `bytes` is the fallback.
+	 */
+	async function losslessPre(bytes: Uint8Array, which = { cleanup: true, pack: true }): Promise<Uint8Array> {
+		const doCleanup = passes.cleanup !== false && which.cleanup;
+		const doPack = passes.pack && which.pack;
+		if (!doPack && !doCleanup) return bytes;
+		if (bytes.length > MAX_PASS_BYTES) {
+			// The passes hold the file about three times over (qpdf's dump, the streams, the
+			// rewrite); this large, qpdf's object streams alone are safer for memory.
+			debug(`lossless: ${bytes.length} bytes is over ${MAX_PASS_BYTES}; passes skipped`);
+			return bytes;
+		}
+		const t0 = now();
+		const mb = bytes.length / 1e6;
+		let dump = await dumpStreams(qpdf, bytes);
+		if (!dump) {
+			debug('lossless: qpdf could not list the streams; passes skipped');
+			return bytes;
+		}
+		let src = bytes;
+		if (doCleanup) {
+			const est = await estimateCleanup(dump);
+			const cost = mupdfLoaded() ? 'loaded' : (await assets.mupdfCached?.().catch(() => false)) === false ? 'download' : 'cached';
+			const run = passes.cleanup === 'always' || cleanupWorthIt(est, bytes.length, cost);
+			debug(`cleanup: estimate ${Math.round(est.gain)} bytes (fonts ${est.fontBytes}, whole ${est.fullFontBytes}, duplicates ${est.dupBytes}, subset ${est.subset}), MuPDF ${cost}: ${run ? 'run' : 'skip'}`);
+			if (run) {
+				const c = await cleanupWithMupdf(deps, bytes, est.subset, debug);
+				if (c && c.length < bytes.length) {
+					const d2 = await dumpStreams(qpdf, c);
+					const why = d2 ? sameStructure(dump, d2) : 'qpdf could not list the cleaned file';
+					if (!why && d2) {
+						debug(`cleanup: ${bytes.length} → ${c.length} bytes`);
+						src = c;
+						dump = d2;
+					} else debug(`cleanup: result rejected (${why})`);
+				} else if (c) debug(`cleanup: not smaller (${bytes.length} → ${c.length}); skipped`);
+			}
+		}
+		if (!doPack) return src;
+		let deflate: Deflater = nativeDeflate;
+		let polish: Deflater | undefined;
+		if (passes.libdeflate) {
+			try {
+				await libdeflateZlib(new Uint8Array(1), 6);
+				deflate = libdeflate(6);
+				polish = libdeflate(12);
+			} catch (e) {
+				debug(`pack: libdeflate did not load (${e instanceof Error ? e.message : String(e)}); platform zlib used`);
+			}
+		}
+		const r = await packStreams(
+			qpdf,
+			src,
+			{
+				deflate,
+				polish,
+				// Budgets ("avoid, don't fail": what is left over stays as it is). The fast pass
+				// (libdeflate 6) stops 6 s plus 0.1 s per MB after the passes began, on this device's
+				// clock. Polishing (libdeflate 12, about 4 MB/s on a desktop, perhaps 1 MB/s on a
+				// phone) takes the biggest streams first, up to 2 MB plus twice the file's size and
+				// at most 12 MB of data, and stops after 4 s.
+				deadline: t0 + 6_000 + 100 * mb,
+				polishBytes: Math.min(12e6, 2e6 + 2 * bytes.length),
+				polishMs: 4_000,
+				note: debug
+			},
+			dump
+		);
+		const st = r.stats;
+		debug(`pack: ${st.changed}/${st.streams} streams re-encoded (${st.predicted} predicted, ${st.polished} polished), ${st.saved} bytes saved, ${st.ms} ms`);
+		return r.bytes;
+	}
+
+	/** One qpdf finalize run. `compress`: object streams, level 9 for uncompressed streams; existing Flate data is kept. */
+	async function finalizeRun(
 		bytes: Uint8Array,
 		options: { compress: boolean; stripMetadata: boolean; password?: string },
 		warnings: string[]
@@ -523,7 +702,8 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		const finalArgs: string[] = ['/in/doc.pdf'];
 		const finalInputs: Record<string, Uint8Array> = { '/in/doc.pdf': bytes };
 		if (options.compress) {
-			finalArgs.push('--object-streams=generate', '--compress-streams=y', '--recompress-flate');
+			finalArgs.push('--object-streams=generate', '--compress-streams=y');
+			if (passes.level9) finalArgs.push('--compression-level=9');
 		}
 		if (options.stripMetadata) {
 			const update = await metadataRemoval(bytes);
@@ -538,20 +718,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			finalArgs.push('--encrypt', `--user-password=${pw}`, `--owner-password=${pw}`, '--bits=256', '--');
 		}
 		finalArgs.push('/out/final.pdf');
-		const run = { args: finalArgs, inputs: finalInputs, outputs: ['/out/final.pdf'] };
-		if (options.compress) {
-			// --recompress-flate stops at a Flate stream zlib cannot decode (viewers draw what
-			// they can of it). Compressing is only an optimization: then keep such streams as they are.
-			const res = await qpdf.run(run);
-			const file = res.files.get('/out/final.pdf');
-			if ((res.code === QPDF_OK || res.code === QPDF_WARNINGS) && file) {
-				if (res.code === QPDF_WARNINGS) warnings.push(...friendlyWarnings(res.stderr));
-				return file;
-			}
-			if (!/inflate|flate|decod/i.test(res.stderr)) failBuild(res);
-			run.args = finalArgs.filter((a) => a !== '--recompress-flate');
-		}
-		return runOrFail(run, '/out/final.pdf', warnings);
+		return runOrFail({ args: finalArgs, inputs: finalInputs, outputs: ['/out/final.pdf'] }, '/out/final.pdf', warnings);
 	}
 
 	async function runOrFail(
@@ -752,6 +919,14 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 }
 
 // ---------------------------------------------------------------------------
+
+/** The second candidate of a compressed finalize, kept for a fallback when the chosen one fails verification. */
+interface Alternative {
+	bytes?: Uint8Array;
+	warnings?: string[];
+	/** Warnings that came with the chosen candidate only. */
+	dropWarnings?: string[];
+}
 
 interface QpdfJsonObject {
 	value?: unknown;

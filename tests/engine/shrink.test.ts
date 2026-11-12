@@ -41,6 +41,8 @@ interface ImageInfo {
 	filter: string;
 	cs: string;
 	raw: string;
+	/** Decoded samples (the stored encoding may change in lossless repacking; these may not). */
+	data: string;
 	smask: { width: number; height: number; raw: string } | null;
 	profile: string | null;
 }
@@ -92,6 +94,7 @@ async function images(bytes: Uint8Array, password?: string): Promise<Map<string,
 				filter: v.get('Filter').toString(),
 				cs: cs.toString().replace(/\d+ 0 R/g, 'R'),
 				raw: raw(v),
+				data: decoded(v),
 				smask: sm.isNull() ? null : { width: sm.get('Width').asNumber(), height: sm.get('Height').asNumber(), raw: decoded(sm) },
 				profile: cs.isArray() && cs.get(0).asName() === 'ICCBased' ? decoded(cs.get(1)) : null
 			});
@@ -141,14 +144,16 @@ describe('shrink: reaching the target', () => {
 		const { src, pages } = await whole('shrink-photos.pdf');
 		const base = await lossless(pages, [src]);
 		let prev = { size: Infinity, dpi: Infinity };
+		// dpi 0: no image was changed (the target was reached losslessly).
+		const cap = (dpi: number) => (dpi === 0 ? Infinity : dpi);
 		for (const target of [400_000, 80_000, 50_000, 40_000]) {
 			const res = await run(pages, [src], { targetBytes: target });
 			allOk(res);
 			expect(res.bytes.length).toBeLessThanOrEqual(base.bytes.length);
 			expect(res.bytes.length).toBeLessThanOrEqual(prev.size);
-			expect(res.shrink!.dpi).toBeLessThanOrEqual(prev.dpi);
+			expect(cap(res.shrink!.dpi)).toBeLessThanOrEqual(prev.dpi);
 			if (res.shrink!.reached) expect(res.bytes.length).toBeLessThanOrEqual(target);
-			prev = { size: res.bytes.length, dpi: res.shrink!.dpi };
+			prev = { size: res.bytes.length, dpi: cap(res.shrink!.dpi) };
 		}
 		expect(prev.dpi).toBeLessThan(200);
 	}, T);
@@ -205,9 +210,11 @@ describe('shrink: which images change and how', () => {
 		// Skips: pages 1–6. 1-bit, CMYK, Indexed, tiny icons, /Mask (colour key and stencil), ImageMask, 16-bit, /Decode.
 		const skipKeys = [...before.keys()].filter((k) => Number(k.slice(1, k.indexOf('/'))) <= 6);
 		expect(skipKeys.length).toBe(10);
-		for (const k of skipKeys) expect(after.get(k), k).toEqual(before.get(k));
+		// Same samples; the stored bytes may differ, since lossless repacking spends a time budget.
+		const same = ({ raw: _raw, ...rest }: ImageInfo) => rest;
+		for (const k of skipKeys) expect(same(after.get(k)!), k).toEqual(same(before.get(k)!));
 		// Flat line art (photos p12) is not JPEG'd; downsampled Flate was not smaller here, so it is unchanged.
-		expect(after.get('p18/Im0')).toEqual(before.get('p18/Im0'));
+		expect(same(after.get('p18/Im0')!)).toEqual(same(before.get('p18/Im0')!));
 		// Every photo-like image on photos pages 1–11 changed.
 		for (const p of [1, 2, 3, 4, 5, 6, 7, 8, 10, 11]) expect(after.get(`p${p + 6}/Im0`)!.raw, `photos p${p}`).not.toBe(before.get(`p${p + 6}/Im0`)!.raw);
 	}, T);

@@ -21,6 +21,7 @@ interface EmscriptenFS {
 	writeFile(path: string, data: Uint8Array): void;
 	readFile(path: string): Uint8Array;
 	unlink(path: string): void;
+	readdir(path: string): string[];
 }
 
 interface QpdfInstance {
@@ -43,6 +44,11 @@ export interface QpdfRunOptions {
 	inputs?: Record<string, Uint8Array>;
 	/** Files to read back after the run (missing ones are omitted). */
 	outputs?: string[];
+	/**
+	 * Folders created empty before the run; every file qpdf writes into one is read
+	 * back after it (for `--json-stream-data=file`, whose file names are not known in advance).
+	 */
+	outputDirs?: string[];
 }
 
 export interface QpdfResult {
@@ -108,7 +114,7 @@ export class Qpdf {
 		return next;
 	}
 
-	async #runNow({ args, inputs = {}, outputs = [] }: QpdfRunOptions): Promise<QpdfResult> {
+	async #runNow({ args, inputs = {}, outputs = [], outputDirs = [] }: QpdfRunOptions): Promise<QpdfResult> {
 		const [module, factory] = await Promise.all([this.#getModule(), this.#getFactory()]);
 		const out: number[] = [];
 		const err: number[] = [];
@@ -144,6 +150,7 @@ export class Qpdf {
 				written.push(path);
 			}
 			for (const path of outputs) ensureDirs(qpdf.FS, path);
+			for (const dir of outputDirs) ensureDirs(qpdf.FS, `${dir}/x`);
 			let code: number;
 			try {
 				code = qpdf.callMain([...args]);
@@ -159,6 +166,23 @@ export class Qpdf {
 					files.set(path, qpdf.FS.readFile(path));
 				} catch {
 					// Not produced.
+				}
+			}
+			for (const dir of outputDirs) {
+				let names: string[] = [];
+				try {
+					names = qpdf.FS.readdir(dir).filter((n) => n !== '.' && n !== '..');
+				} catch {
+					// Not created.
+				}
+				for (const n of names) {
+					const path = `${dir}/${n}`;
+					files.set(path, qpdf.FS.readFile(path));
+					try {
+						qpdf.FS.unlink(path);
+					} catch {
+						// Already gone.
+					}
 				}
 			}
 			return { code, stdout: decode(out), stderr: decode(err), files };
