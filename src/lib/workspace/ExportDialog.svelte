@@ -18,10 +18,14 @@
 		NUMBER_SIZES,
 		NUMBER_STYLES,
 		buildExportOptions,
+		blankFieldsLine,
 		buildNumbering,
 		defaultFilename,
+		filledBlankCount,
 		formatBytes,
 		formatMB,
+		keepBlanksBlocked,
+		keepBlanksHint,
 		normalizeFilename,
 		numberingPreview,
 		parseMegabytes,
@@ -82,7 +86,8 @@
 			names,
 			encryptedInput: sources.some((x) => x.wasEncrypted),
 			hasForm: sources.some((x) => x.hasForm),
-			redactions: redactionCount(pages)
+			redactions: redactionCount(pages),
+			blanks: filledBlankCount(pages)
 		};
 	});
 
@@ -108,6 +113,7 @@
 		usePassword && touched && !pwError && confirm !== password ? 'The two passwords do not match.' : null
 	);
 	const redacting = $derived(plan.redactions > 0);
+	const blanksBlocked = $derived(keepBlanksBlocked(f, plan));
 	const fitOk = $derived(!f.fit || targetBytesFor(f.fitChoice, f.fitOther) !== null);
 	const fitError = $derived(f.fit && f.fitChoice === 'other' && !fitOk ? 'Enter a size from 0.1 to 500 MB.' : undefined);
 
@@ -157,7 +163,7 @@
 		filename = name;
 		const built = buildExportOptions(
 			{ ...f, filename: name, password: usePassword ? password : undefined },
-			{ pageCount: plan.count, redactions: plan.redactions, hasForm: plan.hasForm }
+			{ pageCount: plan.count, redactions: plan.redactions, hasForm: plan.hasForm, blanks: plan.blanks }
 		);
 		if (!built.ok) return;
 		const exportPlan = store.toExportPlan(built.options, mode === 'extract' ? ids : undefined);
@@ -254,7 +260,8 @@
 		forms: 'Form answers',
 		numbering: 'Page numbers',
 		visual: 'Pages look the same',
-		'target-size': 'File size'
+		'target-size': 'File size',
+		'blank-fields': 'Filled blanks'
 	};
 
 	function headline(r: ExportResult): string {
@@ -379,6 +386,15 @@
 						/>
 					{/if}
 				{/if}
+				{#if plan.blanks > 0}
+					<Toggle
+						checked={f.keepBlanks && !blanksBlocked}
+						onchange={(v) => (f.keepBlanks = v)}
+						disabled={!!blanksBlocked}
+						label="Keep filled blanks editable"
+						hint={blanksBlocked ?? keepBlanksHint(plan.blanks)}
+					/>
+				{/if}
 				<Toggle
 					checked={f.stripMetadata || redacting}
 					onchange={(v) => (f.stripMetadata = v)}
@@ -443,6 +459,7 @@
 					{#if sh.changed}<p class="caption">{sh.changed}</p>{/if}
 				</div>
 			{/if}
+			{#if blankFieldsLine(r)}<p class="blanks">{blankFieldsLine(r)}</p>{/if}
 			{@render checkList(r.checks, r.pageCount)}
 			{#if r.warnings.length}
 				<ul class="warnings">
@@ -539,7 +556,8 @@
 		gap: var(--s-1);
 	}
 
-	.shrink > p:first-child {
+	.shrink > p:first-child,
+	.blanks {
 		font-weight: 550;
 	}
 

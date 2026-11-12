@@ -26,13 +26,15 @@ export function copyTargets(count: number, current: number, mode: 'all' | 'range
 
 /**
  * The stamp as it should land on a page with another displayed aspect
- * (width / height): same place, same on-screen shape. Returns a stamp without id.
+ * (width / height): same place, same on-screen shape. Returns a stamp without id,
+ * and without a link to a blank (that blank is on the original's page).
  */
 export function stampForPage(s: Stamp, fromAspect: number, toAspect: number): NewStamp {
 	if (s.kind === 'text') {
-		const { id: _id, ...rest } = s;
+		const { id: _id, blank: _blank, ...rest } = s;
 		return { ...rest };
 	}
 	const { id: _id, ...rest } = s;
+	if ('blank' in rest) delete rest.blank;
 	return { ...rest, ...reboxPatch(s, adaptBox(s.box, fromAspect, toAspect)) } as NewStamp;
 }

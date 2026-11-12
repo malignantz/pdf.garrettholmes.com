@@ -113,6 +113,9 @@ test.describe('snap on tap', () => {
 		await typeAndClose(page, info, 'Jane');
 		const before = await textStamp(page);
 		expect(baselinePt(before)).toBeCloseTo(100, 0);
+		// Linked to the line it was put on ("Keep filled blanks editable").
+		expect(before.blank?.kind).toBe('text');
+		expect(before.blank!.box.x * W).toBeCloseTo(130, 0);
 		// Drag it down by 14 pt and right by 30 pt: between the lines, near "Address".
 		const b = await pageBox(page);
 		const el = page.locator(`[data-stamp="${before.id}"]`);
@@ -131,10 +134,12 @@ test.describe('snap on tap', () => {
 		expect((after.x! - before.x!) * W).toBeCloseTo(30, 0);
 		expect((after.y! - before.y!) * H).toBeCloseTo(14, 0);
 		expect(after.size).toBeCloseTo(before.size!, 6);
+		expect(after.blank).toBeUndefined();
 		// Undo puts it back on the line, as it was placed.
 		await page.keyboard.press('Control+z');
 		const undone = (await stamps(page)).find((s) => s.id === before.id)!;
 		expect(baselinePt(undone)).toBeCloseTo(100, 0);
+		expect(undone.blank).toEqual(before.blank);
 	});
 
 	test('a Check tap beside a drawn box ticks the box; elsewhere it lands as before', async ({ page }, info) => {
@@ -151,6 +156,7 @@ test.describe('snap on tap', () => {
 		expect(m.y * H).toBeCloseTo(259, 0);
 		expect(m.w * W).toBeCloseTo(9, 0);
 		expect(m.h * H).toBeCloseTo(9, 0);
+		expect(marks[0].blank?.kind).toBe('check');
 		// On empty paper: the default tick (0.026 of the shorter side) centred on the tap.
 		await tapAt(page, info, 450, 650);
 		marks = (await stamps(page)).filter((s) => s.kind === 'mark');
@@ -159,6 +165,7 @@ test.describe('snap on tap', () => {
 		expect((p.x + p.w / 2) * W).toBeCloseTo(450, 0);
 		expect((p.y + p.h / 2) * H).toBeCloseTo(650, 0);
 		expect(p.w * W).toBeCloseTo(0.026 * W, 0);
+		expect(marks[1].blank).toBeUndefined();
 	});
 
 	test('no snapping on a scanned page', async ({ page }, info) => {

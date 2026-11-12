@@ -201,6 +201,10 @@ function plural(n: number, one: string, many: string): string {
 const pagesLabel = (verb: string, n: number) => `${verb} ${plural(n, 'page', 'pages')}`;
 
 function cloneStamp(s: Stamp, id: string): Stamp {
+	if ((s.kind === 'text' || s.kind === 'mark') && s.blank) {
+		const blank = { kind: s.blank.kind, box: { ...s.blank.box } };
+		return s.kind === 'text' ? { ...s, id, blank } : { ...s, id, box: { ...s.box }, blank };
+	}
 	if (s.kind === 'highlight' && (s.pen || s.rects)) {
 		const c: Stamp = { ...s, id, box: { ...s.box } };
 		if (s.pen) c.pen = { width: s.pen.width, points: s.pen.points.map((p) => ({ x: p.x, y: p.y })) };
@@ -208,6 +212,46 @@ function cloneStamp(s: Stamp, id: string): Stamp {
 		return c;
 	}
 	return 'box' in s ? { ...s, id, box: { ...s.box } } : { ...s, id };
+}
+
+/**
+ * Snap on tap's link from a stamp to the blank it was snapped into (Stamp `blank`).
+ * The link says "this text (or tick) is the answer for that blank"; it is dropped as
+ * soon as that is in doubt:
+ * - text: x, y or size changes (moved, nudged, resized, kept inside the page), or the
+ *   text gets a line break while the blank is under two lines tall (TALL_BLANK_PT);
+ * - mark: box or mark changes;
+ * - the page is rotated (stamps keep their place on the displayed page, so they no
+ *   longer sit on the blank);
+ * - copies made by the editor (duplicate, copy to pages) never carry it.
+ * Editing the text itself and changing its colour keep it. Undo brings it back.
+ */
+const TEXT_GEOMETRY = ['x', 'y', 'size'];
+const MARK_GEOMETRY = ['box', 'mark'];
+/** A blank this tall holds two lines of 11 pt text (editor/snap.ts TALL). */
+export const TALL_BLANK_PT = 2 * 1.2 * 11;
+
+function withoutBlank(s: Stamp): Stamp {
+	if ((s.kind !== 'text' && s.kind !== 'mark') || !s.blank) return s;
+	const { blank: _blank, ...rest } = s;
+	return rest as Stamp;
+}
+
+/** A link to a blank: the right kind for the stamp and a box with a positive size on the page. */
+function checkBlank(s: Stamp): void {
+	if (s.kind !== 'text' && s.kind !== 'mark') {
+		if ('blank' in s) throw new Error('DocStore: only text and ticks can be linked to a blank');
+		return;
+	}
+	if (s.blank === undefined) return;
+	const b = s.blank as { kind?: unknown; box?: StampBox } | null;
+	const want = s.kind === 'text' ? 'text' : s.mark === 'check' ? 'check' : null;
+	if (!b || typeof b !== 'object' || b.kind !== want) throw new Error('DocStore: a stamp linked to the wrong kind of blank');
+	const r = b.box;
+	const fin = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+	const eps = 1e-6;
+	if (!r || !fin(r.x) || !fin(r.y) || !fin(r.w) || !fin(r.h) || !(r.w > 0) || !(r.h > 0)) throw new Error('DocStore: bad blank rectangle');
+	if (r.x < -eps || r.y < -eps || r.x + r.w > 1 + eps || r.y + r.h > 1 + eps) throw new RangeError('DocStore: blank outside the page');
 }
 
 /** Most rectangles one text highlight may hold (one per line; a full page has about 60). */
@@ -438,6 +482,7 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 			if (s.pen !== undefined) throw new Error('DocStore: a highlight is a pen stroke or text rectangles, not both');
 			checkRects(s.rects, s.box);
 		}
+		checkBlank(s);
 	}
 
 	function spliceIn(d: Doc, refs: PageRef[], at: number): Doc {
@@ -522,7 +567,8 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 		return run(pagesLabel('Rotate', n), (d) => ({
 			...d,
 			pages: d.pages.map((p) =>
-				set.has(p.id) ? { ...p, rotation: normRotation(p.rotation + delta) } : p
+				// Stamps keep their place on the displayed page, so links to blanks go.
+				set.has(p.id) ? { ...p, rotation: normRotation(p.rotation + delta), stamps: p.stamps.map(withoutBlank) } : p
 			)
 		}));
 	}
@@ -608,6 +654,7 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 					}
 				}
 				if (!diff) return p;
+				if (next.blank !== undefined && !('blank' in patch) && blankInDoubt(d, p, old, next)) delete next.blank;
 				const ns = next as unknown as Stamp;
 				checkStamp(d, ns);
 				const stamps = p.stamps.slice();
@@ -615,6 +662,20 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 				return { ...p, stamps };
 			})
 		);
+	}
+
+	/** Whether an edit leaves it in doubt that the stamp still belongs to its blank (see TEXT_GEOMETRY). */
+	function blankInDoubt(d: Doc, p: PageRef, old: Stamp, next: Record<string, unknown>): boolean {
+		const o = old as unknown as Record<string, unknown>;
+		const keys = old.kind === 'text' ? TEXT_GEOMETRY : MARK_GEOMETRY;
+		if (keys.some((k) => !valuesEqual(o[k], next[k]))) return true;
+		if (old.kind === 'text' && /[\r\n]/.test(String(next.text))) {
+			const size = registry.get(p.sourceId)?.pages[p.pageIndex] ?? d.sources.find((s) => s.id === p.sourceId)?.pages[p.pageIndex];
+			if (!size) return true;
+			const shownH = p.rotation === 90 || p.rotation === 270 ? size.width : size.height;
+			return (next.blank as { box: StampBox }).box.h * shownH < TALL_BLANK_PT;
+		}
+		return false;
 	}
 
 	function removeStamp(pageId: PageId, stampId: string): boolean {

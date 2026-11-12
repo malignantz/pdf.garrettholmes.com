@@ -7,11 +7,18 @@
  * a password or undo history. See the plan, "Saving progress", for the migration rule:
  * any change to the shape below (or to the stamp kinds it copies) bumps SCHEMA.
  */
-import type { Asset, FormValue, FormValues, PageRef, PageSize, Rotation, Source, Stamp, StampBox } from '../core/types';
+import type { Asset, FormValue, FormValues, PageRef, PageSize, Rotation, Source, Stamp, StampBlank, StampBox } from '../core/types';
 import { DEFAULT_FORM, type ExportForm } from '../workspace/logic';
 
-/** Bump on any change to SessionRecord or to the stamp shapes copied below. */
-export const SCHEMA = 1;
+/**
+ * Bump on any change to SessionRecord or to the stamp shapes copied below.
+ * 2 (2026-11-12): text and check stamps may carry `blank` (snap on tap's link to the
+ * blank, for "Keep filled blanks editable"). Schema 1 records are the same shape
+ * without it and are still read (READS); drop 1 from READS after 2026-11-26.
+ */
+export const SCHEMA = 2;
+/** Schemas this build reads: older ones only where they are a subset of SCHEMA. */
+const READS: readonly number[] = [1, SCHEMA];
 
 /** A saved session is deleted this long after its last change. */
 export const EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
@@ -98,8 +105,8 @@ type Keys<K extends Stamp['kind']> = readonly (keyof StampOf<K>)[];
  */
 const STAMP_KEYS = {
 	image: ['id', 'kind', 'assetId', 'box'],
-	text: ['id', 'kind', 'text', 'x', 'y', 'size', 'color'],
-	mark: ['id', 'kind', 'mark', 'box'],
+	text: ['id', 'kind', 'text', 'x', 'y', 'size', 'color', 'blank'],
+	mark: ['id', 'kind', 'mark', 'box', 'blank'],
 	highlight: ['id', 'kind', 'color', 'box', 'pen', 'rects'],
 	redact: ['id', 'kind', 'box']
 } as const satisfies { [K in Stamp['kind']]: Keys<K> };
@@ -196,10 +203,16 @@ function copyStamp(s: Stamp): Stamp {
 	switch (s.kind) {
 		case 'image':
 			return { id: s.id, kind: 'image', assetId: s.assetId, box: copyBox(s.box) };
-		case 'text':
-			return { id: s.id, kind: 'text', text: s.text, x: s.x, y: s.y, size: s.size, color: s.color };
-		case 'mark':
-			return { id: s.id, kind: 'mark', mark: s.mark, box: copyBox(s.box) };
+		case 'text': {
+			const t: Stamp = { id: s.id, kind: 'text', text: s.text, x: s.x, y: s.y, size: s.size, color: s.color };
+			if (s.blank) t.blank = { kind: s.blank.kind, box: copyBox(s.blank.box) };
+			return t;
+		}
+		case 'mark': {
+			const m: Stamp = { id: s.id, kind: 'mark', mark: s.mark, box: copyBox(s.box) };
+			if (s.blank) m.blank = { kind: s.blank.kind, box: copyBox(s.blank.box) };
+			return m;
+		}
 		case 'redact':
 			return { id: s.id, kind: 'redact', box: copyBox(s.box) };
 		case 'highlight': {
@@ -240,6 +253,11 @@ function readBox(v: unknown): StampBox {
 	return { x: v.x, y: v.y, w: v.w, h: v.h };
 }
 
+function readBlank(v: unknown, kind: StampBlank['kind']): StampBlank {
+	if (!isObj(v) || v.kind !== kind) fail('bad blank');
+	return { kind, box: readBox(v.box) };
+}
+
 function readStamp(v: unknown): Stamp {
 	if (!isObj(v) || !str(v.id) || !v.id) fail('bad stamp');
 	const id = v.id;
@@ -247,12 +265,18 @@ function readStamp(v: unknown): Stamp {
 		case 'image':
 			if (!str(v.assetId)) fail('bad image stamp');
 			return { id, kind: 'image', assetId: v.assetId, box: readBox(v.box) };
-		case 'text':
+		case 'text': {
 			if (!str(v.text) || !fin(v.x) || !fin(v.y) || !fin(v.size) || !['black', 'blue', 'red'].includes(v.color as string)) fail('bad text stamp');
-			return { id, kind: 'text', text: v.text, x: v.x, y: v.y, size: v.size, color: v.color as 'black' | 'blue' | 'red' };
-		case 'mark':
+			const t: Stamp = { id, kind: 'text', text: v.text, x: v.x, y: v.y, size: v.size, color: v.color as 'black' | 'blue' | 'red' };
+			if (v.blank !== undefined) t.blank = readBlank(v.blank, 'text');
+			return t;
+		}
+		case 'mark': {
 			if (!['check', 'cross', 'dot'].includes(v.mark as string)) fail('bad mark stamp');
-			return { id, kind: 'mark', mark: v.mark as 'check' | 'cross' | 'dot', box: readBox(v.box) };
+			const m: Stamp = { id, kind: 'mark', mark: v.mark as 'check' | 'cross' | 'dot', box: readBox(v.box) };
+			if (v.blank !== undefined) m.blank = readBlank(v.blank, 'check');
+			return m;
+		}
 		case 'redact':
 			return { id, kind: 'redact', box: readBox(v.box) };
 		case 'highlight': {
@@ -355,7 +379,7 @@ export function schemaOf(raw: unknown): number | null {
 
 /**
  * Read a stored value back into a SessionRecord. Throws SessionFormatError:
- * 'version' for any schema other than SCHEMA (older or newer), 'damaged' for
+ * 'version' for any schema this build does not read (READS), 'damaged' for
  * anything that does not parse. Cross-references (page index in range, assets
  * used by stamps, form answers of known sources) are checked here too, so a
  * record that parses can be handed to DocStore.restore.
@@ -363,7 +387,7 @@ export function schemaOf(raw: unknown): number | null {
 export function parseRecord(raw: unknown): SessionRecord {
 	const schema = schemaOf(raw);
 	if (schema === null) fail('not a session record');
-	if (schema !== SCHEMA) throw new SessionFormatError('version', `saved session: schema ${schema}, this app reads ${SCHEMA}`);
+	if (!READS.includes(schema)) throw new SessionFormatError('version', `saved session: schema ${schema}, this app reads ${READS.join(' and ')}`);
 	const v = raw as Record<string, unknown>;
 	if (!str(v.writer) || !str(v.rev) || !fin(v.savedAt) || !str(v.app) || typeof v.clean !== 'boolean') fail('bad header');
 	if (!Array.isArray(v.sources) || !Array.isArray(v.pages) || !Array.isArray(v.assets)) fail('bad lists');

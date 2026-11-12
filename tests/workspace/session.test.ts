@@ -68,7 +68,10 @@ const everyStamp = (): Stamp[] => [
 			{ x: 0.1, y: 0.63, w: 0.3, h: 0.02 }
 		]
 	},
-	{ id: 's-redact', kind: 'redact', box: { x: 0.2, y: 0.7, w: 0.2, h: 0.03 } }
+	{ id: 's-redact', kind: 'redact', box: { x: 0.2, y: 0.7, w: 0.2, h: 0.03 } },
+	// Snap on tap: text and a tick linked to the blank they were put in.
+	{ id: 's-snap-text', kind: 'text', text: 'Jane', x: 0.22, y: 0.11, size: 0.014, color: 'black', blank: { kind: 'text', box: { x: 0.21, y: 0.1, w: 0.26, h: 0.03 } } },
+	{ id: 's-snap-check', kind: 'mark', mark: 'check', box: { x: 0.21, y: 0.33, w: 0.015, h: 0.011 }, blank: { kind: 'check', box: { x: 0.21, y: 0.33, w: 0.015, h: 0.011 } } }
 ];
 
 function fakeEngine(password = 'secret') {
@@ -220,6 +223,15 @@ describe('format', () => {
 		expect(cleanExportForm({ ...DEFAULT_FORM, password: 'x' } as never)).toEqual(DEFAULT_FORM);
 	});
 
+	it('still reads schema 1 records (before links to blanks)', () => {
+		const rec = base();
+		const v1 = structuredClone({ ...rec, schema: 1 }) as unknown as { pages: { stamps: Record<string, unknown>[] }[] };
+		for (const p of v1.pages) for (const st of p.stamps) delete st.blank;
+		const back = parseRecord(v1);
+		expect(back.schema).toBe(SCHEMA);
+		expect(back.pages[0].stamps.find((x) => x.id === 's-snap-text')).toEqual({ id: 's-snap-text', kind: 'text', text: 'Jane', x: 0.22, y: 0.11, size: 0.014, color: 'black' });
+	});
+
 	it('refuses other schema versions, older and newer', () => {
 		for (const schema of [0, SCHEMA + 1, 99]) {
 			const raw = { ...base(), schema };
@@ -241,6 +253,8 @@ describe('format', () => {
 			(r) => (((r.pages as PageRef[])[0].stamps[0] as { assetId: string }).assetId = 'nope'),
 			(r) => (((r.pages as PageRef[])[0].stamps[0] as { kind: string }).kind = 'sticker'),
 			(r) => ((r.sources as { hash: string }[])[0].hash = 'xyz'),
+			(r) => (((r.pages as PageRef[])[0].stamps.find((x) => x.id === 's-snap-text') as { blank: { kind: string } }).blank.kind = 'check'),
+			(r) => (((r.pages as PageRef[])[0].stamps.find((x) => x.id === 's-snap-check') as { blank: unknown }).blank = { kind: 'check', box: { x: 'a' } }),
 			(r) => ((r.sources as { wasEncrypted: boolean }[])[0].wasEncrypted = true),
 			(r) => (r.formValues = { other: { a: 'b' } }),
 			(r) => (r.pages = []),

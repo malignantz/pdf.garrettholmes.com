@@ -874,3 +874,73 @@ describe('history tokens', () => {
 		expect(store.redoToken).toBe(redoMark);
 	});
 });
+
+describe('links to blanks (snap on tap)', () => {
+	// Page height 800 pt: a one-line blank 0.02 (16 pt) tall, a tall one 0.05 (40 pt).
+	const line = { kind: 'text' as const, box: { x: 0.2, y: 0.1, w: 0.4, h: 0.02 } };
+	const tall = { kind: 'text' as const, box: { x: 0.2, y: 0.3, w: 0.4, h: 0.05 } };
+	const square = { kind: 'check' as const, box: { x: 0.5, y: 0.5, w: 0.02, h: 0.015 } };
+	function linked() {
+		const ctx = setup(2);
+		const pid = ctx.store.state.pages[0].id;
+		const t = ctx.store.addStamp(pid, { kind: 'text', text: 'Jane', x: 0.21, y: 0.1, size: 0.014, color: 'black', blank: line });
+		const tt = ctx.store.addStamp(pid, { kind: 'text', text: 'Note', x: 0.21, y: 0.31, size: 0.014, color: 'black', blank: tall });
+		const c = ctx.store.addStamp(pid, { kind: 'mark', mark: 'check', box: { x: 0.5, y: 0.5, w: 0.02, h: 0.015 }, blank: square });
+		const get = (id: string) => ctx.store.state.pages.find((p) => p.id === pid)!.stamps.find((s) => s.id === id) as Stamp & { blank?: unknown };
+		return { ...ctx, pid, t, tt, c, get };
+	}
+
+	it('keeps the link while the text is edited or recoloured', () => {
+		const { store, pid, t, get } = linked();
+		store.updateStamp(pid, t, { text: 'Jane Doe' });
+		store.updateStamp(pid, t, { color: 'blue' });
+		expect(get(t).blank).toEqual(line);
+	});
+
+	it('drops it when the stamp is moved, nudged or resized, and undo brings it back', () => {
+		const { store, pid, t, c, get } = linked();
+		store.updateStamp(pid, t, { x: 0.22, y: 0.1 });
+		expect(get(t).blank).toBeUndefined();
+		store.undo();
+		expect(get(t).blank).toEqual(line);
+		store.updateStamp(pid, t, { size: 0.02 });
+		expect(get(t).blank).toBeUndefined();
+		store.updateStamp(pid, c, { box: { x: 0.51, y: 0.5, w: 0.02, h: 0.015 } });
+		expect(get(c).blank).toBeUndefined();
+		store.undo();
+		expect(get(c).blank).toEqual(square);
+		store.redo();
+		expect(get(c).blank).toBeUndefined();
+	});
+
+	it('drops it for a second line in a one-line blank, not in a tall one', () => {
+		const { store, pid, t, tt, get } = linked();
+		store.updateStamp(pid, tt, { text: 'Two\nlines' });
+		expect(get(tt).blank).toEqual(tall);
+		store.updateStamp(pid, t, { text: 'Jane\nDoe' });
+		expect(get(t).blank).toBeUndefined();
+	});
+
+	it('drops every link on a page that is rotated, keeps them on a duplicated page', () => {
+		const { store, pid, t, c } = linked();
+		const [copy] = store.duplicatePages([pid]);
+		const blanks = (id: string) => store.state.pages.find((p) => p.id === id)!.stamps.map((s) => (s as { blank?: unknown }).blank);
+		expect(blanks(copy)).toEqual([line, tall, square]);
+		// The copy's stamps are new stamps with their own ids.
+		const ids = store.state.pages.find((p) => p.id === copy)!.stamps.map((s) => s.id);
+		expect(ids).not.toContain(t);
+		expect(ids).not.toContain(c);
+		store.rotatePages([pid], 90);
+		expect(blanks(pid)).toEqual([undefined, undefined, undefined]);
+		expect(blanks(copy)).toEqual([line, tall, square]);
+		store.undo();
+		expect(blanks(pid)).toEqual([line, tall, square]);
+	});
+
+	it('refuses a link of the wrong kind or outside the page', () => {
+		const { store, pid } = linked();
+		expect(() => store.addStamp(pid, { kind: 'text', text: 'x', x: 0.1, y: 0.1, size: 0.01, color: 'black', blank: square })).toThrow();
+		expect(() => store.addStamp(pid, { kind: 'mark', mark: 'cross', box: square.box, blank: square })).toThrow();
+		expect(() => store.addStamp(pid, { kind: 'mark', mark: 'check', box: square.box, blank: { kind: 'check', box: { x: 0.99, y: 0.5, w: 0.05, h: 0.01 } } })).toThrow();
+	});
+});
