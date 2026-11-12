@@ -542,11 +542,12 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 						break;
 					}
 					for (const [id, why] of bad) {
-						debug(`blank-fields: ${why}`);
+						debug(`blank-fields: not verified: ${why}`);
 						blanks.plain.set(id, 'not-verified');
 						ids.delete(id);
 					}
 				}
+				for (const why of blanks.plain.values()) debug(`blank-fields: plain ${why}`);
 				debug(`blank-fields: ${made.length} fields, ${blanks.total - made.length} plain, ${Math.round(now() - t0)} ms`);
 			}
 			warnings.push(...stampWarnings);

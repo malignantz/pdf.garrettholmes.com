@@ -125,9 +125,9 @@ describe('filled blanks as form fields: what is made', () => {
 				const w = byValue.get(s.text)!;
 				expect(w, s.text).toBeDefined();
 				expect(w.type).toBe('text');
-				// The rectangle covers the blank (PDF space: y up from the bottom of the 792 pt page).
+				// The rectangle covers the blank from 2 pt before the text (PDF space: y up from the bottom of the 792 pt page).
 				const b = s.blank!.box;
-				expect(w.rect[0]).toBeLessThanOrEqual(b.x * 612 + 1e-3);
+				expect(w.rect[0]).toBeCloseTo(Math.max(b.x * 612, s.x * 612 - 2), 3);
 				expect(w.rect[2]).toBeGreaterThanOrEqual((b.x + b.w) * 612 - 1e-3);
 				expect(w.rect[1]).toBeLessThanOrEqual(792 - (b.y + b.h) * 792 + 1e-3);
 				expect(w.rect[3]).toBeGreaterThanOrEqual(792 - b.y * 792 - 1e-3);
@@ -192,6 +192,34 @@ describe('filled blanks as form fields: what is made', () => {
 		const redacted = await engine().exportPlan({ pages: [{ ...page, stamps: [...page.stamps, { id: 'r', kind: 'redact', box: { x: 0.7, y: 0.9, w: 0.1, h: 0.03 } }] }], options: opts(true) }, [source], []);
 		expect(redacted.blankFields).toBeUndefined();
 		expect(await widgets(redacted.bytes)).toEqual([]);
+	}, T);
+});
+
+describe('filled blanks as form fields: several answers on one blank', () => {
+	it('side by side fields that do not overlap; text running into the next answer, and a second tick, stay plain', async () => {
+		const source = await openCorpus('forms-snap.pdf');
+		const d = await tapData(source);
+		// "First name" line, x 130-290: two answers on it.
+		const a = snapText(d, [150, 95], 'Ann', 'a');
+		const b = snapText(d, [230, 95], 'Lee', 'b');
+		expect(a.blank).toEqual(b.blank);
+		const { withFields, plain } = await both([ref(source, 0, 0, [b, a])], [source]);
+		expect(withFields.blankFields).toEqual({ fields: 2, plain: 0 });
+		const ws = (await widgets(withFields.bytes)).sort((p, q) => p.rect[0] - q.rect[0]);
+		expect(ws.map((w) => w.value)).toEqual(['Ann', 'Lee']);
+		expect(ws[0].rect[0]).toBeCloseTo(148, 3);
+		expect(ws[0].rect[2]).toBeCloseTo(228, 3);
+		expect(ws[1].rect[0]).toBeCloseTo(228, 3);
+		expect(ws[1].rect[2]).toBeCloseTo(290, 0);
+		await looksSame(withFields, plain);
+
+		const long = snapText(d, [150, 95], 'A name long enough to run on', 'long');
+		const tick1 = snapTick(d, [134, 263], 't1');
+		const tick2 = snapTick(d, [133, 262], 't2');
+		const crowded = await both([ref(source, 0, 0, [long, b, tick1, tick2])], [source]);
+		expect(crowded.withFields.blankFields).toEqual({ fields: 2, plain: 2 });
+		expect((await widgets(crowded.withFields.bytes)).map((w) => w.value)).toEqual(['A name long enough to run on', 'Yes']);
+		await looksSame(crowded.withFields, crowded.plain);
 	}, T);
 });
 

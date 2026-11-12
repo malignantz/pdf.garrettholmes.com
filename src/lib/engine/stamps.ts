@@ -37,6 +37,7 @@ import type { Rotation } from '../core/types';
 import { parsePng } from './images';
 import { NUMBER_CAP_EM, numberLayout, type NumberingJob } from './numbering';
 import {
+	LANE_PAD_PT,
 	TEXT_MARGIN_PT,
 	drFontNames,
 	linked,
@@ -248,11 +249,52 @@ export async function applyStamps(
 		/** Widgets of filled blanks on this page, added to /Annots after the overlap warning. */
 		const pageWidgets: PdfLib.PDFRef[] = [];
 		/**
+		 * Where each field may reach along its blank (display space). A text field starts
+		 * 2 pt before its text (never before the blank) and ends at the blank's end, or where
+		 * the next text on the same blank starts: several answers on one line become fields
+		 * side by side, never overlapping. A text that runs into the next one on its blank,
+		 * and a second tick on one box, stay plain stamps ('shared-blank').
+		 */
+		const lanes = new Map<string, { left: number; right: number }>();
+		if (fieldIds.size) {
+			const groups = new Map<string, { id: string; left: number; inkRight: number; right: number }[]>();
+			for (const st of job.stamps) {
+				if (!fieldIds.has(st.id) || !linked(st)) continue;
+				const b = stampDisplayRect(geom.box, geom.rotation, st.blank.box);
+				const bb = st.blank.box;
+				const key = `${st.blank.kind}:${[bb.x, bb.y, bb.w, bb.h].map((v) => v.toFixed(6)).join(',')}`;
+				let left = b.left;
+				let inkRight = b.left;
+				if (st.kind === 'text') {
+					const f = await getFont();
+					const size = st.size * shownSize.height;
+					const x = st.x * shownSize.width;
+					const w = Math.max(...normalizeStampText(st.text).split('\n').map((l) => f.widthOfTextAtSize(l, size)));
+					left = Math.max(b.left, x - LANE_PAD_PT / geom.userUnit);
+					inkRight = x + w + TEXT_MARGIN_PT / geom.userUnit;
+				}
+				const list = groups.get(key) ?? [];
+				list.push({ id: st.id, left, inkRight, right: b.left + b.width });
+				groups.set(key, list);
+			}
+			for (const [key, list] of groups) {
+				list.sort((a, c) => a.left - c.left);
+				const kept: typeof list = [];
+				for (const it of list) {
+					const last = kept[kept.length - 1];
+					if (last && (key.startsWith('check:') || last.inkRight > it.left)) fields!.plain.set(it.id, 'shared-blank');
+					else kept.push(it);
+				}
+				kept.forEach((it, k) => lanes.set(it.id, { left: it.left, right: k + 1 < kept.length ? kept[k + 1].left : it.right }));
+			}
+		}
+		/**
 		 * A linked stamp as a form field instead of page content (blank-fields.ts), when it
 		 * sits on its blank; false: draw it as usual. `ops` are the stamp's own operators.
 		 */
 		const asField = (stamp: Stamp, ops: PdfLib.PDFOperator[], ink: Box, start: [number, number], resources: Record<string, Record<string, PdfLib.PDFRef>>, text?: { value: string; size: number; multiline: boolean; color: readonly [number, number, number] }): boolean => {
-			if (!fields || !fieldIds.has(stamp.id) || !linked(stamp)) return false;
+			const lane = lanes.get(stamp.id);
+			if (!fields || !lane || !linked(stamp)) return false;
 			const b = stampDisplayRect(geom.box, geom.rotation, stamp.blank.box);
 			const blank = { left: b.left, top: b.top, right: b.left + b.width, bottom: b.top + b.height };
 			if (!onBlank(blank, start)) {
@@ -260,9 +302,9 @@ export async function applyStamps(
 				return false;
 			}
 			const shown = {
-				left: Math.max(0, Math.min(blank.left, ink.x0)),
+				left: Math.max(0, Math.min(lane.left, ink.x0)),
 				top: Math.max(0, Math.min(blank.top, ink.y0)),
-				right: Math.min(shownSize.width, Math.max(blank.right, ink.x1)),
+				right: Math.min(shownSize.width, Math.max(lane.right, ink.x1)),
 				bottom: Math.min(shownSize.height, Math.max(blank.bottom, ink.y1))
 			};
 			const rect = displayRectToPdf(geom, shown.left, shown.top, shown.right, shown.bottom);

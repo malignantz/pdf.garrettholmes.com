@@ -16,7 +16,10 @@
  * /NeedAppearances is never set (the forms stage removes it too).
  *
  * Rectangle: the blank's, grown to hold the stamp's line boxes (ascent to descent of
- * every line, 1 pt more each way) so nothing is clipped. Names `blank_p<page>_<n>`
+ * every line, 1 pt more each way) so nothing is clipped; a text field starts 2 pt
+ * before its text and, when several answers share one blank (two names on one line),
+ * ends where the next one starts, so fields never overlap (a text running into the next
+ * and a second tick on one box stay plain stamps). Names `blank_p<page>_<n>`
  * (output page, 1-based), made unique against the file's own field names; every
  * widget is its own field, so duplicated pages give independent fields.
  *
@@ -40,7 +43,7 @@ import { normalizeStampText, type Box } from './geometry';
 import type { Mupdf } from './mupdf';
 
 /** Why a linked stamp was drawn as a plain stamp. */
-export type PlainReason = 'characters' | 'lines' | 'off-blank' | 'form-redraws' | 'not-verified';
+export type PlainReason = 'characters' | 'lines' | 'off-blank' | 'shared-blank' | 'form-redraws' | 'not-verified';
 
 /** A field the stamp stage made. */
 export interface MadeField {
@@ -73,6 +76,8 @@ const TALL_BLANK_PT = 2 * 1.2 * 11;
 const ON_BLANK_PT = 1.5;
 /** Room around the text's line boxes in the widget rectangle, points. */
 export const TEXT_MARGIN_PT = 1;
+/** A text field starts this far before its text (the snap's own inset, editor/snap.ts PAD), points. */
+export const LANE_PAD_PT = 2;
 /** Text field flag Multiline. */
 const FF_MULTILINE = 1 << 12;
 /** Annotation flag Print. */
