@@ -312,8 +312,29 @@ function outlineCount(objects: Record<string, QpdfObject>): number {
 	return n;
 }
 
-/** Null when `after` keeps the structure of `before`, else what differs. */
+/** Every non-integer number in the objects (stream dictionaries included). */
+function realsOf(d: StreamDump): Set<number> {
+	const out = new Set<number>();
+	const walk = (v: Json | undefined, depth: number) => {
+		if (typeof v === 'number') {
+			if (!Number.isInteger(v)) out.add(v);
+		} else if (Array.isArray(v)) {
+			if (depth < 64) for (const x of v) walk(x, depth + 1);
+		} else if (isDict(v ?? null) && depth < 64) for (const x of Object.values(v as Dict)) walk(x, depth + 1);
+	};
+	for (const o of Object.values(d.objects)) walk(o.stream ? o.stream.dict : o.value, 0);
+	return out;
+}
+
+/**
+ * Null when `after` keeps the structure of `before`, else what differs. MuPDF keeps
+ * real numbers as 32-bit floats, so a value with more than about seven digits
+ * (747.82195) is written rounded (747.82199): a result with any number the input
+ * does not have is not used.
+ */
 export function sameStructure(before: StreamDump, after: StreamDump): string | null {
+	const reals = realsOf(before);
+	for (const r of realsOf(after)) if (!reals.has(r)) return `number ${r} is new (rounded?)`;
 	const a = pagesOf(before.objects);
 	const b = pagesOf(after.objects);
 	if (!a || !b) return 'page tree unreadable';

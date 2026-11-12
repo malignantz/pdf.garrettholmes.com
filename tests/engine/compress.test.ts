@@ -243,6 +243,26 @@ describe('lossless compress', () => {
 	);
 });
 
+describe('cleanup guard', () => {
+	it(
+		'does not use a MuPDF result that rounded a number (MuPDF keeps reals as 32-bit floats)',
+		async () => {
+			// A4 in points to five decimals, and a page that repeats an image (worth merging).
+			const doc = await PDFDocument.load(corpus('compress-dupes.pdf'));
+			for (const p of doc.getPages()) p.setMediaBox(0, 0, 595.27559, 841.88977);
+			const input = await doc.save({ useObjectStreams: false });
+			const src = await always.e.openPdf(input, 'r.pdf');
+			always.notes.length = 0;
+			const plain = await exportAll(always.e, src, { compress: false });
+			const packed = await exportAll(always.e, src);
+			expect(always.notes.join('\n')).toMatch(/cleanup: result rejected \(number .* is new/);
+			expect(packed.length).toBeLessThanOrEqual(plain.length);
+			expect(await renders(packed)).toEqual(await renders(plain));
+		},
+		T
+	);
+});
+
 describe('stream pass limits', () => {
 	it('leaves every stream alone once the time budget is spent, and survives a failing compressor', async () => {
 		const input = corpus('compress-predictor.pdf');
