@@ -15,7 +15,7 @@ import { pageTextOf } from '../../src/lib/engine/page-text';
 import { renderAndCompare } from '../../src/lib/engine/shrink';
 import { checkScanPage, scannedPagesOf } from '../../src/lib/engine/ocr/eligible';
 import { GLYPHLESS_TTF_SHA256, glyphlessTtf } from '../../src/lib/engine/ocr/glyphless';
-import { cleanText, writeLayers, type LayerPage } from '../../src/lib/engine/ocr/layer';
+import { MIN_GAP, cleanText, layoutLines, writeLayers, type LayerPage } from '../../src/lib/engine/ocr/layer';
 import { norm, type OcrWord } from '../../src/lib/engine/ocr/gate';
 import type { OcrLine, OcrRead } from '../../src/lib/engine/ocr/tess';
 import { corpus, loadPdfjs, manifest, nodeAssets, root } from './helpers';
@@ -282,5 +282,42 @@ describe('highlighter over an OCR layer (invisible glyphless text)', () => {
 		} finally {
 			d.destroy();
 		}
+	});
+});
+
+describe('word spacing in the OCR layer', () => {
+	it('keeps touching or slightly overlapping OCR words apart for PDF.js, and leaves deep overlaps alone', async () => {
+		// Each line: "was" then "a" at a gap of g em (line height 55 px), then "follows:";
+		// and two OCR lines on one baseline ("prepared" | "as").
+		const gaps = [-0.1, -0.03, 0, 0.03];
+		const lines: OcrLine[] = gaps.map((g, i) => {
+			const y0 = 100 + i * 80;
+			const x2 = 187 + g * 55;
+			return {
+				baseline: [100, y0 + 42, x2 + 170, y0 + 42],
+				words: [
+					['was', 100, y0 + 14, 187, y0 + 42, 95],
+					['a', x2, y0, x2 + 25, y0 + 58, 95],
+					['follows:', x2 + 50, y0, x2 + 170, y0 + 42, 95]
+				]
+			};
+		});
+		lines.push({ baseline: [100, 600, 300, 600], words: [['prepared', 100, 560, 300, 600, 95]] }, { baseline: [301, 600, 400, 600], words: [['as', 301, 570, 340, 600, 95]] });
+		// A deep overlap: "it" inside the end of "contains".
+		lines.push({ baseline: [100, 700, 400, 700], words: [['contains', 100, 660, 300, 700, 95], ['it', 270, 665, 298, 700, 95], ['all', 320, 665, 380, 700, 95]] });
+		const doc = await PL.PDFDocument.create();
+		doc.addPage([612, 792]);
+		const r = await writeLayers(PL, await doc.save(), [job({ width: 2550, height: 3300, rotate: 0, lines })]);
+		const tokens = await pdfjsTokens(r.bytes, 0);
+		expect(tokens.filter((t) => t === 'was')).toHaveLength(4);
+		expect(tokens.filter((t) => t === 'a')).toHaveLength(4);
+		expect(tokens).toContain('prepared');
+		expect(tokens).toContain('as');
+		expect(tokens).toContain('contains');
+		expect(tokens).toContain('it');
+		const laid = layoutLines({ width: 2550, height: 3300, rotate: 0, lines }, 300);
+		for (const l of laid.slice(0, 4)) expect(l.words[0].gap!).toBeGreaterThanOrEqual(MIN_GAP * l.size - 1e-9);
+		// The deep overlap keeps OCR's geometry.
+		expect(laid[6].words[0].gap!).toBeLessThan(0);
 	});
 });

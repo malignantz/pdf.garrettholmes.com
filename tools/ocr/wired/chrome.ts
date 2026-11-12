@@ -128,7 +128,8 @@ if (step === 'run') {
 		const ocrSpan = notes.length ? notes[notes.length - 1].t - t0 : 0;
 		runs.push({ label, pages: notes.length, totalMs: total, firstReadingMs: firstReading, ocrSpanMs: ocrSpan, readP50: quant(reads, 0.5), readP90: quant(reads, 0.9), readMax: Math.max(...reads), orientP50: quant(orients, 0.5), rssBefore: Math.round(before), rssPeak: Math.round(peak), result, notes: notes.map((n) => n.text) });
 		console.log(label, JSON.stringify(runs[runs.length - 1]).slice(0, 400));
-		await done.getByRole('button', { name: 'Close' }).click();
+		await page.keyboard.press('Escape');
+		await done.waitFor({ state: 'hidden' });
 	}
 	await browser.close();
 	server.kill();

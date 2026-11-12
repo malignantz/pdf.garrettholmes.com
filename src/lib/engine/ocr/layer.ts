@@ -40,6 +40,8 @@ export const SNAP_DEG = 0.2;
  */
 export const MAX_UP = 1.5;
 export const MAX_DOWN = 0.6;
+/** Smallest gap left between two words of a line, in em. */
+export const MIN_GAP = 0.05;
 
 export interface LayerPage {
 	/** 0-based page of the assembled file. */
@@ -155,16 +157,29 @@ export function layoutLines(read: OcrRead, dpi: number): LaidLine[] {
 		// Direction in the image as rendered: the line's slope less Tesseract's turn.
 		let ang = th - a;
 		if (Math.abs(ang) <= (SNAP_DEG * Math.PI) / 180) ang = 0;
-		const laid: LaidWord[] = [];
-		for (let i = 0; i < words.length; i++) {
-			const w = words[i];
-			const next = words[i + 1];
-			laid.push({
-				text: w[0],
-				at: ((w[1] - w0[1]) * k) / c,
-				adv: Math.max(0.1, ((w[3] - w[1]) * k) / c),
-				gap: next ? ((next[1] - w[3]) * k) / c : null
-			});
+		const laid: LaidWord[] = words.map((w, i) => ({
+			text: w[0],
+			at: ((w[1] - w0[1]) * k) / c,
+			adv: Math.max(0.1, ((w[3] - w[1]) * k) / c),
+			gap: words[i + 1] ? ((words[i + 1][1] - w[3]) * k) / c : null
+		}));
+		// PDF.js joins two words when the second starts at, or a little before, the end of
+		// the first, whatever space glyph is between them: where two OCR boxes touch or
+		// overlap slightly, both words are narrowed at the facing ends to leave a gap of
+		// MIN_GAP em. A deep overlap (one box inside the other) is left as OCR gave it:
+		// readers see the jump back and keep the words apart.
+		for (let i = 0; i + 1 < laid.length; i++) {
+			const a = laid[i];
+			const b = laid[i + 1];
+			if (a.gap === null || a.gap >= MIN_GAP * size) continue;
+			const need = MIN_GAP * size - a.gap;
+			const left = Math.min(need / 2, a.adv / 2);
+			const right = Math.min(need - left, b.adv / 2);
+			if (left + right < need - 1e-9) continue;
+			a.adv -= left;
+			a.gap += left + right;
+			b.at += right;
+			b.adv -= right;
 		}
 		out.push({ ox: ix * k, oy: iy * k, cos: Math.cos(ang), sin: Math.sin(ang), size, words: laid });
 	}
@@ -270,7 +285,12 @@ export async function writeLayers(lib: typeof PdfLib, bytes: Uint8Array, pages: 
 				ops.push(`${n((100 * w.adv) / (units * 0.5 * fs))} Tz <${hex(w.text)}> Tj`);
 				const corner = (t: number, h: number): [number, number] => displayToPdf(box, rotation, l.ox + t * l.cos + h * l.sin, l.oy + t * l.sin - h * l.cos);
 				words.push({ text: w.text, line: li, quad: [corner(w.at, fs), corner(w.at + w.adv, fs), corner(w.at, 0), corner(w.at + w.adv, 0)] });
-				if (w.gap !== null) {
+				if (w.gap === null) {
+					// A space after the line's last word too: Tesseract may split one printed line
+					// into two OCR lines on the same baseline, and readers would join the word
+					// before the split to the word after it.
+					ops.push(`10 Tz <${sp}> Tj`);
+				} else {
 					// The space spans the gap, at least 0.05 em; a TJ offset takes back any excess.
 					const sw = Math.max(0.05 * fs, w.gap);
 					const back = sw - w.gap;
