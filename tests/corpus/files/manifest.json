@@ -1614,6 +1614,7 @@
 	"jpeg-broken.pdf": {
 		"pages": 5,
 		"label": "jpeg-broken",
+		"expect": "unreadable",
 		"note": "JPEGs that do not decode cleanly (truncated, 12-bit, arithmetic, lossless, junk before SOI); export refuses the file; the repack leaves them byte for byte"
 	}
 }

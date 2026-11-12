@@ -249,7 +249,7 @@ async function signedFile() {
 export default async function generateJpegCorpus(write) {
 	write('jpeg-kinds.pdf', await kindsFile(), { pages: 11, label: 'jpeg-kinds', note: 'one generated JPEG per page, each a kind the lossless repack must handle exactly (see generate-jpeg.mjs)' });
 	write('jpeg-skips.pdf', await skipsFile(), { pages: 5, label: 'jpeg-skips', note: 'one decodable JPEG per page that the repack must leave byte for byte (see generate-jpeg.mjs)' });
-	write('jpeg-broken.pdf', await brokenFile(), { pages: 5, label: 'jpeg-broken', note: 'JPEGs that do not decode cleanly (truncated, 12-bit, arithmetic, lossless, junk before SOI); export refuses the file; the repack leaves them byte for byte' });
+	write('jpeg-broken.pdf', await brokenFile(), { pages: 5, label: 'jpeg-broken', expect: 'unreadable', note: 'JPEGs that do not decode cleanly (truncated, 12-bit, arithmetic, lossless, junk before SOI); export refuses the file; the repack leaves them byte for byte' });
 	write('jpeg-signed.pdf', await signedFile(), { pages: 1, label: 'jpeg-signed', note: 'baseline JPEG in a file with a signed signature field: images left as they are' });
 }
 
