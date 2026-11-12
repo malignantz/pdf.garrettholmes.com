@@ -66,8 +66,12 @@ export type Stamp =
 	 * Without `pen` the whole box is filled (a box highlight). With `pen` it is a freehand
 	 * stroke and `box` is the area the stroke covers (its points, plus half its width each
 	 * way, kept inside the page); moving the stamp moves box and points together.
+	 * With `rects` (2026-11-11) it is a text highlight: one rectangle per line of the
+	 * selected text, in the same space as `box`, each filled like a box highlight (where
+	 * two overlap the colour does not get darker); `box` is their bounds, and moving the
+	 * stamp moves them together. A stamp has `pen` or `rects` or neither, never both.
 	 */
-	| { id: string; kind: 'highlight'; color: HighlightColor; box: StampBox; pen?: PenStroke }
+	| { id: string; kind: 'highlight'; color: HighlightColor; box: StampBox; pen?: PenStroke; rects?: StampBox[] }
 	/**
 	 * True redaction. On export, text, image pixels and drawings under the box are
 	 * removed from the file (not covered) and the area is painted black. The engine
@@ -86,6 +90,33 @@ export type HighlightColor = 'yellow' | 'green' | 'pink';
 export interface PenStroke {
 	points: { x: number; y: number }[];
 	width: number;
+}
+
+/**
+ * The selectable text of one source page, for the text highlighter (Engine.pageText).
+ * Only text the highlighter can mark reliably is listed: text at more than a few
+ * degrees from the page's axes, glyphs without usable metrics and text clipped away
+ * or in hidden layers are left out (`skipped` counts left-out characters that would
+ * show). Invisible text (an OCR layer over a scan) is listed.
+ */
+export interface PageText {
+	/** Words in reading order, as the file's text gives it (not sorted by position). */
+	words: TextWord[];
+	/** Characters on the page that are not offered (see above). */
+	skipped: number;
+}
+
+export interface TextWord {
+	text: string;
+	/**
+	 * Where a highlight of this word alone goes: its letters with a small margin, one
+	 * line high (the font's ascent to descent, kept off the neighbouring lines' ink).
+	 * Fractions of the source page as displayed (intrinsic /Rotate applied,
+	 * PageRef.rotation not), origin top-left, like FormWidget.box.
+	 */
+	box: StampBox;
+	/** Line number, in reading order. The words of one line are consecutive. */
+	line: number;
 }
 
 /**
@@ -258,6 +289,12 @@ export interface Engine {
 	unsupportedChars(text: string): Promise<string>;
 	/** Fillable fields of a source; [] when Source.hasForm is not true. */
 	formFields(source: Source): Promise<FormField[]>;
+	/**
+	 * The selectable words of one page (0-based index into Source.pages), for the text
+	 * highlighter. `{ words: [], skipped: 0 }` for a page with no text (a scan without
+	 * OCR) and for image and blank sources. Loads MuPDF on first use.
+	 */
+	pageText(source: Source, pageIndex: number): Promise<PageText>;
 }
 
 export interface RenderRequest {

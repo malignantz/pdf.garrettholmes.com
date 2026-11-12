@@ -10,7 +10,7 @@
 
 import type { Engine } from '../core/types';
 import { EngineError, fromErrorShape } from './errors';
-import { TAG, isResponse, isRestart, type EngineMethod, type EngineRequest } from './protocol';
+import { NEED_BYTES, TAG, isResponse, isRestart, type EngineMethod, type EngineRequest } from './protocol';
 
 export interface WorkerLike {
 	postMessage(message: unknown): void;
@@ -41,6 +41,8 @@ export function createEngine(options: { createWorker?: () => WorkerLike } = {}):
 	let worker: WorkerLike | null = null;
 	let nextId = 1;
 	const pending = new Map<number, Pending>();
+	/** Sources whose bytes the current worker was sent by pageText. */
+	let textSent = new Set<string>();
 
 	const failAll = (message: string) => {
 		const err = new EngineError('internal', message);
@@ -99,6 +101,7 @@ export function createEngine(options: { createWorker?: () => WorkerLike } = {}):
 	const ensure = (): WorkerLike => {
 		if (worker) return worker;
 		const w = spawn();
+		textSent = new Set();
 		w.addEventListener('message', (event: MessageEvent) => {
 			if (worker !== w) return;
 			const msg = event.data;
@@ -139,6 +142,19 @@ export function createEngine(options: { createWorker?: () => WorkerLike } = {}):
 		exportPlan: (plan, sources, assets) => call('exportPlan', [plan, sources, assets]),
 		unsupportedChars: (text) => call('unsupportedChars', [text]),
 		formFields: (source) => call('formFields', [source]),
+		pageText: async (source, pageIndex) => {
+			if (textSent.has(source.id)) {
+				try {
+					return await call('pageText', [{ ...source, bytes: undefined }, pageIndex]);
+				} catch (e) {
+					if (!(e instanceof EngineError && e.message === NEED_BYTES)) throw e;
+				}
+			}
+			const sent = textSent;
+			const res = await call<Awaited<ReturnType<EngineClient['pageText']>>>('pageText', [source, pageIndex]);
+			sent.add(source.id);
+			return res;
+		},
 		terminate: () => reset('The PDF engine was stopped.')
 	};
 }

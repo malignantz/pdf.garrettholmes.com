@@ -51,6 +51,8 @@ import { QPDF_ERROR, QPDF_OK, QPDF_WARNINGS, Qpdf, type QpdfLoader, type QpdfRes
 import { applyRedactions, verifyRedactions, type RedactJob } from './redact';
 import { shrinkToTarget, type ShrinkReport } from './shrink';
 import { applyStamps, type StampJob } from './stamps';
+import { TextDocs, pageTextOf } from './page-text';
+import { NEED_BYTES } from './protocol';
 
 export interface EngineAssets {
 	qpdf: QpdfLoader;
@@ -76,6 +78,7 @@ const MIN_TARGET_BYTES = 20_000;
 const STAMP_KINDS: readonly Stamp['kind'][] = ['image', 'text', 'mark', 'highlight', 'redact'];
 const HIGHLIGHT_COLORS = ['yellow', 'green', 'pink'];
 const MAX_PEN_POINTS = 2000;
+const MAX_RECTS = 1000;
 const MIN_PAGE = 3;
 const MAX_PAGE = 14400;
 
@@ -103,6 +106,8 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		return pdfLibP;
 	};
 	const deps: EngineDeps = { qpdf, mupdf: assets.mupdf ?? loadMupdf, pdfjs, pdfLib, font };
+	/** Documents opened for Engine.pageText, by source id. */
+	const textDocs = new TextDocs(2);
 
 	async function checkStructure(bytes: Uint8Array, what: string) {
 		const res = await qpdf.run({ args: ['--check', '/c.pdf'], inputs: { '/c.pdf': bytes } });
@@ -338,7 +343,21 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 
 		exportPlan: (plan, sources, assets) => guard(() => exportPlan(plan, sources, assets)),
 
-		formFields: (source) => guard(async () => (source.hasForm === true ? listFormFields(deps, source) : []))
+		formFields: (source) => guard(async () => (source.hasForm === true ? listFormFields(deps, source) : [])),
+
+		pageText: (source, pageIndex) =>
+			guard(async () => {
+				if (!source || source.kind !== 'pdf') return { words: [], skipped: 0 };
+				if (!Number.isInteger(pageIndex) || pageIndex < 0 || pageIndex >= source.pages.length) {
+					throw new EngineError('internal', 'That page is not in the file.');
+				}
+				const m = await deps.mupdf();
+				// The client sends a source's bytes once; later calls name it by id (protocol.ts).
+				const doc = textDocs.get(m, source.id, source.bytes instanceof Uint8Array ? source.bytes : undefined);
+				if (!doc) throw new EngineError('internal', NEED_BYTES);
+				if (pageIndex >= doc.countPages()) throw new EngineError('internal', 'That page is not in the file.');
+				return pageTextOf(doc, pageIndex);
+			})
 	};
 
 	async function exportPlan(plan: ExportPlan, sources: Source[], assetList: Asset[]): Promise<ExportResult> {
@@ -812,6 +831,16 @@ function validateStamps(pageNo: number, stamps: Stamp[], assetIds: Set<string>) 
 				for (const p of pen.points) {
 					if (!p || !fin(p.x, p.y) || !inUnit(p.x) || !inUnit(p.y)) throw bad();
 					if (p.x < b.x - eps || p.x > b.x + b.w + eps || p.y < b.y - eps || p.y > b.y + b.h + eps) throw bad();
+				}
+			}
+			if (s.kind === 'highlight' && s.rects !== undefined) {
+				// A text highlight: 1+ rectangles on the page and inside its box (the box is
+				// what redaction checks treat as ours); never together with a pen stroke.
+				const rects = s.rects;
+				if (s.pen !== undefined || !Array.isArray(rects) || rects.length < 1 || rects.length > MAX_RECTS) throw bad();
+				for (const r of rects) {
+					if (!r || !fin(r.x, r.y, r.w, r.h) || !(r.w > 0 && r.h > 0)) throw bad();
+					if (r.x < b.x - eps || r.y < b.y - eps || r.x + r.w > b.x + b.w + eps || r.y + r.h > b.y + b.h + eps) throw bad();
 				}
 			}
 		}

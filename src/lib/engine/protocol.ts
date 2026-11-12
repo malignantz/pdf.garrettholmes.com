@@ -41,8 +41,16 @@ export const METHODS: readonly EngineMethod[] = [
 	'blankPage',
 	'exportPlan',
 	'unsupportedChars',
-	'formFields'
+	'formFields',
+	'pageText'
 ];
+
+/**
+ * pageText sends a source's bytes to a worker once; later calls for that source send
+ * it without them. A worker that no longer holds the file answers with this message
+ * (code 'internal'), and the client sends the call again with the bytes.
+ */
+export const NEED_BYTES = 'pdf-engine/need-bytes';
 
 export function isRequest(data: unknown): data is EngineRequest {
 	const d = data as EngineRequest | null;

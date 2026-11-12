@@ -1285,5 +1285,292 @@
 	"forms-snap.pdf": {
 		"pages": 1,
 		"note": "flat form (no AcroForm) for tap-to-snap: two labelled lines on one row, two stacked address lines, a 3×3 grid (header + 2 empty rows), Yes/No squares, a column of three squares 4 pt apart, six comb boxes, an underscore run, a box with a corner label; a paragraph and a filled 2×2 table that are not blanks"
+	},
+	"hl-text.pdf": {
+		"pages": 10,
+		"note": "text highlighter: p1 paragraph + embedded font + two columns drawn left then right; p2 /Rotate 90; p3 CropBox [100 150 500 650]; p4 runs at 0, 2, 30 and 90 degrees; p5 Hebrew (visual order) + Latin; p6 invisible OCR text over a scan; p7 scan, no text; p8 visible, clipped-away and hidden-layer lines; p9 Type 3 font + Helvetica; p10 24 pt heading over tight 10 on 10.5 lines",
+		"lines": [
+			[
+				{
+					"text": "Highlight the quick brown fox jumping",
+					"font": "Helvetica",
+					"size": 11,
+					"x": 72,
+					"y": 700,
+					"angle": 0
+				},
+				{
+					"text": "over the lazy dog, gently and quietly",
+					"font": "Helvetica",
+					"size": 11,
+					"x": 72,
+					"y": 686.8,
+					"angle": 0
+				},
+				{
+					"text": "beside the hedge by the old gate.",
+					"font": "Helvetica",
+					"size": 11,
+					"x": 72,
+					"y": 673.6,
+					"angle": 0
+				},
+				{
+					"text": "Embedded glyphs typography",
+					"font": "NotoSans",
+					"size": 14,
+					"x": 72,
+					"y": 620,
+					"angle": 0
+				},
+				{
+					"text": "Left column one",
+					"font": "Helvetica",
+					"size": 11,
+					"x": 72,
+					"y": 500,
+					"angle": 0
+				},
+				{
+					"text": "Left column two",
+					"font": "Helvetica",
+					"size": 11,
+					"x": 72,
+					"y": 486.8,
+					"angle": 0
+				},
+				{
+					"text": "Left column end",
+					"font": "Helvetica",
+					"size": 11,
+					"x": 72,
+					"y": 473.6,
+					"angle": 0
+				},
+				{
+					"text": "Right column one",
+					"font": "Helvetica",
+					"size": 11,
+					"x": 330,
+					"y": 500,
+					"angle": 0
+				},
+				{
+					"text": "Right column two",
+					"font": "Helvetica",
+					"size": 11,
+					"x": 330,
+					"y": 486.8,
+					"angle": 0
+				}
+			],
+			[
+				{
+					"text": "Highlight the quick brown fox jumping",
+					"font": "Helvetica",
+					"size": 11,
+					"x": 72,
+					"y": 700,
+					"angle": 0
+				},
+				{
+					"text": "over the lazy dog, gently and quietly",
+					"font": "Helvetica",
+					"size": 11,
+					"x": 72,
+					"y": 686.8,
+					"angle": 0
+				},
+				{
+					"text": "beside the hedge by the old gate.",
+					"font": "Helvetica",
+					"size": 11,
+					"x": 72,
+					"y": 673.6,
+					"angle": 0
+				}
+			],
+			[
+				{
+					"text": "Highlight the quick brown fox jumping",
+					"font": "Helvetica",
+					"size": 11,
+					"x": 150,
+					"y": 560,
+					"angle": 0
+				},
+				{
+					"text": "over the lazy dog, gently and quietly",
+					"font": "Helvetica",
+					"size": 11,
+					"x": 150,
+					"y": 546.8,
+					"angle": 0
+				},
+				{
+					"text": "beside the hedge by the old gate.",
+					"font": "Helvetica",
+					"size": 11,
+					"x": 150,
+					"y": 533.6,
+					"angle": 0
+				}
+			],
+			[
+				{
+					"text": "Level line of text",
+					"font": "Helvetica",
+					"size": 12,
+					"x": 72,
+					"y": 720,
+					"angle": 0
+				},
+				{
+					"text": "Nearly level line",
+					"font": "Helvetica",
+					"size": 12,
+					"x": 72,
+					"y": 660,
+					"angle": 2
+				},
+				{
+					"text": "Tilted line of text",
+					"font": "Helvetica",
+					"size": 12,
+					"x": 72,
+					"y": 520,
+					"angle": 30
+				},
+				{
+					"text": "Vertical words here",
+					"font": "Helvetica",
+					"size": 12,
+					"x": 450,
+					"y": 300,
+					"angle": 90
+				}
+			],
+			[
+				{
+					"text": "שלום עולם יפה מאוד",
+					"font": "DejaVuSans",
+					"size": 14,
+					"x": 414.4990234375,
+					"y": 700,
+					"angle": 0,
+					"rtl": true
+				},
+				{
+					"text": "שורה שנייה כאן",
+					"font": "DejaVuSans",
+					"size": 14,
+					"x": 448.80859375,
+					"y": 682,
+					"angle": 0,
+					"rtl": true
+				},
+				{
+					"text": "Latin after Hebrew",
+					"font": "Helvetica",
+					"size": 12,
+					"x": 72,
+					"y": 600,
+					"angle": 0
+				}
+			],
+			[
+				{
+					"text": "Scanned words under glass",
+					"font": "Helvetica",
+					"size": 12,
+					"x": 72,
+					"y": 700,
+					"angle": 0,
+					"invisible": true
+				}
+			],
+			null,
+			[
+				{
+					"text": "Visible words stay",
+					"font": "Helvetica",
+					"size": 12,
+					"x": 72,
+					"y": 700,
+					"angle": 0
+				},
+				{
+					"text": "Clipped away words",
+					"font": "Helvetica",
+					"size": 12,
+					"x": 72,
+					"y": 600,
+					"angle": 0,
+					"clipped": true
+				},
+				{
+					"text": "Hidden layer words",
+					"font": "Helvetica",
+					"size": 12,
+					"x": 72,
+					"y": 500,
+					"angle": 0,
+					"hiddenLayer": true
+				}
+			],
+			[
+				{
+					"text": "Normal line here",
+					"font": "Helvetica",
+					"size": 12,
+					"x": 72,
+					"y": 600,
+					"angle": 0
+				},
+				{
+					"text": "ABBA BAB",
+					"font": "Type3",
+					"size": 14,
+					"x": 72,
+					"y": 700,
+					"angle": 0,
+					"type3": true
+				}
+			],
+			[
+				{
+					"text": "Heading Big",
+					"font": "Helvetica",
+					"size": 24,
+					"x": 72,
+					"y": 720,
+					"angle": 0
+				},
+				{
+					"text": "gypsy jumping quickly",
+					"font": "Helvetica",
+					"size": 10,
+					"x": 72,
+					"y": 690,
+					"angle": 0
+				},
+				{
+					"text": "Typography of glyphs",
+					"font": "Helvetica",
+					"size": 10,
+					"x": 72,
+					"y": 679.5,
+					"angle": 0
+				},
+				{
+					"text": "jolly yapping puppy",
+					"font": "Helvetica",
+					"size": 10,
+					"x": 72,
+					"y": 669,
+					"angle": 0
+				}
+			]
+		]
 	}
 }

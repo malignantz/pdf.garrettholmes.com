@@ -1,14 +1,19 @@
 <script lang="ts" module>
 	/** The note about what redaction does is shown once per visit. */
 	let redactNoteShown = false;
-	/** Highlight shape: Pen when the app starts, then the last choice for the rest of the visit. */
-	let hlModeChosen: 'pen' | 'box' = 'pen';
+	/**
+	 * Highlight shape picked by hand, for the rest of the visit; null until then, which
+	 * means Text on a page with text and Pen on one without.
+	 */
+	let hlModeChosen: 'text' | 'pen' | 'box' | null = null;
+	/** The note that a page has no selectable text is shown once per visit. */
+	let scanNoteShown = false;
 </script>
 
 <script lang="ts">
 	// Full-screen view of one page for placing stamps: signature, initials, text,
-	// date and marks (placed by a tap), highlights (a freehand pen stroke, or a box)
-	// and redaction boxes (drawn by a drag). Zoom/pan, page navigation, undo/redo
+	// date and marks (placed by a tap), highlights (selected text, a freehand pen
+	// stroke, or a box) and redaction boxes (drawn by a drag). Zoom/pan, page navigation, undo/redo
 	// through the store.
 	import { flushSync, onMount, tick, untrack } from 'svelte';
 	import type { Asset, FormField, FormValue, HighlightColor, PageId, PageRef, Stamp, StampBox } from '../core/types';
@@ -30,6 +35,9 @@
 	import { ensureStampFont, stampName, cssColor, HIGHLIGHT_COLORS, HIGHLIGHT_CSS, paintOrder } from './stamp-view';
 	import { stampForPage } from './copy';
 	import { defaultStroke, finishStroke, penBox, reboxPatch, type Pt } from './pen';
+	import { pageTextOf, textWarm } from './page-text.svelte';
+	import { boundsOf, crossSize, selectionRects, selectionText, shownLayout, wordAtEnd, wordNear } from './text-select';
+	import Spinner from '../ui/Spinner.svelte';
 	import {
 		arrowDelta,
 		boxAround,
@@ -171,7 +179,7 @@
 
 	// ------------------------------------------------------------ viewport pointers (tap, pan, pinch, swipe)
 	const pointers = new Map<number, Point>();
-	let pmode: 'none' | 'tap' | 'pan' | 'swipe' | 'pinch' | 'draw' = 'none';
+	let pmode: 'none' | 'tap' | 'pan' | 'swipe' | 'pinch' | 'draw' | 'select' | 'hold' = 'none';
 	let pstart = { x: 0, y: 0, t: 0, view: { zoom: 1, panX: 0, panY: 0 } as View };
 	let pinch0 = { view: { zoom: 1, panX: 0, panY: 0 } as View, m: { x: 0, y: 0 }, d: 1 };
 
@@ -203,9 +211,10 @@
 			pmode = 'tap';
 			pstart = { x: p.x, y: p.y, t: performance.now(), view: { ...view } };
 		} else if (pointers.size === 2) {
-			// A second finger always means pinch: a box or stroke being drawn is dropped.
+			// A second finger always means pinch: a box, stroke or selection being drawn is dropped.
 			draft = null;
 			penDraft = null;
+			sel = null;
 			pmode = 'pinch';
 			const { m, d } = mid();
 			pinch0 = { view: { ...view }, m, d };
@@ -225,14 +234,24 @@
 		const dy = p.y - pstart.y;
 		if (pmode === 'tap' && Math.hypot(dx, dy) > 8) {
 			const f0 = screenToFraction(pstart, pstart.view, base);
-			// With a drawn tool armed, one finger (or the mouse) on the page draws instead of panning.
-			if (isDrawn(armed) && insidePage(f0)) {
+			if (textArmed) {
+				// Text: a drag that starts on or near a word selects; elsewhere it pans or turns
+				// the page as usual. Until the words are read, a drag on the page does nothing.
+				const a = layout ? wordNear(layout, f0, nearTolerance()) : -1;
+				if (a >= 0) {
+					pmode = 'select';
+					sel = { anchor: a, end: a, rects: selectionRects(layout!, a, a) };
+				} else if (!layout && insidePage(f0)) pmode = 'hold';
+				else pmode = pstart.view.zoom > 1.0001 ? 'pan' : 'swipe';
+			} else if (isDrawn(armed) && insidePage(f0)) {
+				// With a drawn tool armed, one finger (or the mouse) on the page draws instead of panning.
 				pmode = 'draw';
 				draftStart = f0;
 				if (penArmed) penPts = [f0];
 			} else pmode = pstart.view.zoom > 1.0001 ? 'pan' : 'swipe';
 		}
-		if (pmode === 'draw' && penArmed) addPenPoints(e);
+		if (pmode === 'select') moveSelection(toFraction(e));
+		else if (pmode === 'draw' && penArmed) addPenPoints(e);
 		else if (pmode === 'draw') draft = drawnBox(draftStart, toFraction(e));
 		else if (pmode === 'pan') setView({ ...pstart.view, panX: pstart.view.panX + dx, panY: pstart.view.panY + dy });
 	}
@@ -248,6 +267,7 @@
 			} else onTap(toFraction(e));
 		}
 		else if (pmode === 'draw') finishDraw(toFraction(e));
+		else if (pmode === 'select') finishSelection();
 		else if (pmode === 'swipe') {
 			const dx = p.x - pstart.x;
 			const dy = p.y - pstart.y;
@@ -266,6 +286,7 @@
 			draft = null;
 			penDraft = null;
 		}
+		sel = null;
 		if (pointers.size === 0) pmode = 'none';
 	}
 
@@ -385,7 +406,8 @@
 		{ id: 'highlight', label: 'Highlight', icon: 'highlight' },
 		{ id: 'redact', label: 'Redact', icon: 'redact' }
 	];
-	const HL_MODES: { id: 'pen' | 'box'; label: string; icon: IconName }[] = [
+	const HL_MODES: { id: 'text' | 'pen' | 'box'; label: string; icon: IconName }[] = [
+		{ id: 'text', label: 'Text', icon: 'hl-text' },
 		{ id: 'pen', label: 'Pen', icon: 'hl-pen' },
 		{ id: 'box', label: 'Box', icon: 'hl-box' }
 	];
@@ -402,18 +424,11 @@
 		if (!step) return;
 		e.preventDefault();
 		e.stopPropagation();
-		const radios = [...group.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
+		const radios = [...group.querySelectorAll<HTMLButtonElement>('[role="radio"]:not([aria-disabled="true"])')];
 		const i = radios.indexOf(t as HTMLButtonElement);
 		const next = radios[(i + step + radios.length) % radios.length];
 		next.click();
 		void tick().then(() => next.focus());
-	}
-
-	/** Highlight shape, for the next highlight. */
-	let hlMode = $state<'pen' | 'box'>(hlModeChosen);
-	function setHlMode(m: 'pen' | 'box') {
-		hlMode = m;
-		hlModeChosen = m;
 	}
 
 	/** On phones the bar shows these four and a More slot; the rest are in the More sheet. */
@@ -453,8 +468,31 @@
 	}
 
 	let armed = $state<Tool | null>(null);
+	/** The page's words, read in the engine worker once per page (after the tool is first armed, or once MuPDF is loaded). */
+	const textState = $derived(page && source && (armed === 'highlight' || textWarm()) ? pageTextOf(app.engine, source, page.pageIndex) : null);
+	/** True / false once known; null while the words are being read. */
+	const pageHasText = $derived(
+		textState?.status === 'ready' ? textState.text.words.length > 0 : textState?.status === 'failed' ? false : null
+	);
+	/** Highlight shape picked by hand (this visit), or null. */
+	let hlPicked = $state<'text' | 'pen' | 'box' | null>(hlModeChosen);
+	/** Highlight shape for the next highlight: Text is never active on a page without text. */
+	const hlMode = $derived<'text' | 'pen' | 'box'>(
+		hlPicked === 'pen' || hlPicked === 'box' ? hlPicked : pageHasText === false ? 'pen' : 'text'
+	);
+	function setHlMode(m: 'text' | 'pen' | 'box') {
+		if (m === 'text' && pageHasText === false) {
+			announce('This page has no selectable text. Use Pen or Box.');
+			return;
+		}
+		hlPicked = m;
+		hlModeChosen = m;
+	}
+
 	/** The highlighter pen is the armed tool: a one-finger or mouse drag draws a stroke. */
 	const penArmed = $derived(armed === 'highlight' && hlMode === 'pen');
+	/** The text highlighter is the armed tool: a drag from a word selects words. */
+	const textArmed = $derived(armed === 'highlight' && hlMode === 'text');
 	let armedAsset = $state.raw<Asset | null>(null);
 	let padOpen = $state(false);
 	let padKind = $state<'signature' | 'initials'>('signature');
@@ -466,8 +504,10 @@
 		const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
 		const verb = coarse ? 'Tap' : 'Click';
 		const done = coarse ? 'Tap the tool again when done.' : 'Press Escape when done.';
-		if (armed === 'highlight')
+		if (armed === 'highlight') {
+			if (hlMode === 'text') return `Drag across the words to highlight, or ${coarse ? 'double-tap' : 'double-click'} a word. ${done}`;
 			return hlMode === 'pen' ? `Drag over the text to highlight. ${done}` : `Drag a box over what to highlight. ${done}`;
+		}
 		if (armed === 'redact') return `Drag over what to remove, or ${verb.toLowerCase()} for a box. ${done}`;
 		return isMark(armed) ? `${verb} each spot to place a ${what} mark. ${done}` : `${verb} the page where the ${what} goes.`;
 	});
@@ -505,6 +545,8 @@
 		if (!armed) return;
 		armed = null;
 		armedAsset = null;
+		sel = null;
+		lastTap = null;
 	}
 
 	function onTap(f: Point) {
@@ -513,9 +555,12 @@
 			finishEditing(false);
 			return;
 		}
-		// Highlights are drawn, never placed by a tap.
+		// Highlights are drawn, never placed by a tap; a double tap on a word highlights it.
 		if (armed && inside && armed !== 'highlight') place(armed, f, false);
-		else select(null);
+		else {
+			select(null);
+			if (textArmed && inside) textTap(f);
+		}
 	}
 
 	/** Default text size: 11 pt on the page, as a fraction of its displayed height. */
@@ -554,8 +599,9 @@
 			announce(`Date placed: ${text}. Press Enter to edit it.`);
 			void tick().then(() => clampText(id));
 		} else if (t === 'highlight') {
-			// The keyboard path: a line-long stroke (Pen) or the default box at the point.
-			if (hlMode === 'pen') {
+			// The keyboard path: a line-long stroke (Pen, and Text, which has no keyboard
+			// way to choose words) or the default box at the point.
+			if (hlMode !== 'box') {
 				const st = defaultStroke(f, 0.3, penWidth, aspect);
 				addHighlight({ kind: 'highlight', color: hlColor, ...st }, byKeyboard);
 			} else {
@@ -618,6 +664,92 @@
 	function textOrigin(f: Point, size: number) {
 		return { x: Math.min(Math.max(0, f.x), 0.98), y: Math.min(Math.max(0, f.y - (1.2 * size) / 2), 1 - 1.2 * size) };
 	}
+
+	// ------------------------------------------------------------ the text highlighter
+	const layout = $derived(
+		textState?.status === 'ready' && textState.text.words.length && page ? shownLayout(textState.text, page.rotation, aspect) : null
+	);
+	/** Typical line height of the page, in page heights. */
+	const lineCross = $derived.by(() => {
+		if (!layout) return 0;
+		const v = layout.lines.map((l) => crossSize(l, layout.aspect)).sort((a, b) => a - b);
+		return v[Math.floor(v.length / 2)] ?? 0;
+	});
+
+	/** How far from a word a drag or double tap may start and still take it, in page heights. */
+	function nearTolerance() {
+		const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+		const ph = base.height * view.zoom;
+		return Math.max((coarse ? 20 : 10) / Math.max(ph, 1), 0.5 * lineCross);
+	}
+
+	/** The selection being dragged: word indices in reading order, and what it would highlight. */
+	let sel = $state.raw<{ anchor: number; end: number; rects: StampBox[] } | null>(null);
+
+	function moveSelection(f: Point) {
+		if (!sel || !layout) return;
+		const end = wordAtEnd(layout, f);
+		if (end < 0 || end === sel.end) return;
+		sel = { anchor: sel.anchor, end, rects: selectionRects(layout, sel.anchor, end) };
+	}
+
+	function finishSelection() {
+		const s = sel;
+		sel = null;
+		if (!s || !layout || !s.rects.length) return;
+		highlightWords(s.anchor, s.end, s.rects);
+	}
+
+	function highlightWords(a: number, b: number, rects: StampBox[]) {
+		if (!layout) return;
+		const words = Math.abs(b - a) + 1;
+		const text = selectionText(layout, a, b);
+		addHighlight({ kind: 'highlight', color: hlColor, box: boundsOf(rects), rects }, false);
+		announce(`Highlighted ${words === 1 ? `"${text}"` : `${words} words`}, ${hlColor}.`);
+	}
+
+	/** The last tap with the text highlighter, for double taps. */
+	let lastTap: { t: number; f: Point } | null = null;
+
+	function textTap(f: Point) {
+		const now = performance.now();
+		const prev = lastTap;
+		lastTap = { t: now, f };
+		if (!prev || !layout || now - prev.t > 450) return;
+		const pw = base.width * view.zoom;
+		const ph = base.height * view.zoom;
+		if (Math.hypot((f.x - prev.f.x) * pw, (f.y - prev.f.y) * ph) > 24) return;
+		lastTap = null;
+		const i = wordNear(layout, f, nearTolerance());
+		if (i >= 0) highlightWords(i, i, selectionRects(layout, i, i));
+	}
+
+	/** This page has no text to select: Pen stands in for Text, and the note says why (once per visit). */
+	let scanNote = $state('');
+	$effect(() => {
+		const noText = armed === 'highlight' && pageHasText === false && hlPicked !== 'pen' && hlPicked !== 'box';
+		if (!noText) {
+			scanNote = '';
+			return;
+		}
+		if (scanNoteShown) return;
+		scanNoteShown = true;
+		scanNote =
+			untrack(() => textState)?.status === 'failed'
+				? 'The text on this page could not be read. Use Pen or Box.'
+				: 'This page is a scan with no selectable text. Use Pen or Box.';
+	});
+
+	/** Reading the words takes a moment the first time (the engine loads MuPDF): say so after a short wait. */
+	let textSlow = $state(false);
+	$effect(() => {
+		if (!(textArmed && textState?.status === 'loading')) {
+			textSlow = false;
+			return;
+		}
+		const t = setTimeout(() => (textSlow = true), 300);
+		return () => clearTimeout(t);
+	});
 
 	// ------------------------------------------------------------ selection
 	let selectedId = $state<string | null>(null);
@@ -1496,8 +1628,8 @@
 											<path d="M8 1.5v13M1.5 8h13M6 3.5l2-2 2 2M6 12.5l2 2 2-2M3.5 6l-2 2 2 2M12.5 6l2 2-2 2" />
 										</svg>
 									</span>
-									{#if !(s.kind === 'highlight' && s.pen)}
-										<!-- A pen stroke moves but is not resized: there is no corner to hold. -->
+									{#if !(s.kind === 'highlight' && (s.pen || s.rects))}
+										<!-- A pen stroke or text highlight moves but is not resized: there is no corner to hold. -->
 										<span
 											class="handle {RESIZE}"
 											aria-hidden="true"
@@ -1517,6 +1649,16 @@
 								{aspect}
 								class="ed selected draft"
 								data-testid="draft-box"
+								aria-hidden="true"
+							/>
+						{/if}
+						{#if sel && armed === 'highlight'}
+							<!-- The words a release would highlight, drawn as they will be stored and exported. -->
+							<StampShape
+								stamp={{ id: 'draft', kind: 'highlight', color: hlColor, box: boundsOf(sel.rects), rects: sel.rects }}
+								{aspect}
+								class="ed draft"
+								data-testid="draft-text"
 								aria-hidden="true"
 							/>
 						{/if}
@@ -1555,6 +1697,11 @@
 		{:else if armed === 'highlight'}
 			<!-- svelte-ignore a11y_no_noninteractive_element_interactions (arrow keys move within the radio groups) -->
 			<div class="selbar hlbar" role="toolbar" aria-label="Highlighter" tabindex="-1" onkeydown={hlbarKey}>
+				{#if scanNote}
+					<p class="hl-note" role="status" data-testid="hl-note">{scanNote}</p>
+				{:else if textSlow}
+					<p class="hl-note" role="status" data-testid="hl-reading"><Spinner size={14} /> Reading the page’s text…</p>
+				{/if}
 				<div class="seg" role="radiogroup" aria-label="Highlight shape">
 					{#each HL_MODES as m (m.id)}
 						<button
@@ -1562,6 +1709,7 @@
 							role="radio"
 							class="seg-item"
 							aria-checked={hlMode === m.id}
+							aria-disabled={m.id === 'text' && pageHasText === false ? 'true' : undefined}
 							tabindex={hlMode === m.id ? 0 : -1}
 							data-mode={m.id}
 							onclick={() => setHlMode(m.id)}
@@ -1872,6 +2020,28 @@
 		pointer-events: none;
 	}
 
+	/* A text highlight takes pointers on its rectangles only, like a pen stroke on its stroke. */
+	.layer :global(.ed.rects:not(.draft)) {
+		pointer-events: none;
+	}
+
+	.layer :global(.ed.rects::before) {
+		content: none;
+	}
+
+	.layer :global(.ed.rects .hit) {
+		pointer-events: fill;
+		cursor: move;
+	}
+
+	.layer :global(.ed.rects .handle) {
+		pointer-events: auto;
+	}
+
+	.layer.passthrough :global(.ed.rects .hit) {
+		pointer-events: none;
+	}
+
 	.layer :global(.ed.draft::before) {
 		content: none;
 	}
@@ -2059,12 +2229,33 @@
 
 	/* Highlighter options: Pen | Box, then the colours. */
 	.hlbar {
+		flex-wrap: wrap;
+		justify-content: center;
 		gap: var(--s-2);
 		outline: none;
 	}
 
 	.hlbar .colors {
 		margin-right: 0;
+	}
+
+	.hl-note {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: var(--s-2);
+		flex: 1 0 100%;
+		padding: var(--s-1) var(--s-2) 0;
+		color: var(--ink-soft);
+		font-size: var(--text-caption);
+		text-align: center;
+		white-space: normal;
+	}
+
+	.seg-item[aria-disabled='true'],
+	.seg-item[aria-disabled='true']:hover {
+		color: color-mix(in srgb, var(--ink-soft) 55%, transparent);
+		cursor: default;
 	}
 
 	.seg {

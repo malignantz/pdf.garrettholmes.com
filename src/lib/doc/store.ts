@@ -186,9 +186,28 @@ function plural(n: number, one: string, many: string): string {
 const pagesLabel = (verb: string, n: number) => `${verb} ${plural(n, 'page', 'pages')}`;
 
 function cloneStamp(s: Stamp, id: string): Stamp {
-	if (s.kind === 'highlight' && s.pen)
-		return { ...s, id, box: { ...s.box }, pen: { width: s.pen.width, points: s.pen.points.map((p) => ({ x: p.x, y: p.y })) } };
+	if (s.kind === 'highlight' && (s.pen || s.rects)) {
+		const c: Stamp = { ...s, id, box: { ...s.box } };
+		if (s.pen) c.pen = { width: s.pen.width, points: s.pen.points.map((p) => ({ x: p.x, y: p.y })) };
+		if (s.rects) c.rects = s.rects.map((r) => ({ ...r }));
+		return c;
+	}
 	return 'box' in s ? { ...s, id, box: { ...s.box } } : { ...s, id };
+}
+
+/** Most rectangles one text highlight may hold (one per line; a full page has about 60). */
+const MAX_RECTS = 1000;
+
+/** Text highlight rectangles: 1+ finite boxes with a positive size, inside the stamp's box. */
+function checkRects(rects: unknown, box: StampBox): void {
+	const fin = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+	if (!Array.isArray(rects) || rects.length < 1 || rects.length > MAX_RECTS) throw new Error('DocStore: a text highlight needs 1 or more rectangles');
+	const eps = 1e-6;
+	for (const r of rects as { x?: unknown; y?: unknown; w?: unknown; h?: unknown }[]) {
+		if (!r || !fin(r.x) || !fin(r.y) || !fin(r.w) || !fin(r.h) || !(r.w > 0) || !(r.h > 0)) throw new Error('DocStore: bad highlight rectangle');
+		if (r.x < box.x - eps || r.y < box.y - eps || r.x + r.w > box.x + box.w + eps || r.y + r.h > box.y + box.h + eps)
+			throw new RangeError('DocStore: highlight rectangle outside its box');
+	}
 }
 
 /** Most points one pen stroke may hold (the editor stores tens). */
@@ -400,6 +419,10 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 		if (s.kind === 'highlight' && !HIGHLIGHT_COLORS.includes(s.color))
 			throw new Error(`DocStore: unknown highlight colour ${s.color}`);
 		if (s.kind === 'highlight' && s.pen !== undefined) checkPen(s.pen, s.box);
+		if (s.kind === 'highlight' && s.rects !== undefined) {
+			if (s.pen !== undefined) throw new Error('DocStore: a highlight is a pen stroke or text rectangles, not both');
+			checkRects(s.rects, s.box);
+		}
 	}
 
 	function spliceIn(d: Doc, refs: PageRef[], at: number): Doc {
@@ -565,7 +588,7 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 				for (const [k, v] of Object.entries(patch)) {
 					if (k === 'id' || k === 'kind' || !(k in old) || v === undefined) continue;
 					if (!valuesEqual((old as Record<string, unknown>)[k], v)) {
-						next[k] = v && typeof v === 'object' ? { ...v } : v;
+						next[k] = Array.isArray(v) ? v.map((x) => (x && typeof x === 'object' ? { ...x } : x)) : v && typeof v === 'object' ? { ...v } : v;
 						diff = true;
 					}
 				}
