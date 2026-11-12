@@ -3,7 +3,11 @@ import type { ExportResult } from '../../src/lib/core/types';
 import {
 	DEFAULT_FORM,
 	MB,
+	blankFieldsLine,
 	buildExportOptions,
+	filledBlankCount,
+	keepBlanksBlocked,
+	keepBlanksHint,
 	buildNumbering,
 	formatMB,
 	numberingPreview,
@@ -126,5 +130,59 @@ describe('result copy', () => {
 			}
 		}
 		expect(plainCheck({ name: 'target-size', ok: true, detail: '3 MB; the target was 2 MB.' }, 3)).toMatch(/smallest/);
+	});
+});
+
+describe('keep filled blanks editable', () => {
+	const blank = { kind: 'text' as const, box: { x: 0.1, y: 0.1, w: 0.3, h: 0.02 } };
+	const square = { kind: 'check' as const, box: { x: 0.5, y: 0.5, w: 0.02, h: 0.015 } };
+	const pages = [
+		{
+			stamps: [
+				{ id: 'a', kind: 'text' as const, text: 'Jane', x: 0.1, y: 0.1, size: 0.01, color: 'black' as const, blank },
+				{ id: 'b', kind: 'text' as const, text: '  ', x: 0.1, y: 0.2, size: 0.01, color: 'black' as const, blank },
+				{ id: 'c', kind: 'text' as const, text: 'plain', x: 0.1, y: 0.3, size: 0.01, color: 'black' as const },
+				{ id: 'd', kind: 'mark' as const, mark: 'check' as const, box: square.box, blank: square },
+				{ id: 'e', kind: 'mark' as const, mark: 'check' as const, box: square.box }
+			]
+		}
+	];
+
+	it('counts linked text with something typed and linked ticks', () => {
+		expect(filledBlankCount(pages)).toBe(2);
+		expect(filledBlankCount([])).toBe(0);
+	});
+
+	it('is off by default and only asked for when there are filled blanks and nothing flattens', () => {
+		expect(DEFAULT_FORM.keepBlanks).toBe(false);
+		const on = form({ keepBlanks: true });
+		const opt = (f: ExportForm, c: Parameters<typeof buildExportOptions>[1]) => {
+			const r = buildExportOptions(f, c);
+			if (!r.ok) throw new Error(r.problem);
+			return r.options;
+		};
+		expect(opt(on, { ...ctx, blanks: 2 }).blankFields).toBe(true);
+		expect('blankFields' in opt(on, { ...ctx, blanks: 0 })).toBe(false);
+		expect('blankFields' in opt(form(), { ...ctx, blanks: 2 })).toBe(false);
+		const locked = opt(form({ keepBlanks: true, lockForms: true }), { ...ctx, hasForm: true, blanks: 2 });
+		expect([locked.flattenForms, 'blankFields' in locked]).toEqual([true, false]);
+		const redacting = opt(on, { ...ctx, redactions: 1, blanks: 2 });
+		expect([redacting.flattenForms, 'blankFields' in redacting]).toEqual([true, false]);
+	});
+
+	it('says why it is not available, what it does and what happened', () => {
+		expect(keepBlanksBlocked({ lockForms: false }, { redactions: 0, hasForm: true })).toBeNull();
+		expect(keepBlanksBlocked({ lockForms: true }, { redactions: 0, hasForm: true })).toBe('Not available with Lock form answers.');
+		expect(keepBlanksBlocked({ lockForms: false }, { redactions: 2, hasForm: false })).toMatch(/^Not available when redacting/);
+		expect(keepBlanksHint(7)).toBe('The 7 blanks you filled become form fields, so the next person can change them.');
+		expect(keepBlanksHint(1)).toBe('The blank you filled becomes a form field, so the next person can change it.');
+		const r = (fields: number, plain: number) => ({ blankFields: { fields, plain } }) as ExportResult;
+		expect(blankFieldsLine(r(7, 0))).toBe('7 blanks are now form fields.');
+		expect(blankFieldsLine(r(7, 2))).toBe('7 blanks are now form fields. 2 stayed as plain text.');
+		expect(blankFieldsLine(r(1, 1))).toBe('1 blank is now a form field. 1 stayed as plain text.');
+		expect(blankFieldsLine(r(0, 3))).toBe('The 3 filled blanks stayed as plain text.');
+		expect(blankFieldsLine(r(0, 0))).toBeNull();
+		expect(blankFieldsLine({} as ExportResult)).toBeNull();
+		expect(plainCheck({ name: 'blank-fields', ok: true, detail: '' }, 1)).toBe('Every filled blank is a form field with your answer.');
 	});
 });

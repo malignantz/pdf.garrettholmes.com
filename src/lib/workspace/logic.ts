@@ -418,6 +418,8 @@ export interface ExportForm {
 	prefix: string;
 	digits: string;
 	lockForms: boolean;
+	/** Keep filled blanks editable (ExportOptions.blankFields). */
+	keepBlanks: boolean;
 }
 
 export const DEFAULT_FORM: Omit<ExportForm, 'filename'> = {
@@ -434,8 +436,45 @@ export const DEFAULT_FORM: Omit<ExportForm, 'filename'> = {
 	size: 'medium',
 	prefix: '',
 	digits: '6',
-	lockForms: false
+	lockForms: false,
+	keepBlanks: false
 };
+
+/** Filled blanks on the pages of a plan: text and ticks still linked to the blank they were snapped into. */
+export function filledBlankCount(pages: readonly Pick<PageRef, 'stamps'>[]): number {
+	let n = 0;
+	for (const p of pages)
+		for (const s of p.stamps) {
+			// As engine/blank-fields.ts `linked` (not imported: it pulls in the forms engine).
+			if (s.kind === 'text' && s.blank?.kind === 'text' && s.text.replace(/\s/g, '') !== '') n++;
+			else if (s.kind === 'mark' && s.mark === 'check' && s.blank?.kind === 'check') n++;
+		}
+	return n;
+}
+
+/** Why "Keep filled blanks editable" cannot be used with the other options, or null. */
+export function keepBlanksBlocked(f: Pick<ExportForm, 'lockForms'>, ctx: { redactions: number; hasForm: boolean }): string | null {
+	if (ctx.redactions > 0) return 'Not available when redacting: the form is turned into page content.';
+	if (ctx.hasForm && f.lockForms) return 'Not available with Lock form answers.';
+	return null;
+}
+
+/** The hint under the option: what it does to these blanks. */
+export function keepBlanksHint(count: number): string {
+	return count === 1
+		? 'The blank you filled becomes a form field, so the next person can change it.'
+		: `The ${count} blanks you filled become form fields, so the next person can change them.`;
+}
+
+/** The result line after an export with the option on, or null. */
+export function blankFieldsLine(r: ExportResult): string | null {
+	const b = r.blankFields;
+	if (!b || b.fields + b.plain === 0) return null;
+	const made = b.fields === 1 ? '1 blank is now a form field.' : `${b.fields} blanks are now form fields.`;
+	const plain = b.plain === 1 ? '1 stayed as plain text.' : `${b.plain} stayed as plain text.`;
+	if (b.fields === 0) return b.plain === 1 ? 'The filled blank stayed as plain text.' : `The ${b.plain} filled blanks stayed as plain text.`;
+	return b.plain ? `${made} ${plain}` : made;
+}
 
 /** Number of redaction boxes on the pages of a plan. */
 export function redactionCount(pages: readonly Pick<PageRef, 'stamps'>[]): number {
@@ -490,7 +529,7 @@ export type OptionsResult = { ok: true; options: ExportOptions } | { ok: false; 
  */
 export function buildExportOptions(
 	f: ExportForm,
-	ctx: { pageCount: number; redactions: number; hasForm: boolean }
+	ctx: { pageCount: number; redactions: number; hasForm: boolean; blanks?: number }
 ): OptionsResult {
 	const redacting = ctx.redactions > 0;
 	const options: ExportOptions = {
@@ -510,6 +549,7 @@ export function buildExportOptions(
 		options.numbering = r.numbering;
 	}
 	if ((ctx.hasForm && f.lockForms) || redacting) options.flattenForms = true;
+	if (f.keepBlanks && (ctx.blanks ?? 0) > 0 && !options.flattenForms) options.blankFields = true;
 	return { ok: true, options };
 }
 
