@@ -100,6 +100,11 @@ function patch(m: Mupdf): Mupdf {
 	return m;
 }
 
+/** True when MuPDF is loaded in this realm already (using it costs no download or compile). */
+export function mupdfLoaded(): boolean {
+	return current !== null;
+}
+
 /** True for a WebAssembly trap (from any realm), as opposed to an error MuPDF reported. */
 export function isWasmFault(e: unknown): boolean {
 	if (typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.RuntimeError) return true;

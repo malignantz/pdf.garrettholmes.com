@@ -39,9 +39,16 @@ export function nodeAssets(): EngineAssets {
 	};
 }
 
+/** Debug notes the engine wrote (stages that skipped themselves); measurement scripts read and clear it. */
+export const debugNotes: string[] = [];
+
 let shared: Engine | null = null;
 export function engine(): Engine {
-	shared ??= createCoreEngine(nodeAssets());
+	// SURVEY_LOSSLESS=pack,level9 (a comma list of passes to keep on) is for measuring passes one at a time.
+	const env = process.env.SURVEY_LOSSLESS;
+	const on = env === undefined ? null : new Set(env.split(',').filter(Boolean));
+	const lossless = on ? { pack: on.has('pack'), level9: on.has('level9'), cleanup: on.has('cleanup'), libdeflate: on.has('libdeflate') } : undefined;
+	shared ??= createCoreEngine(nodeAssets(), { debug: (n) => debugNotes.push(n), lossless });
 	return shared;
 }
 

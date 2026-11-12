@@ -1572,5 +1572,28 @@
 				}
 			]
 		]
+	},
+	"compress-predictor.pdf": {
+		"pages": 1,
+		"label": "predictor",
+		"note": "RGB image with PNG predictor (Paeth rows); qpdf --recompress-flate drops it and the file grew"
+	},
+	"compress-dupes.pdf": {
+		"pages": 2,
+		"label": "dupes",
+		"note": "each page has its own copy of the same embedded font and image"
+	},
+	"compress-form-fonts.pdf": {
+		"pages": 1,
+		"label": "form-fonts",
+		"fields": [
+			"name"
+		],
+		"note": "text field /DA font in /DR is an embedded font with many unused glyphs: must not be subset"
+	},
+	"compress-subset.pdf": {
+		"pages": 2,
+		"label": "subset",
+		"note": "embedded font with many unused glyphs (no subset tag); outline, link, page labels, attachment"
 	}
 }
