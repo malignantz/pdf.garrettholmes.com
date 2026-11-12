@@ -565,22 +565,32 @@ function boxEdges(ink: PageInk, ws: Word[]): { h: Seg[]; v: Seg[] } {
 export interface DetectOptions {
 	/** Minimum length of a ruled blank, in points (default 24). */
 	minRule?: number;
+	/**
+	 * Every candidate as found: no merging of stacked lines into one multi-line blank
+	 * and no "office use" filter (the tap-to-snap prototype, forms-snap.ts, picks among
+	 * them by where the user tapped).
+	 */
+	raw?: boolean;
+	/** An empty small cell is a checkbox when its width is at most this many times its height (default 2.5). */
+	cellCheckRatio?: number;
 }
 
-interface Ctx {
+/** The page's geometry after joining: words, horizontal and vertical rules, heading bars. */
+export interface PageGeometry {
 	ws: Word[];
 	h: Rule[];
 	v: Rule[];
+	/** Median word size (body text), points. */
 	body: number;
 	width: number;
 	height: number;
 	/** Filled boxes darker than paper with text in them: headings, not answer space. */
 	bars: Rect[];
 }
+type Ctx = PageGeometry;
 
-/** Suggestions for one page, sorted top to bottom, left to right. */
-export function detectBlanks(ink: PageInk, opts: DetectOptions = {}): BlankSuggestion[] {
-	if (ink.paths > MAX_PATHS || ink.bigImages > 0) return [];
+/** Words, joined rules (with the edges filled boxes show) and heading bars of a page. */
+export function pageGeometry(ink: PageInk): PageGeometry {
 	const ws = words(ink.glyphs);
 	const body = median(ws.map((w) => w.size)) || 10;
 	const extra = boxEdges(ink, ws);
@@ -588,7 +598,18 @@ export function detectBlanks(ink: PageInk, opts: DetectOptions = {}): BlankSugge
 	const h = [...joinSegs([...hs, ...extra.h]), ...joinSegs(hs.filter((s) => s.b - s.a <= 6), 4).filter((r) => r.pieces >= 6)];
 	const v = joinSegs([...segsOf(ink.lines, 'v'), ...extra.v]);
 	const bars = ink.boxes.filter((b) => !b.stroked && b.light < 0.95 && ws.some((x) => overlaps(x.r, b.r, 1))).map((b) => b.r);
-	const ctx: Ctx = { ws, h, v, body, width: ink.width, height: ink.height, bars };
+	return { ws, h, v, body, width: ink.width, height: ink.height, bars };
+}
+
+/** The page is a scan or too complex to read: nothing is detected on it. */
+export function declines(ink: PageInk): boolean {
+	return ink.paths > MAX_PATHS || ink.bigImages > 0;
+}
+
+/** Suggestions for one page, sorted top to bottom, left to right. */
+export function detectBlanks(ink: PageInk, opts: DetectOptions = {}, geometry?: PageGeometry): BlankSuggestion[] {
+	if (declines(ink)) return [];
+	const ctx = geometry ?? pageGeometry(ink);
 
 	// Checkboxes first: their edges must not also become ruled text blanks.
 	const squares = squareBoxes(ctx);
@@ -596,10 +617,10 @@ export function detectBlanks(ink: PageInk, opts: DetectOptions = {}): BlankSugge
 	const singles = squares.filter((s) => !combs.some((c) => contains(c.rect, s.rect, 0.5)));
 	const out: BlankSuggestion[] = [...dedupe([...singles, ...circleBoxes(ink, ctx), ...glyphBoxes(ink, ctx)]), ...combs];
 	out.push(...underscoreBlanks(ink, ctx));
-	out.push(...ruledBlanks(ctx, opts.minRule ?? 24, out));
+	out.push(...ruledBlanks(ctx, opts.minRule ?? 24, out, opts.cellCheckRatio ?? 2.5));
 
-	const zones = officeUse(ctx);
-	return stacks(dedupe(out))
+	const zones = opts.raw ? [] : officeUse(ctx);
+	return (opts.raw ? dedupe(out, 0.9) : stacks(dedupe(out)))
 		.filter((s) => !zones.some((z) => contains(z, s.rect, 1)))
 		.sort((a, b) => a.rect[1] - b.rect[1] || a.rect[0] - b.rect[0])
 		.map((s) => ({ ...s, rect: s.rect.map(round) as Rect, confidence: round(Math.max(0, Math.min(1, s.confidence))) }));
@@ -749,7 +770,7 @@ function underscoreBlanks(ink: PageInk, ctx: Ctx): BlankSuggestion[] {
  * walls on both sides and a rule above that spans it is a table cell, anything else
  * an open rule. See the module header for what counts as a blank in each.
  */
-function ruledBlanks(ctx: Ctx, minRule: number, taken: BlankSuggestion[]): BlankSuggestion[] {
+function ruledBlanks(ctx: Ctx, minRule: number, taken: BlankSuggestion[], checkRatio: number): BlankSuggestion[] {
 	const out: BlankSuggestion[] = [];
 	const { body } = ctx;
 	const lineH = body * 1.25;
@@ -788,7 +809,7 @@ function ruledBlanks(ctx: Ctx, minRule: number, taken: BlankSuggestion[]): Blank
 			for (const o of ctx.h) if (o !== r && o.at < y - 0.5 && o.at > ceil && o.a <= x0 + 2 && o.b >= x1 - 2) ceil = o.at;
 			const inCell = !!lw && !!rw && ceil > -Infinity && lw.a <= ceil + 2 && rw.a <= ceil + 2;
 			if (inCell) {
-				const s = cellBlank(ctx, [x0, ceil, x1, y], taken);
+				const s = cellBlank(ctx, [x0, ceil, x1, y], taken, checkRatio);
 				if (s?.source === 'cell-check' && run.length && Math.abs(run[run.length - 1].cell[2] - x0) < 1.5 && Math.abs(run[run.length - 1].cell[1] - ceil) < 1.5) {
 					run.push({ s, cell: [x0, ceil, x1, y] });
 					continue;
@@ -816,7 +837,7 @@ function ruledBlanks(ctx: Ctx, minRule: number, taken: BlankSuggestion[]): Blank
 }
 
 /** A blank in the table cell `c` ([x0, top rule, x1, bottom rule]), or null. */
-function cellBlank(ctx: Ctx, c: Rect, taken: BlankSuggestion[]): BlankSuggestion | null {
+function cellBlank(ctx: Ctx, c: Rect, taken: BlankSuggestion[], checkRatio: number): BlankSuggestion | null {
 	const { body } = ctx;
 	const [x0, top, x1, y] = c;
 	const w = x1 - x0;
@@ -833,7 +854,7 @@ function cellBlank(ctx: Ctx, c: Rect, taken: BlankSuggestion[]): BlankSuggestion
 	const inner: Rect = [x0 + 1, top + 1, x1 - 1, y - 0.5];
 	if (!inside.length) {
 		// An empty cell. Small and squarish: a checkbox in its middle.
-		if (w <= 30 && h <= 20 && w <= 2.5 * h) {
+		if (w <= 30 && h <= 20 && w <= checkRatio * h) {
 			const s = Math.min(w, h) - 2;
 			const cx = (x0 + x1) / 2;
 			const cy = (top + y) / 2;
@@ -881,7 +902,7 @@ function cellBlank(ctx: Ctx, c: Rect, taken: BlankSuggestion[]): BlankSuggestion
 	return null;
 }
 
-interface TextLine {
+export interface TextLine {
 	text: string;
 	r: Rect;
 	base: number;
@@ -889,7 +910,7 @@ interface TextLine {
 }
 
 /** Words grouped into lines by baseline, top to bottom, each line's words left to right. */
-function textLines(ws: Word[]): TextLine[] {
+export function textLines(ws: Word[]): TextLine[] {
 	const sorted = [...ws].sort((a, b) => a.base - b.base || a.r[0] - b.r[0]);
 	const out: { ws: Word[]; base: number; size: number }[] = [];
 	for (const w of sorted) {
@@ -972,7 +993,7 @@ function ceilingAbove(ctx: Ctx, a: number, b: number, y: number, except?: Rule):
 
 // --- Labels ---------------------------------------------------------------
 
-function overlaps(a: Rect, b: Rect, eps = 0): boolean {
+export function overlaps(a: Rect, b: Rect, eps = 0): boolean {
 	return a[0] < b[2] - eps && a[2] > b[0] + eps && a[1] < b[3] - eps && a[3] > b[1] + eps;
 }
 
@@ -1130,18 +1151,23 @@ function stacks(xs: BlankSuggestion[]): BlankSuggestion[] {
 
 // --- Helpers --------------------------------------------------------------
 
-/** Drops a suggestion that mostly repeats a more confident one (IoU ≥ 0.5, or one inside the other). */
-function dedupe(xs: BlankSuggestion[]): BlankSuggestion[] {
+/**
+ * Drops a suggestion that mostly repeats a more confident one (IoU ≥ 0.5, or one inside
+ * the other). With `same` set, only near copies (IoU ≥ `same`) are dropped.
+ */
+function dedupe(xs: BlankSuggestion[], same?: number): BlankSuggestion[] {
 	const sorted = [...xs].sort((a, b) => b.confidence - a.confidence || a.rect[1] - b.rect[1] || a.rect[0] - b.rect[0]);
 	const kept: BlankSuggestion[] = [];
 	for (const s of sorted) {
-		if (kept.some((k) => rectIou(k.rect, s.rect) >= 0.5 || (k.kind === s.kind && (contains(k.rect, s.rect, 1.5) || contains(s.rect, k.rect, 1.5))))) continue;
+		const repeats = (k: BlankSuggestion) =>
+			same !== undefined ? k.kind === s.kind && rectIou(k.rect, s.rect) >= same : rectIou(k.rect, s.rect) >= 0.5 || (k.kind === s.kind && (contains(k.rect, s.rect, 1.5) || contains(s.rect, k.rect, 1.5)));
+		if (kept.some(repeats)) continue;
 		kept.push(s);
 	}
 	return kept;
 }
 
-function contains(a: Rect, b: Rect, eps: number): boolean {
+export function contains(a: Rect, b: Rect, eps: number): boolean {
 	return b[0] >= a[0] - eps && b[1] >= a[1] - eps && b[2] <= a[2] + eps && b[3] <= a[3] + eps;
 }
 
