@@ -161,12 +161,12 @@ export function createSession(deps: SessionDeps) {
 	const writer = deps.writerId ?? randomId();
 
 	let state: SaveState = 'starting';
-	let offer: (SessionSummary & { writer: string }) | null = null;
+	let offer: (SessionSummary & { writer: string; rev: string }) | null = null;
 	let restoring = false;
 	let storage: SessionStorage | null = null;
 	let ownership: Ownership | null = null;
 	/** A record this tab may overwrite: the one it found at load (the offer). */
-	let replaceable: string | null = null;
+	let replaceable: { writer: string; rev: string } | null = null;
 	/** This tab has written the current record. */
 	let hasWritten = false;
 	/** Bumped when stored data is wiped; writes from before do not count. */
@@ -351,6 +351,7 @@ export function createSession(deps: SessionDeps) {
 		saving = true;
 		emit();
 		const t0 = performance.now();
+		const startEpoch = epoch;
 		try {
 			const blobs = new Map<string, { hash: string; size: number; stored: SavedSource['stored']; needsPassword: boolean }>();
 			let failure: SaveState | null = null;
@@ -379,13 +380,15 @@ export function createSession(deps: SessionDeps) {
 					assetMap.set(a.id, { hash: b.hash!, size: a.png.length });
 				}
 			}
-			if (!canWrite()) return;
+			// Wiped while this save ran (Forget, switch off): drop it quietly.
+			if (!canWrite() || epoch !== startEpoch) return;
 			if (failure) {
 				setState(failure);
 				return;
 			}
 			const rec = buildRecord({
 				writer,
+				rev: randomId(),
 				savedAt: now(),
 				app: deps.app,
 				clean: !st.isDirty,
@@ -403,12 +406,14 @@ export function createSession(deps: SessionDeps) {
 				rec,
 				(cur) => {
 					seen = cur;
+					if (epoch !== startEpoch) return false;
 					if (cur === undefined) return !hasWritten;
-					const w = (cur as { writer?: unknown }).writer;
-					return w === writer || (replaceable !== null && w === replaceable);
+					const c = cur as { writer?: unknown; rev?: unknown };
+					return c.writer === writer || (replaceable !== null && c.writer === replaceable.writer && c.rev === replaceable.rev);
 				},
 				needs
 			);
+			if (epoch !== startEpoch) return;
 			if (res === 'conflict') {
 				// Someone else wrote or deleted it: stop, never overwrite their work.
 				setState(seen === undefined ? 'forgotten' : 'other-tab');
@@ -512,8 +517,8 @@ export function createSession(deps: SessionDeps) {
 				if (isExpired(rec.savedAt, now())) {
 					await storage.deleteRecord();
 				} else {
-					offer = { ...summarize(rec), writer: rec.writer };
-					replaceable = rec.writer;
+					offer = { ...summarize(rec), writer: rec.writer, rev: rec.rev };
+					replaceable = { writer: rec.writer, rev: rec.rev };
 				}
 			} catch (e) {
 				await storage.deleteRecord().catch(() => undefined);
@@ -609,6 +614,7 @@ export function createSession(deps: SessionDeps) {
 
 	function sourceReleased(id: SourceId) {
 		known.delete(id);
+		lastNeeds = '';
 		forgotten.delete(id);
 	}
 
@@ -680,7 +686,7 @@ export function createSession(deps: SessionDeps) {
 				return { ok: false, reason: 'unavailable' };
 			}
 			rec = parseRecord(raw);
-			if (rec.writer !== offer.writer) {
+			if (rec.writer !== offer.writer || rec.rev !== offer.rev) {
 				// Written by another tab since the offer was made.
 				offer = null;
 				setState('other-tab');
@@ -743,7 +749,7 @@ export function createSession(deps: SessionDeps) {
 			for (const a of rec.assets) assetBlobs.set(a.id, { hash: a.hash, size: a.size, status: 'stored', epoch });
 			offer = null;
 			// The record is still the one found at load; the first save takes it over.
-			replaceable = rec.writer;
+			replaceable = { writer: rec.writer, rev: rec.rev };
 			hasWritten = true;
 			lastSaved = skipped ? null : sigOf(store.state);
 			setState('saved');

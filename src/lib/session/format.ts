@@ -55,6 +55,8 @@ export interface SessionRecord {
 	schema: typeof SCHEMA;
 	/** Random id of the tab (page load) that wrote it; guards against two writers. */
 	writer: string;
+	/** Random id of this write: a tab may replace only the exact record it was offered. */
+	rev: string;
 	/** Time of the last change that was saved (ms since epoch, device clock). */
 	savedAt: number;
 	/** App build that wrote it (information only). */
@@ -119,6 +121,7 @@ void sourceCovered;
 
 export interface RecordInput {
 	writer: string;
+	rev: string;
 	savedAt: number;
 	app: string;
 	clean: boolean;
@@ -167,6 +170,7 @@ export function buildRecord(input: RecordInput): SessionRecord {
 	return {
 		schema: SCHEMA,
 		writer: input.writer,
+		rev: input.rev,
 		savedAt: input.savedAt,
 		app: input.app,
 		clean: input.clean,
@@ -361,7 +365,7 @@ export function parseRecord(raw: unknown): SessionRecord {
 	if (schema === null) fail('not a session record');
 	if (schema !== SCHEMA) throw new SessionFormatError('version', `saved session: schema ${schema}, this app reads ${SCHEMA}`);
 	const v = raw as Record<string, unknown>;
-	if (!str(v.writer) || !fin(v.savedAt) || !str(v.app) || typeof v.clean !== 'boolean') fail('bad header');
+	if (!str(v.writer) || !str(v.rev) || !fin(v.savedAt) || !str(v.app) || typeof v.clean !== 'boolean') fail('bad header');
 	if (!Array.isArray(v.sources) || !Array.isArray(v.pages) || !Array.isArray(v.assets)) fail('bad lists');
 	const sources = v.sources.map(readSource);
 	const pages = v.pages.map(readPage);
@@ -386,6 +390,7 @@ export function parseRecord(raw: unknown): SessionRecord {
 	return {
 		schema: SCHEMA,
 		writer: v.writer,
+		rev: v.rev as string,
 		savedAt: v.savedAt,
 		app: v.app,
 		clean: v.clean,
