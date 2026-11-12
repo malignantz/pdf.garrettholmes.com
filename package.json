@@ -29,7 +29,8 @@
 		"ocr:scans": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/ocr/scans.ts",
 		"ocr:browser": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/ocr/browser/bench.ts",
 		"ocr:grade": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/ocr/grade.ts",
-		"ocr:osd": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/ocr/osd.ts"
+		"ocr:osd": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/ocr/osd.ts",
+		"ocr:gate": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/ocr/gate.ts"
 	},
 	"devDependencies": {
 		"@playwright/test": "^1.65.0",

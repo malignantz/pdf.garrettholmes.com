@@ -74,13 +74,17 @@ export interface Score {
 	bm: number;
 	right: number;
 	miss: number;
+	/** Ink more than 2 pt outside the OCR box (a looser bar: the highlighter adds a margin and a full line band). */
+	miss2?: number;
+	/** Neither flood nor ink more than 2 pt outside. */
+	right2?: number;
 	flood: number;
 	/** Per size bucket: [true words, exact]. */
 	sz: [number, number][];
 }
 
 export function emptyScore(): Score {
-	return { nT: 0, nO: 0, ex: 0, e1: 0, ch: 0, ce: 0, bm: 0, right: 0, miss: 0, flood: 0, sz: SIZE_BUCKETS.map(() => [0, 0]) };
+	return { nT: 0, nO: 0, ex: 0, e1: 0, ch: 0, ce: 0, bm: 0, right: 0, miss: 0, miss2: 0, right2: 0, flood: 0, sz: SIZE_BUCKETS.map(() => [0, 0]) };
 }
 
 export function addScore(a: Score, b: Score): Score {
@@ -94,6 +98,8 @@ export function addScore(a: Score, b: Score): Score {
 		bm: a.bm + b.bm,
 		right: a.right + b.right,
 		miss: a.miss + b.miss,
+		miss2: (a.miss2 ?? 0) + (b.miss2 ?? 0),
+		right2: (a.right2 ?? 0) + (b.right2 ?? 0),
 		flood: a.flood + b.flood,
 		sz: a.sz.map((v, i) => [v[0] + b.sz[i][0], v[1] + b.sz[i][1]])
 	};
@@ -239,8 +245,10 @@ export function scorePage(truth: TruthWord[], ocr: OcrWord[], m: Mat, ignore: Bo
 				if (back[2] - back[0] > ow && back[3] - back[1] > Math.max(0.5, 0.15 * inkH)) flood = true;
 			}
 			if (miss) s.miss++;
+			if (out / ppt > 2) s.miss2 = (s.miss2 ?? 0) + 1;
 			if (flood) s.flood++;
 			if (!miss && !flood) s.right++;
+			if (!(out / ppt > 2) && !flood) s.right2 = (s.right2 ?? 0) + 1;
 		}
 	}
 	// Precision.

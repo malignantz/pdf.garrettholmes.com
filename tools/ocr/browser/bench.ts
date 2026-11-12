@@ -9,6 +9,11 @@
  *
  * Images: the benchmark set written by `ocr:measure -- synth --set hold --bench-images`
  * (<out>/png/bench/, inside the survey folder). Results: <out>/results/browser.json, report-browser.md.
+ *
+ * Chrome's DevTools CPU throttle (Emulation.setCPUThrottlingRate on the page) does not reach dedicated
+ * workers (measured: no slowdown), so the phone proxy is a CPU quota on the whole run instead:
+ *   systemd-run --user --scope -p CPUQuota=25% npm run ocr:browser -- --only '^fast, 1 worker, 300' --tag quota25
+ * (25% of one core = a single thread 4× slower; 50% for two workers).
  */
 import fs from 'node:fs';
 import http from 'node:http';
@@ -24,6 +29,9 @@ const args = parseArgs(process.argv.slice(2));
 const out = path.resolve(args.get('out') ?? '/home/garrett/pdf-survey/out-ocr');
 const imgDir = path.resolve(args.get('images') ?? path.join(out, 'png', 'bench'));
 const quick = args.flag('quick');
+// --only REGEX: run the scenarios whose name matches; --tag T: results go to browser-T.json / report-browser-T.md.
+const only = args.get('only') ? new RegExp(args.get('only')!) : null;
+const tag = args.get('tag') ? `-${args.get('tag')}` : '';
 
 // ---------------------------------------------------------------- static server
 const routes: [string, string][] = [
@@ -126,7 +134,7 @@ async function throttleAll(page: Page, rate: number) {
 }
 
 for (const s of sc) {
-	if (!s.images.length) continue;
+	if (!s.images.length || (only && !only.test(s.name))) continue;
 	const ctx = await browser.newContext();
 	await ctx.route('**/*', (route) => {
 		const u = route.request().url();
@@ -208,9 +216,9 @@ if (first) {
 }
 const summary = { origin, blocked, chromeVsNode: { compared, identical: same, diffs }, results: results.map(({ words, ...r }) => (void words, r)) };
 fs.mkdirSync(path.join(out, 'results'), { recursive: true });
-fs.writeFileSync(path.join(out, 'results', 'browser.json'), JSON.stringify(summary, null, 1));
+fs.writeFileSync(path.join(out, 'results', `browser${tag}.json`), JSON.stringify(summary, null, 1));
 const L = ['# tesseract.js in Chrome (system Chrome, headless, Playwright)', '', `Requests to other origins: ${blocked.length} (${blocked.slice(0, 5).join(', ')}). Chrome vs Node, same images (fast, 300 dpi): ${same} of ${compared} pages give the identical word sequence (boxes not compared: Chrome's are in the deskewed frame).`, '', '| scenario | pages | engine load s | first result s (cold) | s/page p50 | p90 | max | pages/s | Chrome RSS before → peak MB | engine bytes fetched |', '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|'];
 for (const r of summary.results as Record<string, number & string>[])
 	L.push(`| ${r.name} | ${r.pages} | ${Number(r.loadS).toFixed(2)} | ${Number(r.firstS).toFixed(1)} | ${Number(r.p50).toFixed(1)} | ${Number(r.p90).toFixed(1)} | ${Number(r.max).toFixed(1)} | ${Number(r.throughput).toFixed(2)} | ${r.baseMB} → ${r.peakMB} | ${(Number(r.engineBytes) / 1e6).toFixed(1)} MB |`);
-fs.writeFileSync(path.join(out, 'report-browser.md'), L.join('\n') + '\n');
+fs.writeFileSync(path.join(out, `report-browser${tag}.md`), L.join('\n') + '\n');
 console.log(L.join('\n'));

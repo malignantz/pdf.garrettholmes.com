@@ -170,6 +170,8 @@ serveJobs<SynthJob, SynthResult>(async (job, io) => {
 					io.progress(`${pi} ${c.deg} ${c.dpi} ${model}`);
 				}
 			}
+			// One result line per page, so a crash later loses only the page it happens on.
+			io.result({ sha256: job.sha256, pages: [sp], tried: 0, rejected: {} });
 			res.pages.push(sp);
 		}
 	} catch (e) {

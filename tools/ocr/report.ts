@@ -65,9 +65,9 @@ export function row(label: string, rows: Scored[]): string {
 	const s = sum(rows);
 	const bad = rows.filter((r) => recall(r.s) < BAD).length;
 	const ms = rows.map((r) => r.ms);
-	return `| ${label} | ${rows.length} | ${pct(s.ex, s.nT)} | ${pct(s.e1, s.nT)} | ${pct(s.nO - s.ex, s.nO)} | ${pct(s.ce, s.ch)} | ${pct(s.right, s.bm)} | ${pct(s.flood, s.bm)} | ${pct(s.miss, s.bm)} | ${pct(bad, rows.length)} | ${(quant(ms, 0.5) / 1000).toFixed(1)} / ${(quant(ms, 0.9) / 1000).toFixed(1)} |`;
+	return `| ${label} | ${rows.length} | ${pct(s.ex, s.nT)} | ${pct(s.e1, s.nT)} | ${pct(s.nO - s.ex, s.nO)} | ${pct(s.ce, s.ch)} | ${pct(s.right, s.bm)} (${pct(s.right2 ?? 0, s.bm)}) | ${pct(s.flood, s.bm)} | ${pct(s.miss, s.bm)} (${pct(s.miss2 ?? 0, s.bm)}) | ${pct(bad, rows.length)} | ${(quant(ms, 0.5) / 1000).toFixed(1)} / ${(quant(ms, 0.9) / 1000).toFixed(1)} |`;
 }
-export const HEAD = `| | pages | recall exact | recall ≤1 edit | junk (1 − precision) | CER | boxes right | paint a neighbour | miss ink > 1 pt | bad pages (recall < 85%) | Node s/page p50 / p90 |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|`;
+export const HEAD = `| | pages | recall exact | recall ≤1 edit | junk (1 − precision) | CER | boxes right at 1 pt (2 pt) | paint a neighbour | miss ink > 1 pt (> 2 pt) | bad pages (recall < 85%) | Node s/page p50 / p90 |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|`;
 
 /** The OCR input the feature would use: images under 300 dpi enlarged to 300 ("up"), 300 as is. */
 export const policyUp = (r: Scored) => (r.dpi < 300 ? r.up : !r.up);
@@ -78,9 +78,11 @@ export interface Gate {
 	minStop: number;
 	minWordy: number;
 	minWords: number;
+	/** Median OCR word height in pixels of the 300 dpi OCR input (a resolution / print size signal). */
+	minMedH?: number;
 }
 export const NO_GATE: Gate = { minConf: 0, maxLow60: 1, minStop: 0, minWordy: 0, minWords: 0 };
-export const accept = (g: Gate, s: Signals) => s.words >= g.minWords && s.meanConf >= g.minConf && s.low60 <= g.maxLow60 && s.stop >= g.minStop && s.wordy >= g.minWordy;
+export const accept = (g: Gate, s: Signals) => s.words >= g.minWords && s.meanConf >= g.minConf && s.low60 <= g.maxLow60 && s.stop >= g.minStop && s.wordy >= g.minWordy && s.medH >= (g.minMedH ?? 0);
 
 /** Best gate on `rows`: most pages accepted with at most `maxBad` of accepted pages bad. */
 export function tuneGate(rows: { s: Score; sig: Signals }[], maxBad: number): Gate {
@@ -89,8 +91,9 @@ export function tuneGate(rows: { s: Score; sig: Signals }[], maxBad: number): Ga
 		for (const maxLow60 of [1, 0.4, 0.3, 0.25, 0.2, 0.15, 0.1, 0.07, 0.05])
 			for (const minStop of [0, 0.03, 0.06, 0.1])
 				for (const minWordy of [0, 0.6, 0.7, 0.8, 0.85, 0.9])
-					for (const minWords of [0, 10, 25]) {
-						const g = { minConf, maxLow60, minStop, minWordy, minWords };
+					for (const minWords of [0, 10, 25])
+						for (const minMedH of [0, 15, 20, 25]) {
+						const g = { minConf, maxLow60, minStop, minWordy, minWords, minMedH };
 						const acc = rows.filter((r) => accept(g, r.sig));
 						const bad = acc.filter((r) => recall(r.s) < BAD).length;
 						if (acc.length && bad <= maxBad * acc.length && (!best || acc.length > best.acc)) best = { g, acc: acc.length };
@@ -126,7 +129,7 @@ export function report(args: Args, out: string) {
 		const kinds = new Map<string, number>();
 		for (const k of pageKeys.values()) kinds.set(k, (kinds.get(k) ?? 0) + 1);
 		const tw = rows.filter((r) => r.model === 'fast' && r.dpi === 300 && r.deg === 'clean').reduce((a, r) => a + r.s.nT, 0);
-		L.push(`## ${set === 'dev' ? 'Dev set (tuning)' : 'Held-out set'}`, '', `${pageKeys.size} pages from ${files.size} files, ${tw} true words. Kinds: ${[...kinds].map(([k, v]) => `${k} ${v}`).join(', ')}.`, '');
+		L.push(`## ${set === 'dev' ? 'Dev set (tuning)' : set === 'hold' ? 'Held-out set' : `Set ${set}`}`, '', `${pageKeys.size} pages from ${files.size} files, ${tw} true words. Kinds: ${[...kinds].map(([k, v]) => `${k} ${v}`).join(', ')}.`, '');
 		L.push('### By condition', '', HEAD);
 		const order = ['clean', 'scan', 'bitonal', 'fax', 'phone'];
 		const configs = [...new Set(rows.map((r) => `${order.indexOf(r.deg)}|${r.deg}|${String(r.dpi).padStart(3, '0')}|${r.up ? 1 : 0}|${r.th}|${r.deskew ? 1 : 0}|${r.model}`))].sort();
@@ -175,8 +178,9 @@ export function report(args: Args, out: string) {
 		L.push('## Page-level decline gate', '', 'Tuned on dev (most page runs accepted with at most 2% of accepted ones bad, recall < 85%), applied unchanged to held-out. Tuning pool: every condition (clean, scan, bitonal, fax, phone) at the enlarged policy.', '');
 		for (const m of ['fast', 'best_int']) {
 			const pool = (set: string) => (all.get(set) ?? []).filter((r) => r.model === m && policyUp(r) && pickTh(r));
-			const g = tuneGate(pool('dev'), 0.02);
-			L.push(`### ${m}: gate ${JSON.stringify(g)}`, '', GATE_HEAD);
+			for (const target of [0.02, 0.05]) {
+			const g = tuneGate(pool('dev'), target);
+			L.push(`### ${m}, tuned for at most ${target * 100}% bad among accepted: gate ${JSON.stringify(g)}`, '', GATE_HEAD);
 			for (const set of sets) {
 				const rs = pool(set);
 				L.push(gateLine(`${set}: all conditions`, rs, g));
@@ -188,8 +192,9 @@ export function report(args: Args, out: string) {
 				L.push(gateLine(`${set}: no gate, all conditions`, rs, NO_GATE));
 			}
 			L.push('');
+			}
 		}
 	}
-	fs.writeFileSync(path.join(out, 'report-synth.md'), L.join('\n') + '\n');
+	fs.writeFileSync(path.join(out, args.get('name') ?? 'report-synth.md'), L.join('\n') + '\n');
 	console.log(L.join('\n'));
 }

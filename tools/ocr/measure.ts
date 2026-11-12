@@ -6,11 +6,14 @@
  * Survey files are untrusted: read only, in child processes with a memory cap and a timeout.
  *
  *   npm run ocr:measure -- sample                 # dev + held-out samples of born-digital pages → <out>/synth-sample.json
- *   npm run ocr:measure -- synth --set dev|hold   # render, degrade, OCR → <out>/results/synth-<set>.jsonl (resumable)
- *   npm run ocr:measure -- report                 # → <out>/report-synth.md (+ gates, tables)
+ *   npm run ocr:measure -- synth --set dev        # dev grid (models, binarisation, enlarging, deskew) → <out>/results/synth-dev.jsonl (resumable)
+ *   npm run ocr:measure -- synth --set hold --th 2   # held-out, chosen setting (Sauvola, deskew, enlarge to 300) → synth-hold.jsonl
+ *   npm run ocr:measure -- report --th 2          # → <out>/report-synth.md (tables by condition, kind, size, skew; gate) and results/synth-scored-*.jsonl
+ *   npm run ocr:measure -- synth --set hold --bench-images   # page images for the browser benchmark (no OCR)
  *
  * Other steps (real scans, browser, layer) live in their own scripts in this folder.
- * Options: --out DIR, --workers 4 (at most 4), --mem-mb 2500, --timeout 600 (s), --limit N, --models fast,best_int.
+ * Options: --out DIR, --workers 4 (at most 4), --mem-mb 2500, --timeout 600 (s), --limit N, --th 0|2, --native (held-out: do not enlarge),
+ * report: --sets dev,hold --name FILE --model fast.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -96,10 +99,11 @@ function sampleCommand(args: Args, out: string) {
 
 /**
  * Dev: a wide grid to choose the model, the binarisation and whether to enlarge 150/200 dpi
- * images to 300 before OCR. Held-out: the chosen setting (`fast`, `th`, enlarge) on every
- * condition, with best_int and best on the scan condition for comparison.
+ * images to 300 before OCR. Held-out: the chosen setting (`fast`, deskew, `th`, enlarge) on clean,
+ * scan, bitonal and phone conditions. (The first held-out pass, 21 pages, also ran fax, bitonal
+ * 150 dpi and best_int; those were dropped to fit the box's time.)
  */
-export function conditions(set: 'dev' | 'hold', th: number): Cond[] {
+export function conditions(set: 'dev' | 'hold', th: number, up = true): Cond[] {
 	const c: Cond[] = [];
 	if (set === 'dev') {
 		// Round 1 (results/synth-v1-noskew-dev.jsonl, no deskew) showed skew of 1.5–2° losing whole lines;
@@ -115,12 +119,12 @@ export function conditions(set: 'dev' | 'hold', th: number): Cond[] {
 		c.push({ dpi: 200, deg: 'fax', models: ['fast'] });
 		return c;
 	}
-	for (const dpi of [150, 200, 300])
-		for (const deg of ['clean', 'scan', 'bitonal'] as const) c.push({ dpi, deg, th, up: dpi < 300, models: deg === 'scan' ? ['fast', 'best_int'] : ['fast'] });
-	c.push({ dpi: 300, deg: 'scan', th, models: ['best'] });
-	c.push({ dpi: 200, deg: 'phone', th, up: true, models: ['fast'] }, { dpi: 200, deg: 'fax', th, up: true, models: ['fast'] });
-	// Native (not enlarged) 150/200 for the resolution question.
-	for (const dpi of [150, 200]) c.push({ dpi, deg: 'scan', th, models: ['fast'] });
+	// Held-out: the chosen setting only (deskew, binarisation `th`, images under 300 dpi enlarged to 300 when `up`).
+	// Fax, bitonal 150 dpi and the other models were settled on the dev set (box time: about 10 s an OCR run here).
+	c.push({ dpi: 300, deg: 'clean', th, models: ['fast'] });
+	for (const dpi of [150, 200, 300]) c.push({ dpi, deg: 'scan', th, up: up && dpi < 300, models: ['fast'] });
+	for (const dpi of [200, 300]) c.push({ dpi, deg: 'bitonal', th, up: up && dpi < 300, models: ['fast'] });
+	c.push({ dpi: 200, deg: 'phone', th, up, models: ['fast'] });
 	return c;
 }
 
@@ -131,7 +135,7 @@ async function synthCommand(args: Args, out: string) {
 	// --bench-images: only write images for the browser benchmark (no OCR).
 	const conds: Cond[] = bench
 		? [150, 200, 300].flatMap((dpi) => [{ dpi, deg: 'scan' as const, models: [] }, ...(dpi < 300 ? [{ dpi, deg: 'scan' as const, up: true, models: [] }] : [])])
-		: conditions(set, args.num('th', 0));
+		: conditions(set, args.num('th', 0), !args.flag('native'));
 	const resDir = path.join(out, 'results');
 	fs.mkdirSync(resDir, { recursive: true });
 	const resFile = path.join(resDir, bench ? `bench-images-${set}.jsonl` : `synth-${set}.jsonl`);
