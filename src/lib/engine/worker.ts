@@ -45,7 +45,9 @@ const engine = createCoreEngine({
 		if (typeof caches === 'undefined' || !(await caches.has('lazy'))) return false;
 		const keys = await (await caches.open('lazy')).keys();
 		return keys.some((r) => /\/mupdf-wasm[-.][^/]*\.wasm$/.test(new URL(r.url).pathname));
-	}
+	},
+	// "Make scanned pages searchable": tesseract.js workers and data, loaded on first use.
+	ocr: () => import('./ocr/browser').then((m) => m.browserOcr())
 }, {
 	// Stages that skip themselves ("avoid, don't fail") leave a note for anyone debugging.
 	debug: (note) => console.debug('[engine]', note)

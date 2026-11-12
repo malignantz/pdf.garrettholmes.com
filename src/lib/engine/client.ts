@@ -8,9 +8,9 @@
  * the worker, which keeps no reference to them.
  */
 
-import type { Engine } from '../core/types';
+import type { Engine, ExportControl, ExportProgress } from '../core/types';
 import { EngineError, fromErrorShape } from './errors';
-import { NEED_BYTES, TAG, isResponse, isRestart, type EngineMethod, type EngineRequest } from './protocol';
+import { NEED_BYTES, TAG, isProgress, isResponse, isRestart, type EngineCancel, type EngineMethod, type EngineRequest } from './protocol';
 
 export interface WorkerLike {
 	postMessage(message: unknown): void;
@@ -41,6 +41,10 @@ export function createEngine(options: { createWorker?: () => WorkerLike } = {}):
 	let worker: WorkerLike | null = null;
 	let nextId = 1;
 	const pending = new Map<number, Pending>();
+	/** Progress listeners of running exportPlan calls, by request id. */
+	const progress = new Map<number, (p: ExportProgress) => void>();
+	/** How long a cancelled export may take to stop before its worker is replaced. */
+	const CANCEL_GRACE_MS = 10_000;
 	/** Sources whose bytes the current worker was sent by pageText. */
 	let textSent = new Set<string>();
 
@@ -111,6 +115,10 @@ export function createEngine(options: { createWorker?: () => WorkerLike } = {}):
 				replace(w);
 				return;
 			}
+			if (isProgress(msg)) {
+				progress.get(msg.id)?.(msg.progress);
+				return;
+			}
 			if (!isResponse(msg)) return;
 			const p = pending.get(msg.id);
 			if (!p) return;
@@ -137,14 +145,49 @@ export function createEngine(options: { createWorker?: () => WorkerLike } = {}):
 			send(id, p);
 		});
 
+	/**
+	 * exportPlan with ExportControl: progress messages go to `onProgress`; aborting the
+	 * signal asks the worker to stop (it answers 'cancelled'). A worker that does not stop
+	 * within CANCEL_GRACE_MS is replaced.
+	 */
+	const exportCall = <T>(args: unknown[], control?: ExportControl): Promise<T> => {
+		const signal = control?.signal;
+		if (signal?.aborted) return Promise.reject(new EngineError('cancelled', 'Export cancelled. Nothing was saved.'));
+		const id = nextId;
+		if (control?.onProgress) progress.set(id, control.onProgress);
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const onAbort = () => {
+			const w = worker;
+			try {
+				w?.postMessage({ tag: TAG, cancel: id } satisfies EngineCancel);
+			} catch {
+				// The worker is gone; the call fails on its own.
+			}
+			timer = setTimeout(() => {
+				const p = pending.get(id);
+				if (!p || worker !== w) return;
+				pending.delete(id);
+				p.reject(new EngineError('cancelled', 'Export cancelled. Nothing was saved.'));
+				reset('The PDF engine was restarted after a cancelled export. Try again.');
+			}, CANCEL_GRACE_MS);
+		};
+		signal?.addEventListener('abort', onAbort, { once: true });
+		return call<T>('exportPlan', args).finally(() => {
+			progress.delete(id);
+			signal?.removeEventListener('abort', onAbort);
+			if (timer) clearTimeout(timer);
+		});
+	};
+
 	return {
 		openPdf: (bytes, name, password) => call('openPdf', [bytes, name, password]),
 		openImage: (bytes, mime, name) => call('openImage', [bytes, mime, name]),
 		blankPage: (size) => call('blankPage', [size]),
-		exportPlan: (plan, sources, assets) => call('exportPlan', [plan, sources, assets]),
+		exportPlan: (plan, sources, assets, control) => exportCall([plan, sources, assets], control),
 		unsupportedChars: (text) => call('unsupportedChars', [text]),
 		formFields: (source) => call('formFields', [source]),
 		pageBlanks: (source, pageIndex) => call('pageBlanks', [source, pageIndex]),
+		scannedPages: (source) => call('scannedPages', [source]),
 		pageText: async (source, pageIndex) => {
 			if (textSent.has(source.id)) {
 				try {

@@ -2,7 +2,8 @@
 
 import type { Engine } from '../core/types';
 import { toErrorShape } from './errors';
-import { TAG, isRequest, prepareResultTransfer, type EngineResponse, type EngineRestart } from './protocol';
+import type { ExportControl } from '../core/types';
+import { TAG, isCancel, isRequest, prepareResultTransfer, type EngineProgress, type EngineResponse, type EngineRestart } from './protocol';
 
 export interface PortLike {
 	postMessage(message: unknown, transfer: Transferable[]): void;
@@ -21,14 +22,33 @@ export interface ServeOptions {
 
 export function serveEngine(port: PortLike, engine: Engine, options: ServeOptions = {}): void {
 	let retiring = false;
+	/** Running exportPlan requests, so a cancel message can stop them. */
+	const running = new Map<number, AbortController>();
 	port.addEventListener('message', async (event: MessageEvent) => {
 		const req = event.data;
+		if (isCancel(req)) {
+			running.get(req.cancel)?.abort();
+			return;
+		}
 		if (!isRequest(req) || retiring) return;
 		let response: EngineResponse;
 		let transfer: Transferable[] = [];
 		try {
 			const fn = engine[req.method] as (...args: unknown[]) => Promise<unknown>;
-			const result = await fn.apply(engine, req.args);
+			let args = req.args;
+			if (req.method === 'exportPlan') {
+				// The 4th argument (ExportControl) cannot cross the boundary: it is rebuilt here.
+				const abort = new AbortController();
+				running.set(req.id, abort);
+				const control: ExportControl = {
+					signal: abort.signal,
+					onProgress: (progress) => {
+						if (!retiring) port.postMessage({ tag: TAG, id: req.id, progress } satisfies EngineProgress, []);
+					}
+				};
+				args = [...req.args.slice(0, 3), control];
+			}
+			const result = await fn.apply(engine, args).finally(() => running.delete(req.id));
 			const prepared = prepareResultTransfer(result);
 			transfer = prepared.transfer;
 			response = { tag: TAG, id: req.id, ok: true, value: prepared.value };

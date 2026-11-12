@@ -3,7 +3,7 @@
  * Kept free of engine imports so the client stays tiny.
  */
 
-import type { Engine, EngineErrorShape } from '../core/types';
+import type { Engine, EngineErrorShape, ExportProgress } from '../core/types';
 
 export const TAG = 'pdf-engine/1';
 
@@ -30,6 +30,29 @@ export interface EngineRestart {
 	restart: true;
 }
 
+/** Worker → client: progress of a running exportPlan request (ExportControl.onProgress). */
+export interface EngineProgress {
+	tag: typeof TAG;
+	id: number;
+	progress: ExportProgress;
+}
+
+/** Client → worker: stop the exportPlan request with this id (ExportControl.signal). */
+export interface EngineCancel {
+	tag: typeof TAG;
+	cancel: number;
+}
+
+export function isProgress(data: unknown): data is EngineProgress {
+	const d = data as EngineProgress | null;
+	return !!d && d.tag === TAG && typeof d.id === 'number' && typeof d.progress === 'object' && d.progress !== null;
+}
+
+export function isCancel(data: unknown): data is EngineCancel {
+	const d = data as EngineCancel | null;
+	return !!d && d.tag === TAG && typeof d.cancel === 'number';
+}
+
 export function isRestart(data: unknown): data is EngineRestart {
 	const d = data as EngineRestart | null;
 	return !!d && d.tag === TAG && d.restart === true;
@@ -43,7 +66,8 @@ export const METHODS: readonly EngineMethod[] = [
 	'unsupportedChars',
 	'formFields',
 	'pageBlanks',
-	'pageText'
+	'pageText',
+	'scannedPages'
 ];
 
 /**

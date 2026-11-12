@@ -5,8 +5,8 @@
  *
  *   openPdf     qpdf --decrypt rewrite → PDF.js geometry
  *   openImage   pdf-lib one-page PDF → qpdf --check
- *   exportPlan  assemble (qpdf --pages, assemble.ts) → [forms] → [redact]
- *               → [stamps + numbering] → [shrink →] qpdf finalize → verify
+ *   exportPlan  [OCR read] → assemble (qpdf --pages, assemble.ts) → [OCR layer]
+ *               → [forms] → [redact] → [stamps + numbering] → [shrink →] qpdf finalize → verify
  *
  * Stages in brackets run only when the plan asks for them. Each lives in its own
  * module (forms.ts, redact.ts, stamps.ts + numbering.ts, shrink.ts) and gets the
@@ -18,6 +18,7 @@
 import type {
 	Asset,
 	Engine,
+	ExportControl,
 	ExportPlan,
 	ExportResult,
 	FormValues,
@@ -56,6 +57,9 @@ import { libdeflate, libdeflateZlib } from './libdeflate';
 import { dumpStreams, isSigned, nativeDeflate, packStreams, type Deflater } from './pack';
 import { TextDocs, pageTextOf } from './page-text';
 import { NEED_BYTES } from './protocol';
+import { scannedPagesOf } from './ocr/eligible';
+import { addLayers, readScans, throwIfCancelled, verifyTextLayer, type OcrBackend, type OcrTrace, type ScanReading } from './ocr/stage';
+import type { WrittenWord } from './ocr/layer';
 
 export interface EngineAssets {
 	qpdf: QpdfLoader;
@@ -70,6 +74,8 @@ export interface EngineAssets {
 	 * loading it costs no download. Absent (Node): treated as on the device.
 	 */
 	mupdfCached?: () => Promise<boolean>;
+	/** OCR workers for "Make scanned pages searchable" (ocr/browser.ts in the app). Absent: ExportOptions.ocr is refused. */
+	ocr?: () => Promise<OcrBackend>;
 }
 
 export interface EngineOptions {
@@ -82,6 +88,8 @@ export interface EngineOptions {
 	debug?: (note: string) => void;
 	/** Passes of lossless compression, all on by default (off only for measurements and tests). */
 	lossless?: LosslessPasses;
+	/** Each OCR page's outcome and timings, for measurement tools; never shown to the user. */
+	ocrTrace?: (t: OcrTrace) => void;
 }
 
 export interface LosslessPasses {
@@ -116,6 +124,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 	const maxExport = options.maxExportBytes ?? 1.5 * 1024 ** 3;
 	const newId = options.newId ?? (() => crypto.randomUUID());
 	const debug = options.debug ?? (() => {});
+	const ocrTrace = options.ocrTrace;
 	const passes: Required<LosslessPasses> = { pack: true, level9: true, cleanup: true, libdeflate: true, jpeg: true, ...options.lossless };
 
 	let pdfjsP: Promise<PdfjsLib> | null = null;
@@ -370,7 +379,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 
 		unsupportedChars: (text) => guard(() => font.unsupportedChars(text)),
 
-		exportPlan: (plan, sources, assets) => guard(() => exportPlan(plan, sources, assets)),
+		exportPlan: (plan, sources, assets, control) => guard(() => exportPlan(plan, sources, assets, control)),
 
 		formFields: (source) => guard(async () => (source.hasForm === true ? listFormFields(deps, source) : [])),
 
@@ -388,10 +397,16 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 				if (!doc) throw new EngineError('internal', NEED_BYTES);
 				if (pageIndex >= doc.countPages()) throw new EngineError('internal', 'That page is not in the file.');
 				return pageTextOf(doc, pageIndex);
+			}),
+
+		scannedPages: (source) =>
+			guard(async () => {
+				if (!source || source.kind !== 'pdf' || !(source.bytes instanceof Uint8Array)) return [];
+				return scannedPagesOf(qpdf, deps.mupdf, source.bytes, source.pages);
 			})
 	};
 
-	async function exportPlan(plan: ExportPlan, sources: Source[], assetList: Asset[]): Promise<ExportResult> {
+	async function exportPlan(plan: ExportPlan, sources: Source[], assetList: Asset[], control?: ExportControl): Promise<ExportResult> {
 		const started = now();
 		const { pages } = plan;
 		if (pages.length === 0) throw new EngineError('unsupported', 'There are no pages to export.');
@@ -461,8 +476,27 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			}
 		}
 
+		// (OCR) Read the scanned pages first: the slow part, and the one that can be cancelled.
+		let reading: ScanReading | null = null;
+		if (options.ocr === true) {
+			if (!assets.ocr) throw new EngineError('unsupported', 'Making pages searchable is not available here.');
+			reading = await readScans(deps, pages, byId, { backend: assets.ocr, control, trace: ocrTrace, debug });
+		}
+		throwIfCancelled(control);
+
 		// (a) Assemble.
 		let bytes = await assemble(qpdf, { pages, used, fileOf, run: (r, output) => runOrFail(r, output, warnings) });
+
+		// (a2) OCR text layers, checked page by page (ocr/stage.ts).
+		let layered = new Map<number, WrittenWord[]>();
+		let ocrReport: ExportResult['ocr'];
+		if (reading) {
+			const r = await addLayers(deps, bytes, pages, reading, debug);
+			bytes = r.bytes;
+			layered = r.written;
+			ocrReport = r.report;
+		}
+		throwIfCancelled(control);
 
 		// (b) Forms: answers, appearances, flatten.
 		const formsCtx: FormsContext = {
@@ -509,6 +543,8 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			);
 		}
 
+		throwIfCancelled(control);
+
 		// (e) [Shrink →] finalize.
 		let final: Uint8Array;
 		let shrink: ShrinkReport | undefined;
@@ -527,12 +563,15 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			final = await finalizeBytes(bytes, options, warnings, alt);
 		}
 
+		throwIfCancelled(control);
+
 		// (f) Verify.
 		const verifyAll = async (file: Uint8Array, w: string[]) => {
 			const checks = await verify(file, expected, password, options.stripMetadata, used, w);
 			if (formsRan) checks.push(...(await verifyForms(deps, file, formsCtx, password)));
 			if (redactJobs.length) checks.push(...(await verifyRedactions(deps, file, redactJobs, allowedText, password, (shrink?.imagesChanged ?? 0) > 0)));
 			if (numbering) checks.push(...(await verifyNumbering(deps, file, numbering.labels, password, numbering.numbering)));
+			if (layered.size) checks.push(await verifyTextLayer(await pdfjs(), file, layered, password));
 			checks.push(...stageChecks);
 			return checks;
 		};
@@ -560,6 +599,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			elapsedMs: Math.round(now() - started)
 		};
 		if (shrink) result.shrink = shrink;
+		if (ocrReport) result.ocr = ocrReport;
 		return result;
 	}
 
