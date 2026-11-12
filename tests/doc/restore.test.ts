@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PageRef } from '../../src/lib/core/types';
+import type { DocSnapshot } from '../../src/lib/doc/store';
 import { checkInvariants, makeAsset, makeSource, makeStore } from './helpers';
 
 const page = (id: string, sourceId: string, pageIndex: number, extra: Partial<PageRef> = {}): PageRef => ({
@@ -47,7 +48,7 @@ describe('restore', () => {
 		store.addSource(makeSource('keep', 1));
 		const before = store.state;
 		const a = makeSource('a', 2);
-		const bad = [
+		const bad: DocSnapshot[] = [
 			{ sources: [a], pages: [page('p', 'a', 5)], assets: [], formValues: {} },
 			{ sources: [a], pages: [page('p', 'zz', 0)], assets: [], formValues: {} },
 			{ sources: [a], pages: [page('p', 'a', 0), page('p', 'a', 1)], assets: [], formValues: {} },

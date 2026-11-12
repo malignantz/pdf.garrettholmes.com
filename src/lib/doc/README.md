@@ -57,6 +57,7 @@ step and does not notify. Unknown ids are ignored.
 | `clearFormValues(sourceId)` | drops every answer of that source. Step "Clear form answers"; no-op (false) when it has none. |
 | `clear()` | removes pages, sources, assets and form answers; undoable. |
 | `reset()` | new workspace: wipes everything **and history**, releases all sources. Not undoable. |
+| `restore(snapshot, {clean?})` | replace everything with a saved document (`{sources, pages, assets, formValues}`, see `src/lib/session/`): validated like the commands (unique ids, sources with bytes, page refs, stamps, assets, answers), then history is cleared. Throws and changes nothing on any problem. `clean`: not dirty afterwards. Not undoable. |
 
 ### Index semantics (`movePages`, `insertPages`, `addSource`)
 

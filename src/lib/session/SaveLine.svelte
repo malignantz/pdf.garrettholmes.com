@@ -19,22 +19,22 @@
 
 <style>
 	.line {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 2px 6px;
 		padding: var(--s-3) calc(var(--s-5) + var(--safe-right)) 0 calc(var(--s-5) + var(--safe-left));
 		font-size: var(--text-caption);
 		color: var(--ink-soft);
 	}
 
 	.line :global(.icon) {
+		display: inline-block;
+		margin-right: 4px;
+		vertical-align: -3px;
 		color: var(--ok);
 	}
 
 	.more {
 		padding: 2px 4px;
-		margin: -2px 0;
+		margin: -2px 0 -2px 2px;
+		white-space: nowrap;
 		border-radius: var(--radius-control);
 		color: var(--ink);
 		text-decoration: underline;

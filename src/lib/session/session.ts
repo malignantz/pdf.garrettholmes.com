@@ -90,7 +90,7 @@ export interface SessionDeps {
 	maxFileBytes?: number;
 	writerId?: string;
 	/** Called with how long each save and restore took (ms). */
-	onMeasure?: (what: 'save' | 'restore', ms: number) => void;
+	onMeasure?: (what: 'save' | 'restore' | 'check' | 'file', ms: number) => void;
 }
 
 /** Plain-language lines the UI shows. */
@@ -281,6 +281,7 @@ export function createSession(deps: SessionDeps) {
 					b.failure = 'too-large';
 					return false;
 				}
+				const t0 = performance.now();
 				b.hash ??= await hash(bytes);
 				if (await s.hasBlob(b.hash)) return true;
 				if (bytes.length > 4 * 1024 * 1024 && deps.estimate) {
@@ -291,6 +292,7 @@ export function createSession(deps: SessionDeps) {
 					}
 				}
 				await s.putBlob(b.hash, bytes);
+				deps.onMeasure?.('file', performance.now() - t0);
 				if (epoch !== myEpoch) {
 					// Wiped while writing (Forget, switch off): do not leave it behind.
 					await s.deleteBlobs([b.hash]).catch(() => undefined);
@@ -495,6 +497,7 @@ export function createSession(deps: SessionDeps) {
 	// ------------------------------------------------------------ start
 
 	async function becomeOwner(): Promise<void> {
+		const t0 = performance.now();
 		try {
 			if (!globalThis.crypto?.subtle && !deps.hash) throw new Error('no crypto');
 			storage = await deps.openStorage();
@@ -526,6 +529,7 @@ export function createSession(deps: SessionDeps) {
 			}
 		}
 		setState('saved');
+		deps.onMeasure?.('check', performance.now() - t0);
 		// Orphans from earlier visits, after the first paint.
 		setTimeout(() => void sweep(), 0);
 		if (store.state.pages.length) schedule();
