@@ -92,6 +92,7 @@ describe('lossless compress', () => {
 			expect(b.images[0].parms).toMatch(/Predictor/);
 			expect(b.images[0].pixels).toEqual(a.images[0].pixels);
 			expect(await renders(packed)).toEqual(await renders(plain));
+			expect(await pageTexts(packed)).toEqual(['predictor p1']);
 		},
 		T
 	);

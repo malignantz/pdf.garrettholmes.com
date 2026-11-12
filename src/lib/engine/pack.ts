@@ -52,7 +52,12 @@ export interface PackOptions {
 	polish?: Deflater;
 	/** Performance.now() value after which no further stream is touched. */
 	deadline?: number;
-	/** Milliseconds polishing may take, counted from the end of the fast pass. Default: no limit. */
+	/**
+	 * Decoded bytes polishing may compress in all (a work budget, so the result does not
+	 * depend on how busy the device is). Default: no limit.
+	 */
+	polishBytes?: number;
+	/** Hard wall-clock cap on polishing, from the end of the fast pass (a safety net for slow devices). */
 	polishMs?: number;
 	/** Streams whose decoded size is above this are left as they are. Default 64 MB. */
 	maxStreamBytes?: number;
@@ -435,6 +440,7 @@ export async function packStreams(
 		// Throughput seen so far (bytes per ms), starting from a cautious guess, so a
 		// stream that would run past the deadline is not started.
 		let rate = 2_000;
+		let polishLeft = opts.polishBytes ?? Infinity;
 		let spentMs = 0;
 		let spentBytes = 0;
 		for (const key of keys) {
@@ -455,6 +461,8 @@ export async function packStreams(
 			}
 			if (!input || !dict) continue;
 			if (polishBy !== undefined && now() + input.length / rate > polishBy) continue;
+			if (input.length > polishLeft) continue;
+			polishLeft -= input.length;
 			let data: Uint8Array;
 			try {
 				const t = now();

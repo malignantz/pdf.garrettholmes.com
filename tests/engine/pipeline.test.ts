@@ -149,9 +149,10 @@ describe('export pipeline rules', () => {
 	}, T);
 
 	it('an unreachable target still returns the file, with reached false', async () => {
-		// alpha.png is a 64 KB PNG: its page cannot get under 20 KB without shrinking the image.
-		const img = await engine().openImage(corpus('alpha.png'), 'image/png', 'alpha.png');
-		const res = await run([ref(img, 0)], [img], { targetBytes: 20_000 });
+		// shrink-skips.pdf holds only images the shrink stage leaves alone (1-bit, CMYK, indexed,
+		// masks, 16-bit), and more than 20 KB of them even losslessly compressed.
+		const img = await openCorpus('shrink-skips.pdf');
+		const res = await run(img.pages.map((_, i) => ref(img, i)), [img], { targetBytes: 20_000 });
 		expect(res.bytes.length).toBeGreaterThan(20_000);
 		expect(res.shrink).toEqual({ targetBytes: 20_000, reached: false, imagesChanged: 0, dpi: 0 });
 		expect(res.checks.every((c) => c.ok)).toBe(true);

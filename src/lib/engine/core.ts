@@ -96,6 +96,8 @@ export interface LosslessPasses {
 }
 
 const SIZE_TOLERANCE = 0.5;
+/** Files above this skip the lossless passes (memory); they still get object streams. */
+const MAX_PASS_BYTES = 256 * 1024 * 1024;
 /** Smallest ExportOptions.targetBytes accepted. */
 const MIN_TARGET_BYTES = 20_000;
 const STAMP_KINDS: readonly Stamp['kind'][] = ['image', 'text', 'mark', 'highlight', 'redact'];
@@ -506,13 +508,16 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		}
 
 		// (e) [Shrink →] finalize.
-		const finalize = (b: Uint8Array) => finalizeBytes(b, options, warnings);
 		let final: Uint8Array;
 		let shrink: ShrinkReport | undefined;
 		const stageChecks: VerifyCheck[] = [];
 		const alt: Alternative = {};
 		if (target !== undefined) {
-			const r = await shrinkToTarget(deps, bytes, target, finalize);
+			// Shrinking finalizes every step it tries: the MuPDF cleanup runs once, here,
+			// and each step gets the stream pass only.
+			const cleaned = await cleanupOnly(bytes);
+			const finalize = (b: Uint8Array) => finalizeBytes(b, options, warnings, undefined, false);
+			const r = await shrinkToTarget(deps, cleaned, target, finalize);
 			final = r.bytes;
 			shrink = r.shrink;
 			stageChecks.push(...r.checks);
@@ -570,7 +575,8 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		bytes: Uint8Array,
 		options: { compress: boolean; stripMetadata: boolean; password?: string },
 		warnings: string[],
-		alt?: Alternative
+		alt?: Alternative,
+		withCleanup = true
 	): Promise<Uint8Array> {
 		if (!options.compress) return finalizeRun(bytes, options, warnings);
 		const plainWarnings: string[] = [];
@@ -578,7 +584,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		const packWarnings: string[] = [];
 		let packed: Uint8Array | unknown;
 		try {
-			packed = await finalizeRun(await losslessPre(bytes), options, packWarnings);
+			packed = await finalizeRun(await losslessPre(bytes, { cleanup: withCleanup, pack: true }), options, packWarnings);
 		} catch (e) {
 			if (isWasmFault(e)) throw e;
 			packed = e;
@@ -599,13 +605,33 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		return plain;
 	}
 
+	/** The MuPDF cleanup alone (for the size-target path); `bytes` when it does not run or is rejected. */
+	async function cleanupOnly(bytes: Uint8Array): Promise<Uint8Array> {
+		if (!passes.cleanup) return bytes;
+		try {
+			return await losslessPre(bytes, { cleanup: true, pack: false });
+		} catch (e) {
+			if (isWasmFault(e)) throw e;
+			debug(`cleanup: failed (${e instanceof Error ? e.message : String(e)}); skipped`);
+			return bytes;
+		}
+	}
+
 	/**
 	 * The lossless passes before the compressed finalize: [MuPDF cleanup when worth it]
 	 * → stream pass. Each one that errors, runs out of time or would change the
 	 * file's structure is skipped (debug note only); `bytes` is the fallback.
 	 */
-	async function losslessPre(bytes: Uint8Array): Promise<Uint8Array> {
-		if (!passes.pack && !passes.cleanup) return bytes;
+	async function losslessPre(bytes: Uint8Array, which = { cleanup: true, pack: true }): Promise<Uint8Array> {
+		const doCleanup = passes.cleanup !== false && which.cleanup;
+		const doPack = passes.pack && which.pack;
+		if (!doPack && !doCleanup) return bytes;
+		if (bytes.length > MAX_PASS_BYTES) {
+			// The passes hold the file about three times over (qpdf's dump, the streams, the
+			// rewrite); this large, qpdf's object streams alone are safer for memory.
+			debug(`lossless: ${bytes.length} bytes is over ${MAX_PASS_BYTES}; passes skipped`);
+			return bytes;
+		}
 		const t0 = now();
 		const mb = bytes.length / 1e6;
 		let dump = await dumpStreams(qpdf, bytes);
@@ -614,7 +640,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			return bytes;
 		}
 		let src = bytes;
-		if (passes.cleanup) {
+		if (doCleanup) {
 			const est = await estimateCleanup(dump);
 			const cost = mupdfLoaded() ? 'loaded' : (await assets.mupdfCached?.().catch(() => false)) === false ? 'download' : 'cached';
 			const run = passes.cleanup === 'always' || cleanupWorthIt(est, bytes.length, cost);
@@ -632,7 +658,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 				} else if (c) debug(`cleanup: not smaller (${bytes.length} → ${c.length}); skipped`);
 			}
 		}
-		if (!passes.pack) return src;
+		if (!doPack) return src;
 		let deflate: Deflater = nativeDeflate;
 		let polish: Deflater | undefined;
 		if (passes.libdeflate) {
@@ -650,11 +676,13 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			{
 				deflate,
 				polish,
-				// Time budget (wall clock on this device): the fast pass gets 15 s plus 0.1 s per MB
-				// (streams left after that stay as they are); polishing at level 12 then gets
-				// 1 s plus 0.2 s per MB, at most 4 s, biggest streams first.
+				// Budgets. The fast pass (libdeflate 6) stops after 15 s plus 0.1 s per MB on this
+				// device's clock; streams left then stay as they are. Polishing (libdeflate 12, about
+				// 4 MB/s on a desktop, perhaps 1 MB/s on a phone) takes the biggest streams first, up
+				// to 2 MB plus twice the file's size and at most 12 MB of data, and never past 8 s.
 				deadline: t0 + 15_000 + 100 * mb,
-				polishMs: Math.min(4_000, 1_000 + 200 * mb),
+				polishBytes: Math.min(12e6, 2e6 + 2 * bytes.length),
+				polishMs: 8_000,
 				note: debug
 			},
 			dump

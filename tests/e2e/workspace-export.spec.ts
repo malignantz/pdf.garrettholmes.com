@@ -143,3 +143,25 @@ test('everything stays reachable with all sections open', async ({ page }) => {
 	await expect(dialog.getByLabel('Confirm password')).toBeInViewport();
 	await expect(button).toBeInViewport();
 });
+
+test('compress (the default) repacks losslessly in the browser worker: smaller, predictor kept, nothing fetched from elsewhere', async ({ page }) => {
+	test.setTimeout(90_000);
+	const notes: string[] = [];
+	page.on('console', (msg) => {
+		if (msg.text().startsWith('[engine]')) notes.push(msg.text());
+	});
+	const dialog = await open(page, 'compress-predictor.pdf', 1);
+	await expect(dialog.getByRole('switch', { name: 'Compress' })).toBeChecked();
+	await exportButton(dialog).click();
+	const done = page.getByRole('dialog', { name: 'Your file is ready' });
+	await expect(done.getByText('Checked: 1 page, opens cleanly.')).toBeVisible({ timeout: 60_000 });
+	const [download] = await Promise.all([page.waitForEvent('download'), done.getByRole('button', { name: 'Download' }).click()]);
+	const bytes = readFileSync((await download.path())!);
+	// Before the fix qpdf dropped the image's PNG predictor: 71 KB in, 190 KB out.
+	expect(bytes.length).toBeLessThan(readFileSync(corpus('compress-predictor.pdf')).length);
+	expect(bytes.toString('latin1')).toMatch(/\/Predictor/);
+	expect(await pageTexts(bytes)).toEqual(['predictor p1']);
+	// libdeflate (vendored wasm) loaded and ran inside the module worker.
+	await expect.poll(() => notes.join('\n')).toMatch(/pack: .*polished/);
+	expect(notes.join('\n')).not.toMatch(/did not load/);
+});

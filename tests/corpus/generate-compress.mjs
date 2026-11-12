@@ -87,6 +87,15 @@ function imageStream(doc, w, h, seed, predictor) {
 
 const det = { useObjectStreams: false, updateFieldAppearances: false };
 
+/** Appends a content stream to a page (pdf-lib keeps /Contents as an array). */
+function appendContent(doc, page, ops) {
+	page.pushOperators();
+	const ref = doc.context.register(doc.context.stream(ops));
+	const contents = page.node.Contents();
+	if (contents && typeof contents.push === 'function') contents.push(ref);
+	else page.node.set(PDFName.of('Contents'), doc.context.obj(contents ? [page.node.get(PDFName.of('Contents')), ref] : [ref]));
+}
+
 async function predictorFile() {
 	const doc = await PDFDocument.create({ updateMetadata: false });
 	const page = doc.addPage([400, 330]);
@@ -94,10 +103,7 @@ async function predictorFile() {
 	page.node.setXObject(PDFName.of('Im1'), img);
 	const font = await doc.embedFont('Helvetica');
 	page.drawText('predictor p1', { x: 20, y: 305, size: 12, font });
-	page.pushOperators();
-	const cs = doc.context.stream('q 360 0 0 270 20 20 cm /Im1 Do Q\n');
-	const contents = page.node.get(PDFName.of('Contents'));
-	page.node.set(PDFName.of('Contents'), doc.context.obj([contents, doc.context.register(cs)]));
+	appendContent(doc, page, 'q 360 0 0 270 20 20 cm /Im1 Do Q\n');
 	return doc.save(det);
 }
 
@@ -127,9 +133,7 @@ async function dupesFile() {
 	page.drawText('dupes: the same font and image on both pages', { x: 20, y: 300, size: 12, font });
 	const img = imageStream(one, 200, 150, 3, false);
 	page.node.setXObject(PDFName.of('Im1'), img);
-	page.pushOperators();
-	const contents = page.node.get(PDFName.of('Contents'));
-	page.node.set(PDFName.of('Contents'), one.context.obj([contents, one.context.register(one.context.stream('q 200 0 0 150 20 40 cm /Im1 Do Q\n'))]));
+	appendContent(one, page, 'q 200 0 0 150 20 40 cm /Im1 Do Q\n');
 	const first = await PDFDocument.load(await one.save(det));
 	const out = await PDFDocument.create({ updateMetadata: false });
 	for (let i = 0; i < 2; i++) {

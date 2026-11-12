@@ -38,7 +38,17 @@ const engine = createCoreEngine({
 		const lib = await import('pdfjs-dist/legacy/build/pdf.mjs');
 		lib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
 		return lib;
+	},
+	// MuPDF's wasm is on the device once the service worker has kept it in its 'lazy'
+	// cache (src/service-worker/index.ts, LAZY); then compressing may use it more readily.
+	mupdfCached: async () => {
+		if (typeof caches === 'undefined' || !(await caches.has('lazy'))) return false;
+		const keys = await (await caches.open('lazy')).keys();
+		return keys.some((r) => /\/mupdf-wasm[-.][^/]*\.wasm$/.test(new URL(r.url).pathname));
 	}
+}, {
+	// Stages that skip themselves ("avoid, don't fail") leave a note for anyone debugging.
+	debug: (note) => console.debug('[engine]', note)
 });
 
 serveEngine(self as unknown as DedicatedWorkerGlobalScope, engine, { restartNeeded: mupdfRestartNeeded });
