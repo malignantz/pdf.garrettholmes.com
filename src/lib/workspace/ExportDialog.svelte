@@ -109,6 +109,7 @@
 	$effect(() => {
 		if (open && !wasOpen) {
 			cancelled = false;
+			scanned = 0;
 			filename = defaultFilename(plan.names, mode);
 			phase = { kind: 'form' };
 			password = '';
@@ -195,6 +196,12 @@
 				signal: control?.signal,
 				onProgress: (p) => (progress = p)
 			});
+			if (control?.signal.aborted) {
+				// Finished as Cancel was pressed: the user asked for nothing, so nothing is offered.
+				phase = { kind: 'form' };
+				cancelled = true;
+				return;
+			}
 			const blob = new Blob([result.bytes as BlobPart], { type: 'application/pdf' });
 			phase = { kind: 'done', result, filename: name, inputBytes, url: URL.createObjectURL(blob) };
 		} catch (err) {
@@ -466,7 +473,7 @@
 		<div class="working" role="status">
 			<Progress
 				label="Building and checking your file"
-				value={progress?.stage === 'ocr' && progress.total > 0 ? progress.done / progress.total : undefined}
+				value={progress?.stage === 'ocr' && progress.done < progress.total ? progress.done / progress.total : undefined}
 			/>
 			<p>{ocrProgressText(progress) ?? phase.fitting ?? `Building and checking ${plural(plan.count, 'page')}…`}</p>
 			<p class="caption">Every export is re-opened and checked before you can save it.</p>

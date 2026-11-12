@@ -18,7 +18,8 @@ describe('Make scanned pages searchable: dialog words', () => {
 		expect(ocrProgressText(null)).toBeNull();
 		expect(ocrProgressText({ stage: 'ocr-load' })).toBe('Getting the text reader ready…');
 		expect(ocrProgressText({ stage: 'ocr', done: 2, total: 12 })).toBe('Reading page 3 of 12');
-		expect(ocrProgressText({ stage: 'ocr', done: 12, total: 12 })).toBe('Reading page 12 of 12');
+		expect(ocrProgressText({ stage: 'ocr', done: 11, total: 12 })).toBe('Reading page 12 of 12');
+		expect(ocrProgressText({ stage: 'ocr', done: 12, total: 12 })).toBeNull();
 	});
 
 	it('says what happened after export, without alarm for declined pages', () => {
