@@ -221,6 +221,22 @@ describe('OCR stage', () => {
 		expect(again.ocr?.searchable).toEqual([1]);
 	});
 
+	it('combines with fitting under a size (the layer is text; shrinking changes pictures only) and with a password', { timeout: 120_000 }, async () => {
+		const f = fake();
+		const { eng, src } = await setup(f);
+		const pages = [ref(src, 0), ref(src, 7), ref(src, 6)];
+		const fit = await eng.exportPlan({ pages, options: { ...opts(), targetBytes: 60_000 } }, [src], [], {});
+		expect(fit.ocr?.searchable).toEqual([1, 2]);
+		expect(fit.shrink?.imagesChanged).toBeGreaterThan(0);
+		expect(fit.checks.every((c) => c.ok)).toBe(true);
+		expect(fit.checks.find((c) => c.name === 'text-layer')?.ok).toBe(true);
+		expect((await words(fit.bytes, 0)).length).toBe(meta.words.length);
+		const locked = await eng.exportPlan({ pages, options: { ...opts(), password: 'open sesame 1' } }, [src], [], {});
+		expect(locked.ocr?.searchable).toEqual([1, 2]);
+		expect(locked.checks.find((c) => c.name === 'text-layer')?.ok).toBe(true);
+		expect(locked.checks.find((c) => c.name === 'encryption')?.ok).toBe(true);
+	});
+
 	it('refuses when no OCR engine is available', async () => {
 		const eng = createCoreEngine(nodeAssets());
 		const src = await eng.openPdf(corpus('ocr-scans.pdf'), 'ocr-scans.pdf');

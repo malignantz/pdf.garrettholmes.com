@@ -280,6 +280,7 @@ export async function readScans(deps: EngineDeps, pages: PageRef[], byId: Map<st
 			}
 			outcomes.set(job.key, outcome);
 			opts.trace?.({ sourceId: job.source.id, pageIndex: job.pageIndex, outcome, raw, orientation, ms, attempts });
+			opts.debug?.(`ocr: page ${job.pageIndex + 1} ${outcome.ok ? 'accepted' : `declined (${outcome.why})`}; render ${Math.round(ms.render)} ms, orientation ${Math.round(ms.orient)} ms, reading ${Math.round(ms.read)} ms`);
 			done++;
 			check();
 			control?.onProgress?.({ stage: 'ocr', done, total });
