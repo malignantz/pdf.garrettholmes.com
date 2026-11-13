@@ -694,7 +694,7 @@
 			<Button variant="secondary" icon="add" onclick={pickFiles}>Add files</Button>
 		{/if}
 		<Menu label="More actions" items={menuItems} />
-		<Button variant="primary" icon="download" onclick={exportAll}>Export</Button>
+		<Button variant="primary" icon="download" class="export-btn" onclick={exportAll}><span class="export-label">Export</span></Button>
 	</TopBarActions>
 {/if}
 
@@ -933,6 +933,25 @@
 	@media (max-width: 599px) {
 		.history {
 			padding-left: 0;
+		}
+	}
+
+	/* At 360 px the top bar cannot hold the wordmark, undo and redo, the menu and a labelled Export: the label
+	   gives way (it stays the button's name) rather than the actions running over the wordmark. */
+	@media (max-width: 399px) {
+		:global(.btn.export-btn) {
+			padding: 0 !important;
+			gap: 0;
+			min-width: var(--control-h);
+		}
+
+		.export-label {
+			position: absolute;
+			width: 1px;
+			height: 1px;
+			overflow: hidden;
+			clip-path: inset(50%);
+			white-space: nowrap;
 		}
 	}
 </style>

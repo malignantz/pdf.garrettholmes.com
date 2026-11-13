@@ -454,6 +454,11 @@ test.describe('phone', () => {
 			expect(b.right).toBeLessThanOrEqual(page.viewportSize()!.width);
 		}
 
+		// The top bar's actions do not run over the wordmark.
+		const brand = (await page.getByRole('link', { name: /home$/ }).boundingBox())!;
+		const undoBtn = (await page.getByRole('button', { name: /^Undo/ }).first().boundingBox())!;
+		expect(undoBtn.x).toBeGreaterThanOrEqual(brand.x + brand.width);
+
 		await bar.getByRole('button', { name: 'Rotate all' }).tap();
 		await expect.poll(() => order(page)).toEqual(['s1@90', 's2@90', 's3@90', 's4@90', 's5@90', 's6@90']);
 		await page.getByRole('button', { name: /^Undo: Rotate 6 pages/ }).tap();

@@ -1110,6 +1110,9 @@ function validateStamps(pageNo: number, stamps: Stamp[], assetIds: Set<string>) 
 	for (const s of stamps) {
 		const bad = () => new EngineError('unsupported', `A stamp on page ${pageNo + 1} is outside the page. Move it onto the page and try again.`);
 		if (!STAMP_KINDS.includes(s?.kind)) throw new EngineError('internal', `A stamp on page ${pageNo + 1} is of an unknown kind.`);
+		const turn = (s as { turn?: unknown }).turn;
+		if (turn !== undefined && turn !== 90 && turn !== 180 && turn !== 270) throw new EngineError('internal', `A stamp on page ${pageNo + 1} has a bad turn.`);
+		if (turn !== undefined && (s.kind === 'redact' || s.kind === 'highlight')) throw new EngineError('internal', `A stamp on page ${pageNo + 1} has a bad turn.`);
 		if (s.kind === 'text') {
 			if (typeof s.text !== 'string' || !fin(s.x, s.y, s.size)) throw bad();
 			if (!inUnit(s.x) || !inUnit(s.y) || !(s.size > 0 && s.size <= 1)) throw bad();

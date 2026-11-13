@@ -4,7 +4,7 @@
 	import type { Snippet } from 'svelte';
 	import type { HTMLAttributes } from 'svelte/elements';
 	import type { Asset, Stamp } from '../core/types';
-	import { HIGHLIGHT_CSS, acquireAssetUrl, highlightRadiusCss, markSvg, penSvg, rectsSvg, releaseAssetUrl, stampStyle } from './stamp-view';
+	import { HIGHLIGHT_CSS, acquireAssetUrl, highlightRadiusCss, markSvg, penSvg, rectsSvg, releaseAssetUrl, stampStyle, turnerStyle } from './stamp-view';
 
 	interface Props extends Omit<HTMLAttributes<HTMLDivElement>, 'children'> {
 		stamp: Stamp;
@@ -31,14 +31,30 @@
 		return () => releaseAssetUrl(id);
 	});
 
-	const mark = $derived(stamp.kind === 'mark' ? markSvg(stamp.mark, stamp.box.w * aspect, stamp.box.h) : null);
+	// Turned picture or check: drawn upright in a box of swapped sides, turned into the stamp's box.
+	const turn = $derived(stamp.kind === 'image' || stamp.kind === 'mark' ? stamp.turn : undefined);
+	const turner = $derived(turn && (stamp.kind === 'image' || stamp.kind === 'mark') ? turnerStyle(stamp.box, turn) : null);
+	const mark = $derived(
+		stamp.kind === 'mark'
+			? turn === 90 || turn === 270
+				? markSvg(stamp.mark, stamp.box.h, stamp.box.w * aspect)
+				: markSvg(stamp.mark, stamp.box.w * aspect, stamp.box.h)
+			: null
+	);
 	const pen = $derived(stamp.kind === 'highlight' && stamp.pen ? penSvg(stamp.box, stamp.pen, aspect) : null);
 	const rects = $derived(stamp.kind === 'highlight' && stamp.rects ? rectsSvg(stamp.box, stamp.rects, aspect) : null);
 </script>
 
 <div bind:this={el} class="stamp {stamp.kind} {pen ? 'pen' : ''} {rects ? 'rects' : ''} {className}" style="{stampStyle(stamp)};{style}" {...rest}>
 	{#if stamp.kind === 'image'}
-		{#if url}<img src={url} alt="" draggable="false" />{/if}
+		{#if url && turner}<span class="turner" style={turner}><img src={url} alt="" draggable="false" /></span>
+		{:else if url}<img src={url} alt="" draggable="false" />{/if}
+	{:else if stamp.kind === 'mark' && mark && turner}
+		<span class="turner" style={turner}>
+			<svg viewBox={mark.viewBox} preserveAspectRatio="none" aria-hidden="true" focusable="false">
+				<path d={mark.d} fill="none" stroke="#000" stroke-width={mark.strokeWidth} stroke-linecap="round" stroke-linejoin="round" />
+			</svg>
+		</span>
 	{:else if stamp.kind === 'mark' && mark}
 		<svg viewBox={mark.viewBox} preserveAspectRatio="none" aria-hidden="true" focusable="false">
 			{#if mark.circle}
@@ -79,6 +95,13 @@
 	.stamp {
 		position: absolute;
 		box-sizing: border-box;
+	}
+
+	.turner {
+		position: absolute;
+		left: 0;
+		top: 0;
+		display: block;
 	}
 
 	img,

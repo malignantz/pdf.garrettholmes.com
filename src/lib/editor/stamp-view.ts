@@ -138,9 +138,23 @@ const pct = (v: number) => `${(v * 100).toFixed(4)}%`;
  */
 export function stampStyle(s: Stamp): string {
 	if (s.kind === 'text') {
-		return `left:${pct(s.x)};top:${pct(s.y)};font-size:calc(${s.size.toFixed(6)} * 100cqh);color:${cssColor(s.color)}`;
+		const turn = s.turn ? `;transform-origin:0 0;transform:rotate(${s.turn}deg)` : '';
+		return `left:${pct(s.x)};top:${pct(s.y)};font-size:calc(${s.size.toFixed(6)} * 100cqh);color:${cssColor(s.color)}${turn}`;
 	}
 	return `left:${pct(s.box.x)};top:${pct(s.box.y)};width:${pct(s.box.w)};height:${pct(s.box.h)}`;
+}
+
+/**
+ * Style of the element that holds a turned picture or check mark: upright in a box of
+ * swapped sides (for a quarter turn), turned clockwise into the stamp's box (`turn`,
+ * as the export does). `box` is the stamp's own box, the turned one.
+ */
+export function turnerStyle(box: StampBox, turn: 90 | 180 | 270): string {
+	const w = (box.w * 100).toFixed(4);
+	const h = (box.h * 100).toFixed(4);
+	if (turn === 180) return `width:100%;height:100%;transform-origin:0 0;transform:translate(${w}cqw,${h}cqh) rotate(180deg)`;
+	if (turn === 90) return `width:${h}cqh;height:${w}cqw;transform-origin:0 0;transform:translate(${w}cqw,0) rotate(90deg)`;
+	return `width:${h}cqh;height:${w}cqw;transform-origin:0 0;transform:translate(0,${h}cqh) rotate(270deg)`;
 }
 
 export interface MarkSvg {

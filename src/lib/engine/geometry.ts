@@ -129,6 +129,38 @@ export function multiply(m: Matrix, n: Matrix): Matrix {
 	];
 }
 
+/**
+ * Turn (clockwise, 0 | 90 | 180 | 270) of upright content that is `cw` wide and `ch` tall
+ * (y up, origin bottom-left) into the box it fills once turned: that box is `ch` by `cw`
+ * when the turn is 90 or 270. Compose with an upright frame at the box's bottom-left.
+ */
+export function contentTurnMatrix(turn: Rotation | undefined, cw: number, ch: number): Matrix {
+	switch (turn) {
+		case 90:
+			return [0, -1, 1, 0, 0, cw];
+		case 180:
+			return [-1, 0, 0, -1, cw, ch];
+		case 270:
+			return [0, 1, -1, 0, ch, 0];
+		default:
+			return [1, 0, 0, 1, 0, 0];
+	}
+}
+
+/** Turn about the local origin (clockwise on screen, y up), for text turned about its first corner. */
+export function pivotTurnMatrix(turn: Rotation | undefined): Matrix {
+	switch (turn) {
+		case 90:
+			return [0, -1, 1, 0, 0, 0];
+		case 180:
+			return [-1, 0, 0, -1, 0, 0];
+		case 270:
+			return [0, 1, -1, 0, 0, 0];
+		default:
+			return [1, 0, 0, 1, 0, 0];
+	}
+}
+
 /** Display-space rectangle of a stamp box, in user units. */
 export function stampDisplayRect(box: Box, rotation: Rotation, s: StampBox) {
 	const size = displayedUserSize(box, rotation);
@@ -139,10 +171,14 @@ export function stampDisplayRect(box: Box, rotation: Rotation, s: StampBox) {
  * Matrix that maps the unit square (0..1, y up in display terms) onto the stamp box,
  * upright on screen. This is the `cm` used before `Do` for image stamps.
  */
-export function stampBoxMatrix(box: Box, rotation: Rotation, s: StampBox): Matrix {
+export function stampBoxMatrix(box: Box, rotation: Rotation, s: StampBox, turn?: Rotation): Matrix {
 	const r = stampDisplayRect(box, rotation, s);
 	const frame = uprightFrame(box, rotation, r.left, r.top + r.height);
-	return multiply([r.width, 0, 0, r.height, 0, 0], frame);
+	if (turn === 90 || turn === 270) {
+		// The picture is upright in a box of swapped sides, turned into this one.
+		return multiply(multiply([r.height, 0, 0, r.width, 0, 0], contentTurnMatrix(turn, r.height, r.width)), frame);
+	}
+	return multiply(multiply([r.width, 0, 0, r.height, 0, 0], contentTurnMatrix(turn, r.width, r.height)), frame);
 }
 
 /** Axis-aligned PDF user-space rectangle covered by a stamp box. */

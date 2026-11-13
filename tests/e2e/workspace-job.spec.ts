@@ -215,7 +215,7 @@ test('whole job on a phone: open, arrange by touch, sign, export with a password
 	await checkOutput(await exportWithPassword(page, 'job pass 2'), 'job pass 2');
 });
 
-test('phone: the editor turns its page, undoes it, and keeps marks off a turned-under page', async ({ page }, info) => {
+test('phone: the editor turns its page with its marks, and undoes it', async ({ page }, info) => {
 	test.skip(info.project.name !== 'phone', 'phone flow');
 	await page.goto('/');
 	await page.locator('input[type=file]').first().setInputFiles([corpus('multi.pdf')]);
@@ -224,16 +224,22 @@ test('phone: the editor turns its page, undoes it, and keeps marks off a turned-
 	const editor = page.getByRole('dialog', { name: 'Edit page 1 of 6' });
 	await expect(editor).toBeVisible();
 	const sheet = page.getByTestId('editor-page');
-	const rotate = editor.getByRole('button', { name: /^Rotate page/ });
+	const rotate = editor.getByRole('button', { name: 'Rotate page', exact: true });
 	const undo = editor.getByRole('button', { name: 'Undo' });
 	const aspect = async () => {
 		const b = (await sheet.boundingBox())!;
 		return b.width / b.height;
 	};
+	/** Centre of the first mark, as a fraction of the page as shown. */
+	const markAt = async () => {
+		const pb = (await sheet.boundingBox())!;
+		const mb = (await page.locator('.stamp.ed').first().boundingBox())!;
+		return { x: (mb.x + mb.width / 2 - pb.x) / pb.width, y: (mb.y + mb.height / 2 - pb.y) / pb.height };
+	};
 	await expect(rotate).toBeVisible();
 	expect(await aspect()).toBeLessThan(1);
 
-	// Rotate, then undo from the editor: the step belongs to this editing session.
+	// Rotate with nothing on the page, then undo from the editor: the step belongs to this session.
 	await rotate.tap();
 	await expect.poll(aspect).toBeGreaterThan(1);
 	await expect(undo).toBeEnabled();
@@ -241,20 +247,25 @@ test('phone: the editor turns its page, undoes it, and keeps marks off a turned-
 	await expect.poll(aspect).toBeLessThan(1);
 	await expect(undo).toBeDisabled();
 
-	// Rotate again and place a tick: it lands where tapped on the turned page, and a page
-	// with a mark on it cannot be turned (the mark would leave the text it sits on).
+	// A cross at (0.25, 0.4) goes with the page: after Rotate it is at (1 - 0.4, 0.25).
+	await chooseTool(page, 'Cross');
+	await tapPage(page, 0.25, 0.4);
+	await expect(page.locator('.stamp.ed').first()).toBeVisible();
+	await page.keyboard.press('Escape');
+	const before = await markAt();
+	expect(before.x).toBeCloseTo(0.25, 1);
+	expect(before.y).toBeCloseTo(0.4, 1);
+	await expect(rotate).toBeEnabled();
 	await rotate.tap();
 	await expect.poll(aspect).toBeGreaterThan(1);
-	await chooseTool(page, 'Cross');
-	await tapPage(page, 0.25, 0.25);
-	const mark = page.locator('.stamp.ed').first();
-	await expect(mark).toBeVisible();
-	const pb = (await sheet.boundingBox())!;
-	const mb = (await mark.boundingBox())!;
-	expect(Math.abs(mb.x + mb.width / 2 - (pb.x + pb.width * 0.25))).toBeLessThan(pb.width * 0.03);
-	expect(Math.abs(mb.y + mb.height / 2 - (pb.y + pb.height * 0.25))).toBeLessThan(pb.height * 0.03);
-	await expect(rotate).toBeDisabled();
-	await page.keyboard.press('Escape');
+	await expect.poll(async () => Math.abs((await markAt()).x - 0.6) + Math.abs((await markAt()).y - 0.25)).toBeLessThan(0.04);
+
+	// Undo takes the turn back, mark included.
+	await undo.tap();
+	await expect.poll(aspect).toBeLessThan(1);
+	await expect.poll(async () => Math.abs((await markAt()).x - 0.25) + Math.abs((await markAt()).y - 0.4)).toBeLessThan(0.04);
+	await rotate.tap();
+	await expect.poll(aspect).toBeGreaterThan(1);
 
 	await editor.getByRole('button', { name: 'Done', exact: true }).tap();
 	await expect(options(page).nth(0)).toHaveAttribute('aria-label', 'Page 1, multi.pdf page 1, rotated 90°, 1 mark');
@@ -265,6 +276,40 @@ test('phone: the editor turns its page, undoes it, and keeps marks off a turned-
 	const [download] = await Promise.all([page.waitForEvent('download'), done.getByRole('button', { name: 'Download' }).tap()]);
 	const out = await shape(readFileSync((await download.path())!));
 	expect(out.map((p) => p.rotate)).toEqual([90, 0, 0, 0, 0, 0]);
+});
+
+test('turned text follows the page, can be moved but is not edited in place', async ({ page }, info) => {
+	test.skip(info.project.name !== 'desktop-chrome', 'desktop flow');
+	await page.goto('/');
+	await page.locator('input[type=file]').first().setInputFiles([corpus('multi.pdf')]);
+	await expect(options(page)).toHaveCount(6, { timeout: 30_000 });
+	await options(page).nth(0).dblclick();
+	const editor = page.getByRole('dialog', { name: 'Edit page 1 of 6' });
+	await expect(editor).toBeVisible();
+	await chooseTool(page, 'Text');
+	await tapPage(page, 0.2, 0.3);
+	await page.keyboard.type('Upright');
+	await page.keyboard.press('Escape');
+	const text = page.locator('.stamp.text.ed');
+	await expect(text).toHaveCount(1);
+	await editor.getByRole('button', { name: 'Rotate page', exact: true }).click();
+	await expect.poll(async () => (await text.evaluate((el) => getComputedStyle(el).transform))).toMatch(/^matrix\(0, 1, -1, 0/);
+	// It sits near (1 - 0.3, 0.2) of the turned page, running downwards, left of its corner.
+	const pb = (await page.getByTestId('editor-page').boundingBox())!;
+	const tb = (await text.boundingBox())!;
+	expect(tb.x + tb.width).toBeGreaterThan(pb.x + pb.width * 0.69);
+	expect(tb.x + tb.width).toBeLessThan(pb.x + pb.width * 0.72);
+	expect(tb.y).toBeGreaterThan(pb.y + pb.height * 0.19);
+	expect(tb.height).toBeGreaterThan(tb.width);
+	// Not edited in place: a note says so, and no text box opens.
+	await text.focus();
+	await page.keyboard.press('Enter');
+	await expect(page.getByTestId('editor-note')).toContainText('turned with the page');
+	await expect(page.getByRole('textbox', { name: 'Text on the page' })).toHaveCount(0);
+	// Moving still works (arrow keys), as a single undo step.
+	const x0 = tb.x;
+	await page.keyboard.press('ArrowRight');
+	await expect.poll(async () => (await text.boundingBox())!.x).toBeGreaterThan(x0);
 });
 
 test('editor undo is scoped to the editing session', async ({ page }, info) => {

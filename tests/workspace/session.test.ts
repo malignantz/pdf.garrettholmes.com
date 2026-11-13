@@ -71,6 +71,9 @@ const everyStamp = (): Stamp[] => [
 	{ id: 's-redact', kind: 'redact', box: { x: 0.2, y: 0.7, w: 0.2, h: 0.03 } },
 	// Snap on tap: text and a tick linked to the blank they were put in.
 	{ id: 's-snap-text', kind: 'text', text: 'Jane', x: 0.22, y: 0.11, size: 0.014, color: 'black', blank: { kind: 'text', box: { x: 0.21, y: 0.1, w: 0.26, h: 0.03 } } },
+	// Turned with a rotated page (schema 3).
+	{ id: 's-turn-text', kind: 'text', text: 'Turned', x: 0.6, y: 0.2, size: 0.02, color: 'blue', turn: 90 },
+	{ id: 's-turn-check', kind: 'mark', mark: 'check', box: { x: 0.5, y: 0.5, w: 0.03, h: 0.04 }, turn: 270 },
 	{ id: 's-snap-check', kind: 'mark', mark: 'check', box: { x: 0.21, y: 0.33, w: 0.015, h: 0.011 }, blank: { kind: 'check', box: { x: 0.21, y: 0.33, w: 0.015, h: 0.011 } } }
 ];
 
@@ -227,6 +230,17 @@ describe('format', () => {
 		expect(cleanExportForm({ ...DEFAULT_FORM, printCap: false }).printCap).toBe(false);
 		const { printCap: _gone, ...old } = DEFAULT_FORM;
 		expect(cleanExportForm(old).printCap).toBe(true);
+	});
+
+	it('reads schema 2 records (before turned stamps) and refuses a bad turn', () => {
+		const rec = base();
+		const v2 = structuredClone({ ...rec, schema: 2 }) as unknown as { pages: { stamps: Record<string, unknown>[] }[] };
+		for (const p of v2.pages) p.stamps = p.stamps.filter((st) => !String(st.id).startsWith('s-turn'));
+		const back = parseRecord(v2);
+		expect(back.pages[0].stamps.some((x) => 'turn' in x)).toBe(false);
+		const bad = structuredClone(rec) as unknown as { pages: { stamps: Record<string, unknown>[] }[] };
+		bad.pages[0].stamps.find((x) => x.id === 's-turn-text')!.turn = 45;
+		expect(() => parseRecord(bad)).toThrow(SessionFormatError);
 	});
 
 	it('still reads schema 1 records (before links to blanks)', () => {
