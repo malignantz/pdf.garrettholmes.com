@@ -47,8 +47,19 @@ export interface StampBox {
 	h: number;
 }
 
+/**
+ * Turned stamps (2026-11-13). Rotating a page turns every mark with it, so a redaction
+ * or highlight still covers the same content and text, pictures and ticks still sit
+ * on the same spot, turned like the page. Boxes, rectangles and pen points are simply
+ * mapped to the turned page; a stamp that is drawn upright (text, picture, check
+ * mark) carries `turn`: how far it is turned clockwise from upright, 0 when absent.
+ * Text: `x`, `y` stay the corner the first line starts at (the pivot of the turn).
+ * Picture and check: `box` is the turned stamp's bounding box on the page as
+ * displayed; the drawing is made upright in a box of swapped width and height and
+ * turned into it. Cross and dot look the same turned, so they need no `turn`.
+ */
 export type Stamp =
-	| { id: string; kind: 'image'; assetId: AssetId; box: StampBox }
+	| { id: string; kind: 'image'; assetId: AssetId; box: StampBox; turn?: Rotation }
 	| {
 			id: string;
 			kind: 'text';
@@ -61,8 +72,10 @@ export type Stamp =
 			color: 'black' | 'blue' | 'red';
 			/** The drawn blank this text was snapped into (see StampBlank). */
 			blank?: StampBlank;
+			/** Clockwise turn about (x, y); see above. */
+			turn?: Rotation;
 	  }
-	| { id: string; kind: 'mark'; mark: 'check' | 'cross' | 'dot'; box: StampBox; blank?: StampBlank }
+	| { id: string; kind: 'mark'; mark: 'check' | 'cross' | 'dot'; box: StampBox; blank?: StampBlank; turn?: Rotation }
 	/**
 	 * Translucent colour over the page; what is under it stays readable and stays in the file.
 	 * Without `pen` the whole box is filled (a box highlight). With `pen` it is a freehand

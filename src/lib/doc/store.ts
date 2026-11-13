@@ -19,6 +19,7 @@ import type {
 	StampBox
 } from '../core/types';
 import { newId } from './ids';
+import { turnStamp } from './turn';
 
 export { newId };
 
@@ -221,8 +222,8 @@ function cloneStamp(s: Stamp, id: string): Stamp {
  * - text: x, y or size changes (moved, nudged, resized, kept inside the page), or the
  *   text gets a line break while the blank is under two lines tall (TALL_BLANK_PT);
  * - mark: box or mark changes;
- * - the page is rotated (stamps keep their place on the displayed page, so they no
- *   longer sit on the blank);
+ * - the page is rotated (the stamp turns with the page, but a form field over the blank
+ *   cannot be drawn turned, so the link goes);
  * - copies made by the editor (duplicate, copy to pages) never carry it.
  * Editing the text itself and changing its colour keep it. Undo brings it back.
  */
@@ -483,6 +484,13 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 			checkRects(s.rects, s.box);
 		}
 		checkBlank(s);
+		const turn = (s as { turn?: unknown }).turn;
+		if (turn !== undefined) {
+			if (turn !== 90 && turn !== 180 && turn !== 270) throw new Error(`DocStore: invalid stamp turn ${String(turn)}`);
+			if (s.kind !== 'text' && s.kind !== 'image' && !(s.kind === 'mark' && s.mark === 'check'))
+				throw new Error('DocStore: only text, pictures and check marks can be turned');
+			if ('blank' in s && s.blank) throw new Error('DocStore: a turned stamp cannot be linked to a blank');
+		}
 	}
 
 	function spliceIn(d: Doc, refs: PageRef[], at: number): Doc {
@@ -566,11 +574,22 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 		if (n === 0) return false;
 		return run(pagesLabel('Rotate', n), (d) => ({
 			...d,
-			pages: d.pages.map((p) =>
-				// Stamps keep their place on the displayed page, so links to blanks go.
-				set.has(p.id) ? { ...p, rotation: normRotation(p.rotation + delta), stamps: p.stamps.map(withoutBlank) } : p
-			)
+			pages: d.pages.map((p) => (set.has(p.id) ? turnPage(p, delta) : p))
 		}));
+	}
+
+	/** The page turned by `delta` (a multiple of 90) with every mark turned along. */
+	function turnPage(p: PageRef, delta: number): PageRef {
+		const size = registry.get(p.sourceId)?.pages[p.pageIndex];
+		let ref = p;
+		for (let q = (((delta / 90) % 4) + 4) % 4; q > 0; q--) {
+			const odd = ref.rotation === 90 || ref.rotation === 270;
+			const w = size ? (odd ? size.height : size.width) : 1;
+			const h = size ? (odd ? size.width : size.height) : 1;
+			const aspect = h > 0 && w > 0 ? w / h : 1;
+			ref = { ...ref, rotation: normRotation(ref.rotation + 90), stamps: ref.stamps.map((s) => turnStamp(s, aspect)) };
+		}
+		return ref;
 	}
 
 	function duplicatePages(ids: Iterable<PageId>): PageId[] {

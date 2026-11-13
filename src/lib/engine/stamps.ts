@@ -17,6 +17,9 @@ import { EngineError } from './errors';
 import { graphicsNesting } from './content';
 import {
 	MARKS,
+	contentTurnMatrix,
+	multiply,
+	pivotTurnMatrix,
 	STAMP_BASELINE_EM,
 	STAMP_COLORS,
 	STAMP_FONT,
@@ -363,7 +366,7 @@ export async function applyStamps(
 					xobjects.set(PDFName.of(xname), img.ref);
 					imageNames.set(asset.id, xname);
 				}
-				const m = stampBoxMatrix(geom.box, geom.rotation, stamp.box);
+				const m = stampBoxMatrix(geom.box, geom.rotation, stamp.box, stamp.turn);
 				body.push(ops.pushGraphicsState(), cm(ops, m), ops.drawObject(xname), ops.popGraphicsState());
 				drawn.push(stampPdfRect(geom.box, geom.rotation, stamp.box));
 			} else if (stamp.kind === 'mark') {
@@ -399,7 +402,11 @@ export async function applyStamps(
 					fonts.set(PDFName.of(fontName), f.ref);
 				}
 				body.push(...textOps(ops, geom, stamp, f, fontName));
-				drawn.push(displayRectToPdf(geom, x, y, x + w, y + lines.length * STAMP_FONT.lineHeight * size));
+				const th = lines.length * STAMP_FONT.lineHeight * size;
+				// The block turned about its first corner (x, y).
+				const [bx0, by0, bx1, by1] =
+					stamp.turn === 90 ? [x - th, y, x, y + w] : stamp.turn === 180 ? [x - w, y - th, x, y] : stamp.turn === 270 ? [x, y - w, x + th, y] : [x, y, x + w, y + th];
+				drawn.push(displayRectToPdf(geom, bx0, by0, bx1, by1));
 			}
 		}
 
@@ -575,9 +582,11 @@ function cm(ops: typeof PdfLib, m: Matrix) {
 
 function markOps(ops: typeof PdfLib, geom: PageGeometry, stamp: Extract<Stamp, { kind: 'mark' }>) {
 	const r = stampDisplayRect(geom.box, geom.rotation, stamp.box);
-	const frame = uprightFrame(geom.box, geom.rotation, r.left, r.top + r.height);
-	const w = r.width;
-	const h = r.height;
+	const odd = stamp.turn === 90 || stamp.turn === 270;
+	// A turned check is drawn upright in a box of swapped sides and turned into its box.
+	const w = odd ? r.height : r.width;
+	const h = odd ? r.width : r.height;
+	const frame = multiply(contentTurnMatrix(stamp.turn, w, h), uprightFrame(geom.box, geom.rotation, r.left, r.top + r.height));
 	const P = (p: readonly number[]): [number, number] => [r4(p[0] * w), r4((1 - p[1]) * h)];
 	const out: PdfLib.PDFOperator[] = [ops.pushGraphicsState(), cm(ops, frame)];
 	const def = MARKS[stamp.mark];
@@ -627,7 +636,7 @@ function textOps(
 ) {
 	const shown = displayedUserSize(geom.box, geom.rotation);
 	const size = stamp.size * shown.height;
-	const frame = uprightFrame(geom.box, geom.rotation, stamp.x * shown.width, stamp.y * shown.height);
+	const frame = multiply(pivotTurnMatrix(stamp.turn), uprightFrame(geom.box, geom.rotation, stamp.x * shown.width, stamp.y * shown.height));
 	const [cr, cg, cb] = STAMP_COLORS[stamp.color];
 	const out: PdfLib.PDFOperator[] = [
 		ops.pushGraphicsState(),

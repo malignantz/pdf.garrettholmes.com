@@ -15,10 +15,12 @@ import { DEFAULT_FORM, FORM_CHOICES, type ExportForm } from '../workspace/logic'
  * 2 (2026-11-12): text and check stamps may carry `blank` (snap on tap's link to the
  * blank, for "Keep filled blanks editable"). Schema 1 records are the same shape
  * without it and are still read (READS); drop 1 from READS after 2026-11-26.
+ * 3 (2026-11-13): text, picture and check stamps may carry `turn` (marks turn with a
+ * rotated page). Schema 1 and 2 records are the same shape without it (turn 0).
  */
-export const SCHEMA = 2;
+export const SCHEMA = 3;
 /** Schemas this build reads: older ones only where they are a subset of SCHEMA. */
-const READS: readonly number[] = [1, SCHEMA];
+const READS: readonly number[] = [1, 2, SCHEMA];
 
 /** A saved session is deleted this long after its last change. */
 export const EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
@@ -104,9 +106,9 @@ type Keys<K extends Stamp['kind']> = readonly (keyof StampOf<K>)[];
  * the session does not copy: add it below, to `readStamp`, and bump SCHEMA.
  */
 const STAMP_KEYS = {
-	image: ['id', 'kind', 'assetId', 'box'],
-	text: ['id', 'kind', 'text', 'x', 'y', 'size', 'color', 'blank'],
-	mark: ['id', 'kind', 'mark', 'box', 'blank'],
+	image: ['id', 'kind', 'assetId', 'box', 'turn'],
+	text: ['id', 'kind', 'text', 'x', 'y', 'size', 'color', 'blank', 'turn'],
+	mark: ['id', 'kind', 'mark', 'box', 'blank', 'turn'],
 	highlight: ['id', 'kind', 'color', 'box', 'pen', 'rects'],
 	redact: ['id', 'kind', 'box']
 } as const satisfies { [K in Stamp['kind']]: Keys<K> };
@@ -202,14 +204,16 @@ function copyBox(b: StampBox): StampBox {
 function copyStamp(s: Stamp): Stamp {
 	switch (s.kind) {
 		case 'image':
-			return { id: s.id, kind: 'image', assetId: s.assetId, box: copyBox(s.box) };
+			return s.turn ? { id: s.id, kind: 'image', assetId: s.assetId, box: copyBox(s.box), turn: s.turn } : { id: s.id, kind: 'image', assetId: s.assetId, box: copyBox(s.box) };
 		case 'text': {
 			const t: Stamp = { id: s.id, kind: 'text', text: s.text, x: s.x, y: s.y, size: s.size, color: s.color };
+			if (s.turn) t.turn = s.turn;
 			if (s.blank) t.blank = { kind: s.blank.kind, box: copyBox(s.blank.box) };
 			return t;
 		}
 		case 'mark': {
 			const m: Stamp = { id: s.id, kind: 'mark', mark: s.mark, box: copyBox(s.box) };
+			if (s.turn) m.turn = s.turn;
 			if (s.blank) m.blank = { kind: s.blank.kind, box: copyBox(s.blank.box) };
 			return m;
 		}
@@ -260,22 +264,31 @@ function readBlank(v: unknown, kind: StampBlank['kind']): StampBlank {
 	return { kind, box: readBox(v.box) };
 }
 
+function readTurn(v: unknown): Rotation {
+	if (v !== 90 && v !== 180 && v !== 270) fail('bad stamp turn');
+	return v;
+}
+
 function readStamp(v: unknown): Stamp {
 	if (!isObj(v) || !str(v.id) || !v.id) fail('bad stamp');
 	const id = v.id;
 	switch (v.kind) {
 		case 'image':
 			if (!str(v.assetId)) fail('bad image stamp');
-			return { id, kind: 'image', assetId: v.assetId, box: readBox(v.box) };
+			return v.turn === undefined
+				? { id, kind: 'image', assetId: v.assetId, box: readBox(v.box) }
+				: { id, kind: 'image', assetId: v.assetId, box: readBox(v.box), turn: readTurn(v.turn) };
 		case 'text': {
 			if (!str(v.text) || !fin(v.x) || !fin(v.y) || !fin(v.size) || !['black', 'blue', 'red'].includes(v.color as string)) fail('bad text stamp');
 			const t: Stamp = { id, kind: 'text', text: v.text, x: v.x, y: v.y, size: v.size, color: v.color as 'black' | 'blue' | 'red' };
+			if (v.turn !== undefined) t.turn = readTurn(v.turn);
 			if (v.blank !== undefined) t.blank = readBlank(v.blank, 'text');
 			return t;
 		}
 		case 'mark': {
 			if (!['check', 'cross', 'dot'].includes(v.mark as string)) fail('bad mark stamp');
 			const m: Stamp = { id, kind: 'mark', mark: v.mark as 'check' | 'cross' | 'dot', box: readBox(v.box) };
+			if (v.turn !== undefined) m.turn = readTurn(v.turn);
 			if (v.blank !== undefined) m.blank = readBlank(v.blank, 'check');
 			return m;
 		}

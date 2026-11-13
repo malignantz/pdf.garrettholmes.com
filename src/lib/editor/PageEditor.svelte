@@ -788,15 +788,27 @@
 		const ph = base.height * view.zoom;
 		const w = el ? el.offsetWidth / pw : 0.1;
 		const h = el ? el.offsetHeight / ph : s.size * 1.2;
-		return { x: s.x, y: s.y, w, h };
+		if (!s.turn) return { x: s.x, y: s.y, w, h };
+		// Turned about its first corner (x, y): the box of the turned block (w, h are its upright sides).
+		const tw = (h * ph) / pw;
+		const th = (w * pw) / ph;
+		if (s.turn === 180) return { x: s.x - w, y: s.y - h, w, h };
+		if (s.turn === 90) return { x: s.x - tw, y: s.y, w: tw, h: th };
+		return { x: s.x, y: s.y - th, w: tw, h: th };
+	}
+
+	/** Where a text stamp's corner (x, y) goes when its box moves from `from` to `to`. */
+	function anchorFor(s: Extract<Stamp, { kind: 'text' }>, from: StampBox, to: StampBox) {
+		return { x: s.x + (to.x - from.x), y: s.y + (to.y - from.y) };
 	}
 
 	/** Keep a text stamp inside the page after its text or size changed. */
 	function clampText(id: string) {
 		const s = page?.stamps.find((x) => x.id === id);
 		if (!s || s.kind !== 'text' || !page) return;
-		const b = clampBox(boxOf(s));
-		if (Math.abs(b.x - s.x) > 1e-6 || Math.abs(b.y - s.y) > 1e-6) store.updateStamp(page.id, id, { x: b.x, y: b.y });
+		const from = boxOf(s);
+		const b = clampBox(from);
+		if (Math.abs(b.x - from.x) > 1e-6 || Math.abs(b.y - from.y) > 1e-6) store.updateStamp(page.id, id, anchorFor(s, from, b));
 	}
 
 	function gestureBegin(label: string) {
@@ -874,7 +886,7 @@
 			next = resizeBox(drag.box, h, { x: cx + f.x - drag.start.x, y: cy + f.y - drag.start.y }, s.kind !== 'highlight' && s.kind !== 'redact');
 		}
 		if (s.kind === 'text') {
-			if (drag.kind === 'move') store.updateStamp(page.id, s.id, { x: next.x, y: next.y });
+			if (drag.kind === 'move') store.updateStamp(page.id, s.id, drag.stamp.kind === 'text' ? anchorFor(drag.stamp, drag.box, next) : { x: next.x, y: next.y });
 			else {
 				const scale = drag.box.w > 0 ? next.w / drag.box.w : 1;
 				store.updateStamp(page.id, s.id, { x: next.x, y: next.y, size: Math.min(0.5, Math.max(0.004, drag.size * scale)) });
@@ -919,8 +931,9 @@
 				nudging = true;
 			}
 			const step = nudgeStep(e.shiftKey);
-			const b = moveBox(boxOf(s), dir.x * step, dir.y * step);
-			if (s.kind === 'text') store.updateStamp(page.id, s.id, { x: b.x, y: b.y });
+			const from = boxOf(s);
+			const b = moveBox(from, dir.x * step, dir.y * step);
+			if (s.kind === 'text') store.updateStamp(page.id, s.id, anchorFor(s, from, b));
 			else store.updateStamp(page.id, s.id, reboxPatch(s, b));
 			return;
 		}
@@ -995,8 +1008,9 @@
 		// A copy sits beside the original, so it is not the answer for its blank (no `blank`).
 		if (s.kind === 'text') {
 			const { id: _id, blank: _blank, ...rest } = s;
-			const b = clampBox({ ...boxOf(s), x: s.x + off, y: s.y + off });
-			ns = { ...rest, x: b.x, y: b.y };
+			const from = boxOf(s);
+			const b = clampBox({ ...from, x: from.x + off, y: from.y + off });
+			ns = { ...rest, ...anchorFor(s, from, b) };
 		} else {
 			const { id: _id, ...rest } = s;
 			if ('blank' in rest) delete rest.blank;
@@ -1080,6 +1094,10 @@
 		if (!page) return;
 		const s = page.stamps.find((x) => x.id === id);
 		if (s?.kind !== 'text') return;
+		if (s.turn) {
+			showNote('This text is turned with the page, so it cannot be edited here. Delete it and type it again, or turn the page back.');
+			return;
+		}
 		gestureBegin('Edit text');
 		selectedId = id;
 		editing = { id, isNew: false };
@@ -1285,6 +1303,15 @@
 		if (store.redo()) announce(`Redid: ${store.state.lastEvent?.label ?? ''}`);
 	}
 
+	/** Turn this page 90° right, with every mark on it, as the grid's Rotate does. */
+	function rotateHere() {
+		finishEditing(true);
+		endNudge();
+		disarm();
+		selectedId = null;
+		if (page && store.rotatePages([page.id], 90)) announce('Rotated the page right.');
+	}
+
 	function done() {
 		finishEditing(true);
 		endNudge();
@@ -1472,6 +1499,7 @@
 		<div class="history">
 			<IconButton icon="undo" label="Undo" shortcut="Ctrl+Z" tooltip="bottom" disabled={!canUndoHere && !editing && !nudging} onclick={undo} />
 			<IconButton icon="redo" label="Redo" shortcut="Ctrl+Shift+Z" tooltip="bottom" disabled={!canRedoHere} onclick={redo} />
+			<IconButton icon="rotate-right" label="Rotate page" tooltip="bottom" onclick={rotateHere} />
 		</div>
 		<div class="zoom">
 			<IconButton icon="zoom-out" label="Zoom out" shortcut="-" tooltip="bottom" disabled={view.zoom <= 1.0001} onclick={() => zoomBy(0.8)} />
@@ -1640,8 +1668,8 @@
 											<path d="M8 1.5v13M1.5 8h13M6 3.5l2-2 2 2M6 12.5l2 2 2-2M3.5 6l-2 2 2 2M12.5 6l2 2-2 2" />
 										</svg>
 									</span>
-									{#if !(s.kind === 'highlight' && (s.pen || s.rects))}
-										<!-- A pen stroke or text highlight moves but is not resized: there is no corner to hold. -->
+									{#if !(s.kind === 'highlight' && (s.pen || s.rects)) && !(s.kind === 'text' && s.turn)}
+										<!-- A pen stroke, text highlight or turned text moves but is not resized: there is no corner to hold. -->
 										<span
 											class="handle {RESIZE}"
 											aria-hidden="true"
