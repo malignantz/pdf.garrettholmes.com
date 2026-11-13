@@ -177,4 +177,34 @@ describe('client ↔ worker protocol', () => {
 		expect(seen.at(-1)).toBe(n);
 		client.terminate();
 	}, 30_000);
+
+	it('exportPlan carries progress from the worker and a cancel to it', async () => {
+		let sawSignal: AbortSignal | undefined;
+		const slow = {
+			exportPlan: (_plan: unknown, _s: unknown, _a: unknown, control?: { onProgress?: (p: unknown) => void; signal?: AbortSignal }) =>
+				new Promise((resolve, reject) => {
+					sawSignal = control?.signal;
+					control?.onProgress?.({ stage: 'ocr-load' });
+					control?.onProgress?.({ stage: 'ocr', done: 0, total: 3 });
+					control?.signal?.addEventListener('abort', () => reject(new EngineError('cancelled', 'Export cancelled. Nothing was saved.')));
+					setTimeout(() => resolve({ ok: true }), 5000);
+				})
+		} as unknown as Engine;
+		const client = createEngine({ createWorker: () => channelWorker(slow) });
+		const seen: unknown[] = [];
+		const abort = new AbortController();
+		const p = client.exportPlan({ pages: [], options: defaultOptions }, [], [], {
+			signal: abort.signal,
+			onProgress: (x) => {
+				seen.push(x);
+				if (seen.length === 2) abort.abort();
+			}
+		});
+		await expect(p).rejects.toMatchObject({ code: 'cancelled' });
+		expect(seen).toEqual([{ stage: 'ocr-load' }, { stage: 'ocr', done: 0, total: 3 }]);
+		expect(sawSignal?.aborted).toBe(true);
+		// An already aborted signal never reaches the worker.
+		await expect(client.exportPlan({ pages: [], options: defaultOptions }, [], [], { signal: abort.signal })).rejects.toMatchObject({ code: 'cancelled' });
+		client.terminate();
+	});
 });

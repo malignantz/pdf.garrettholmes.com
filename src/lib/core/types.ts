@@ -236,6 +236,8 @@ export interface ExportOptions {
 	 * (and so with redaction). ExportResult.blankFields says how many became fields.
 	 */
 	blankFields?: boolean;
+	/** Make scanned pages searchable: an invisible OCR text layer (see OcrReport). Desktop only in the app. */
+	ocr?: boolean;
 }
 
 export interface ExportPlan {
@@ -262,7 +264,9 @@ export interface VerifyCheck {
 		/** Reports the final size. ok even when the target was not reached; ExportResult.shrink.reached says which. */
 		| 'target-size'
 		/** Every filled blank made into a form field reads back with its answer and rectangle. */
-		| 'blank-fields';
+		| 'blank-fields'
+		/** Every page that got an OCR text layer reads back with its words (ExportOptions.ocr). */
+		| 'text-layer';
 	ok: boolean;
 	detail: string;
 }
@@ -288,6 +292,41 @@ export interface ExportResult {
 	 * and those drawn as plain text or ticks instead (they could not be made or verified).
 	 */
 	blankFields?: { fields: number; plain: number };
+	/** Present when ExportOptions.ocr was set. */
+	ocr?: OcrReport;
+}
+
+/**
+ * "Make scanned pages searchable" (ExportOptions.ocr): OCR adds an invisible text
+ * layer to scanned pages; the page picture never changes. Only eligible pages are
+ * tried (a PDF page with no text that is one picture of at least 200 ppi, without
+ * redaction boxes), at most `cap` of them in document order. A tried page is either
+ * made searchable or left exactly as it was ("declined": the text could not be read
+ * well enough, or a check failed).
+ */
+export interface OcrReport {
+	/** Eligible pages in the export. */
+	eligible: number;
+	/** Most pages one export tries. */
+	cap: number;
+	/** 1-based output page numbers that got a text layer. */
+	searchable: number[];
+	/** 1-based output page numbers that were tried and left as they were. */
+	declined: number[];
+}
+
+/** Progress of a long export, for the dialog ("Reading page 3 of 12"). */
+export type ExportProgress =
+	/** Loading the OCR engine (the first time: a download of a few megabytes). */
+	| { stage: 'ocr-load' }
+	/** `done` of `total` pages read so far. */
+	| { stage: 'ocr'; done: number; total: number };
+
+/** Optional extras for Engine.exportPlan. */
+export interface ExportControl {
+	onProgress?: (p: ExportProgress) => void;
+	/** Aborting stops the export; it then rejects with code 'cancelled' and nothing is made. */
+	signal?: AbortSignal;
 }
 
 export type EngineErrorCode =
@@ -297,6 +336,8 @@ export type EngineErrorCode =
 	| 'unsupported'
 	| 'verification-failed'
 	| 'too-large'
+	/** The caller cancelled (ExportControl.signal). */
+	| 'cancelled'
 	| 'internal';
 
 /** Errors cross the worker boundary as plain objects of this shape. */
@@ -314,7 +355,7 @@ export interface Engine {
 	openImage(bytes: Uint8Array, mime: 'image/jpeg' | 'image/png', name: string): Promise<Source>;
 	blankPage(size: PageSize): Promise<Source>;
 	/** Build, then verify. Never returns an unverified file. */
-	exportPlan(plan: ExportPlan, sources: Source[], assets: Asset[]): Promise<ExportResult>;
+	exportPlan(plan: ExportPlan, sources: Source[], assets: Asset[], control?: ExportControl): Promise<ExportResult>;
 	/** Characters the bundled stamp font cannot draw; empty string means all good. */
 	unsupportedChars(text: string): Promise<string>;
 	/** Fillable fields of a source; [] when Source.hasForm is not true. */
@@ -327,6 +368,12 @@ export interface Engine {
 	 * OCR) and for image and blank sources. Loads MuPDF on first use.
 	 */
 	pageText(source: Source, pageIndex: number): Promise<PageText>;
+	/**
+	 * 0-based indexes of the pages "Make scanned pages searchable" would try (see
+	 * OcrReport): [] for image and blank sources and for files without such pages.
+	 * Loads MuPDF only when a page has a picture large enough to qualify.
+	 */
+	scannedPages(source: Source): Promise<number[]>;
 }
 
 /**

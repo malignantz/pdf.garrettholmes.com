@@ -50,7 +50,9 @@
 		"@neslinesli93/qpdf-wasm": "^0.3.1",
 		"fflate": "^0.8.2",
 		"mupdf": "^1.28.6",
-		"pdfjs-dist": "^6.5.438"
+		"pdfjs-dist": "^6.5.438",
+		"tesseract.js": "7.0.0",
+		"tesseract.js-core": "7.0.0"
 	},
 	"license": "AGPL-3.0-or-later"
 }

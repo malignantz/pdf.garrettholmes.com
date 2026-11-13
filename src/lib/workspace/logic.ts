@@ -344,6 +344,8 @@ export function plainCheck(
 				: 'It fits the size you asked for.';
 		case 'blank-fields':
 			return c.ok ? 'Every filled blank is a form field with your answer.' : 'Some filled blanks did not come out as form fields.';
+		case 'text-layer':
+			return c.ok ? 'The searchable text reads back on every page that got it.' : 'The searchable text did not read back.';
 	}
 }
 
@@ -420,6 +422,8 @@ export interface ExportForm {
 	lockForms: boolean;
 	/** Keep filled blanks editable (ExportOptions.blankFields). */
 	keepBlanks: boolean;
+	/** Make scanned pages searchable (offered on desktops only, for files with scanned pages). */
+	ocr: boolean;
 }
 
 export const DEFAULT_FORM: Omit<ExportForm, 'filename'> = {
@@ -437,7 +441,8 @@ export const DEFAULT_FORM: Omit<ExportForm, 'filename'> = {
 	prefix: '',
 	digits: '6',
 	lockForms: false,
-	keepBlanks: false
+	keepBlanks: false,
+	ocr: false
 };
 
 /** Filled blanks on the pages of a plan: text and ticks still linked to the blank they were snapped into. */
@@ -529,7 +534,7 @@ export type OptionsResult = { ok: true; options: ExportOptions } | { ok: false; 
  */
 export function buildExportOptions(
 	f: ExportForm,
-	ctx: { pageCount: number; redactions: number; hasForm: boolean; blanks?: number }
+	ctx: { pageCount: number; redactions: number; hasForm: boolean; blanks?: number; scanned?: number }
 ): OptionsResult {
 	const redacting = ctx.redactions > 0;
 	const options: ExportOptions = {
@@ -550,6 +555,7 @@ export function buildExportOptions(
 	}
 	if ((ctx.hasForm && f.lockForms) || redacting) options.flattenForms = true;
 	if (f.keepBlanks && (ctx.blanks ?? 0) > 0 && !options.flattenForms) options.blankFields = true;
+	if (f.ocr && (ctx.scanned ?? 0) > 0) options.ocr = true;
 	return { ok: true, options };
 }
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { EngineErrorShape, ExportResult, PageId, VerifyCheck } from '../core/types';
+	import type { EngineErrorShape, ExportProgress, ExportResult, PageId, VerifyCheck } from '../core/types';
 	import type { DocStore } from '../doc/store';
 	import type { EngineClient } from '../engine/client';
 	import { isEngineErrorShape } from '../engine/errors';
@@ -12,6 +12,7 @@
 	import Toggle from '../ui/Toggle.svelte';
 	import OptionPicker from './OptionPicker.svelte';
 	import { exportForm } from './export-form.svelte';
+	import { OCR_HINT, OCR_LABEL, countScanned, isDesktop, ocrCapNotice, ocrProgressText, ocrSummary } from './ocr-option';
 	import {
 		FIT_CHOICES,
 		NUMBER_POSITIONS,
@@ -91,10 +92,29 @@
 		};
 	});
 
+	// "Make scanned pages searchable": desktops only, and only when a page qualifies.
+	const desktop = isDesktop();
+	let scanned = $state(0);
+	let scanSeq = 0;
+	$effect(() => {
+		const pages = plan.pages;
+		const sources = store.state.sources;
+		const seq = ++scanSeq;
+		if (!open || !desktop) return;
+		countScanned(engine, pages, sources).then((n) => {
+			if (seq === scanSeq) scanned = n;
+		});
+	});
+	let progress = $state<ExportProgress | null>(null);
+	let abort = $state<AbortController | null>(null);
+	let cancelled = $state(false);
+
 	// Fresh defaults every time the dialog opens.
 	let wasOpen = false;
 	$effect(() => {
 		if (open && !wasOpen) {
+			cancelled = false;
+			scanned = 0;
 			filename = defaultFilename(plan.names, mode);
 			phase = { kind: 'form' };
 			password = '';
@@ -163,7 +183,7 @@
 		filename = name;
 		const built = buildExportOptions(
 			{ ...f, filename: name, password: usePassword ? password : undefined },
-			{ pageCount: plan.count, redactions: plan.redactions, hasForm: plan.hasForm, blanks: plan.blanks }
+			{ pageCount: plan.count, redactions: plan.redactions, hasForm: plan.hasForm, blanks: plan.blanks, scanned }
 		);
 		if (!built.ok) return;
 		const exportPlan = store.toExportPlan(built.options, mode === 'extract' ? ids : undefined);
@@ -172,18 +192,39 @@
 			kind: 'working',
 			fitting: built.options.targetBytes ? `Fitting under ${formatMB(built.options.targetBytes)}. Large scans can take a minute.` : null
 		};
+		progress = null;
+		cancelled = false;
+		const control = built.options.ocr ? new AbortController() : null;
+		abort = control;
 		try {
 			const s = store.state;
-			const result = await engine.exportPlan(exportPlan, [...s.sources], [...s.assets]);
+			const result = await engine.exportPlan(exportPlan, [...s.sources], [...s.assets], {
+				signal: control?.signal,
+				onProgress: (p) => (progress = p)
+			});
+			if (control?.signal.aborted) {
+				// Finished as Cancel was pressed: the user asked for nothing, so nothing is offered.
+				phase = { kind: 'form' };
+				cancelled = true;
+				return;
+			}
 			const blob = new Blob([result.bytes as BlobPart], { type: 'application/pdf' });
 			phase = { kind: 'done', result, filename: name, inputBytes, url: URL.createObjectURL(blob) };
 		} catch (err) {
+			if (isEngineErrorShape(err) && err.code === 'cancelled') {
+				phase = { kind: 'form' };
+				cancelled = true;
+				return;
+			}
 			phase = {
 				kind: 'failed',
 				error: isEngineErrorShape(err)
 					? err
 					: { code: 'internal', message: 'Something went wrong while building the file. Nothing was saved.' }
 			};
+		} finally {
+			abort = null;
+			progress = null;
 		}
 	}
 
@@ -261,7 +302,8 @@
 		numbering: 'Page numbers',
 		visual: 'Pages look the same',
 		'target-size': 'File size',
-		'blank-fields': 'Filled blanks'
+		'blank-fields': 'Filled blanks',
+		'text-layer': 'Searchable text'
 	};
 
 	function headline(r: ExportResult): string {
@@ -403,6 +445,10 @@
 					hint={redacting ? 'Always on when redacting.' : 'Author, title, dates and editing software.'}
 				/>
 				<Toggle bind:checked={usePassword} label="Add a password" hint="Needed to open the file. AES-256." />
+				{#if scanned > 0}
+					<Toggle bind:checked={f.ocr} label={OCR_LABEL} hint={OCR_HINT} />
+					{#if f.ocr && ocrCapNotice(scanned)}<p class="caption ocr-note">{ocrCapNotice(scanned)}</p>{/if}
+				{/if}
 			</div>
 
 			{#if usePassword}
@@ -437,11 +483,15 @@
 			<p class="summary num">
 				{`${plural(plan.count, 'page')}, ${formatBytes(plan.inputBytes)} in`}
 			</p>
+			{#if cancelled}<p class="caption" role="status">Export cancelled. Nothing was saved.</p>{/if}
 		</form>
 	{:else if phase.kind === 'working'}
 		<div class="working" role="status">
-			<Progress label="Building and checking your file" />
-			<p>{phase.fitting ?? `Building and checking ${plural(plan.count, 'page')}…`}</p>
+			<Progress
+				label="Building and checking your file"
+				value={progress?.stage === 'ocr' && progress.done < progress.total ? progress.done / progress.total : undefined}
+			/>
+			<p>{ocrProgressText(progress) ?? phase.fitting ?? `Building and checking ${plural(plan.count, 'page')}…`}</p>
 			<p class="caption">Every export is re-opened and checked before you can save it.</p>
 		</div>
 	{:else if phase.kind === 'done'}
@@ -460,6 +510,11 @@
 				</div>
 			{/if}
 			{#if blankFieldsLine(r)}<p class="blanks">{blankFieldsLine(r)}</p>{/if}
+			{#if ocrSummary(r.ocr).length}
+				<div class="shrink ocr-result">
+					{#each ocrSummary(r.ocr) as line, i (i)}<p>{line}</p>{/each}
+				</div>
+			{/if}
 			{@render checkList(r.checks, r.pageCount)}
 			{#if r.warnings.length}
 				<ul class="warnings">
@@ -484,6 +539,7 @@
 			<Button variant="quiet" onclick={() => (open = false)}>Cancel</Button>
 			<Button variant="primary" icon="download" type="submit" form="export-form" disabled={plan.count === 0 || !fitOk || !!numProblem}>Export</Button>
 		{:else if phase.kind === 'working'}
+			{#if abort}<Button variant="quiet" onclick={() => abort?.abort()}>Cancel</Button>{/if}
 			<Button variant="primary" loading>Checking…</Button>
 		{:else if phase.kind === 'done'}
 			<Button variant="quiet" onclick={() => (open = false)}>{saved ? 'Done' : 'Close'}</Button>
@@ -596,6 +652,11 @@
 	.summary {
 		font-size: var(--text-caption);
 		color: var(--ink-soft);
+	}
+
+	.ocr-note {
+		color: var(--ink-soft);
+		padding-left: var(--s-2);
 	}
 
 	.working {

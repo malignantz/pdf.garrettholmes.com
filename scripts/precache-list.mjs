@@ -8,9 +8,11 @@
 // offline but cannot open a file. The service worker reads precache.json on
 // install and caches everything in it.
 //
-// Lazy files (MuPDF: ~10 MB of wasm plus its JS chunk) are fetched on first use
-// and then kept in the service worker's lazy cache, so they work offline after
-// that; lazy.json lets the service worker prune old versions of them.
+// Lazy files (MuPDF: ~10 MB of wasm plus its JS chunk; OCR for "Make scanned pages
+// searchable": tesseract.js's worker script, its cores and the language data, about
+// 9 MB as served) are fetched on first use and then kept in the service worker's lazy
+// cache, so they work offline after that; lazy.json lets the service worker prune old
+// versions of them.
 import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,11 +27,18 @@ function walk(dir) {
 	});
 }
 
-/** MuPDF's wasm (named after the package file) and the JS chunk that loads it. */
+/** OCR files, by the names Vite gives them (src/lib/engine/ocr/browser.ts). */
+const OCR_ASSET = /^(worker\.min|tesseract-core(-[a-z]+)*\.wasm)-[\w-]+\.js$|^(eng|osd)\.traineddata-[\w-]+\.gz$/;
+
+/** MuPDF's wasm (named after the package file) and the JS chunk that loads it; the OCR files and their loader. */
 function isLazy(path) {
 	const name = path.split(/[/\\]/).pop();
 	if (/^mupdf-wasm[-.].*\.wasm$/.test(name)) return true;
-	if (name.endsWith('.js')) return readFileSync(path, 'utf8').includes('mupdf-wasm');
+	if (OCR_ASSET.test(name)) return true;
+	if (name.endsWith('.js')) {
+		const text = readFileSync(path, 'utf8');
+		return text.includes('mupdf-wasm') || text.includes('.traineddata-');
+	}
 	return false;
 }
 
@@ -39,6 +48,10 @@ const precache = all.filter((p) => !isLazy(p)).map(url).sort();
 const lazy = all.filter(isLazy).map(url).sort();
 if (!lazy.some((p) => p.endsWith('.wasm'))) {
 	console.error('precache-list: the MuPDF wasm was not found in the build; check isLazy()');
+	process.exit(1);
+}
+if (!lazy.some((p) => /eng\.traineddata-/.test(p)) || !lazy.some((p) => /tesseract-core-relaxedsimd-lstm\.wasm-/.test(p))) {
+	console.error('precache-list: the OCR files were not found in the build; check OCR_ASSET');
 	process.exit(1);
 }
 writeFileSync(join(build, '_app/precache.json'), JSON.stringify(precache));

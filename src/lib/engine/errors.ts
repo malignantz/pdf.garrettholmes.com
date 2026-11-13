@@ -7,6 +7,7 @@ const CODES: readonly EngineErrorCode[] = [
 	'unsupported',
 	'verification-failed',
 	'too-large',
+	'cancelled',
 	'internal'
 ];
 
