@@ -190,6 +190,14 @@ export interface PageNumbering {
 	size: number;
 	/** bates only. prefix: up to 20 characters the stamp font can draw. digits: 3..10. */
 	bates?: { prefix: string; digits: number };
+	/**
+	 * Added 2026-11-13 (split export): the number printed after "of" in the -of-total
+	 * styles. Default (undefined): the number on the last numbered page of this export.
+	 * A part of a split file sets it to the whole file's last number, so its pages read
+	 * "Page 7 of 12" rather than "Page 1 of 4". Integer, at least the part's own last
+	 * number. Ignored by the other styles.
+	 */
+	total?: number;
 }
 
 /** A PNG the user created or picked (drawn signature, initials, image). */
@@ -358,7 +366,14 @@ export type ExportProgress =
 	 * slow follows it (no form, redaction, numbering, field or text-layer check), so its
 	 * end is about the end of the export.
 	 */
-	| { stage: 'check'; done: number; total: number; last: boolean };
+	| { stage: 'check'; done: number; total: number; last: boolean }
+	// Added 2026-11-13 (pictures and split export). Reported by the app's export dialog, not
+	// by the engine: both run Engine.exportPlan (one verified PDF; one per part) and then
+	// work on its result, so their counts span several engine calls.
+	/** Saving pages as pictures: `done` of `total` pages rendered and encoded ("Saving picture 3 of 20"). */
+	| { stage: 'picture'; done: number; total: number }
+	/** Split into several files: `done` of `total` parts built and verified ("Making file 2 of 9"). */
+	| { stage: 'part'; done: number; total: number };
 
 /** Optional extras for Engine.exportPlan. */
 export interface ExportControl {

@@ -36,7 +36,7 @@ const MAX_NUMBER = 999_999_999;
  * - The first `skip` pages get null (no number) and are not counted.
  * - The k-th numbered page (k = 0, 1, …) carries n = start + k.
  * - total = (number of numbered pages) + start − 1, i.e. the number on the last
- *   numbered page. With start 1 and no skip, total is the page count; with skip 1
+ *   numbered page, unless `numbering.total` gives it (a part of a split file). With start 1 and no skip, total is the page count; with skip 1
  *   and start 1, a 10-page file reads "1 of 9" … "9 of 9" after the cover.
  * - Styles: 'n' → "3"; 'n-of-total' → "3 of 12"; 'page-n' → "Page 3";
  *   'page-n-of-total' → "Page 3 of 12"; 'bates' → prefix + n left-padded with
@@ -51,16 +51,21 @@ export function numberingLabels(numbering: PageNumbering, pageCount: number): (s
 	if (!Number.isInteger(pageCount) || pageCount < 0) throw new EngineError('internal', 'Invalid page count for numbering.');
 	const { style, start, skip } = numbering;
 	const numbered = Math.max(0, pageCount - skip);
-	const total = numbered + start - 1;
-	if (numbered > 0 && total > MAX_NUMBER) {
+	const last = numbered + start - 1;
+	if (numbered > 0 && last > MAX_NUMBER) {
 		throw new EngineError('unsupported', 'The page numbers would be too large. Choose a smaller first number.');
 	}
-	if (style === 'bates' && numbered > 0 && String(total).length > numbering.bates!.digits) {
+	if (style === 'bates' && numbered > 0 && String(last).length > numbering.bates!.digits) {
 		throw new EngineError(
 			'unsupported',
-			`Bates numbers up to ${total} need more than ${numbering.bates!.digits} digits. Choose more digits or a smaller first number.`
+			`Bates numbers up to ${last} need more than ${numbering.bates!.digits} digits. Choose more digits or a smaller first number.`
 		);
 	}
+	// A part of a split file prints the whole file's total (PageNumbering.total).
+	if (numbering.total !== undefined && numbered > 0 && numbering.total < last) {
+		throw new EngineError('internal', 'The page total is smaller than the last page number.');
+	}
+	const total = numbering.total ?? last;
 	const out: (string | null)[] = [];
 	for (let i = 0; i < pageCount; i++) {
 		if (i < skip) {
@@ -107,6 +112,9 @@ export function validateNumbering(numbering: PageNumbering): void {
 	}
 	if (typeof numbering.size !== 'number' || !Number.isFinite(numbering.size) || numbering.size < 6 || numbering.size > 24) {
 		throw bad('The page number size must be between 6 and 24 points.');
+	}
+	if (numbering.total !== undefined && (!Number.isInteger(numbering.total) || numbering.total < 0 || numbering.total > MAX_NUMBER)) {
+		throw bad('The page total must be a whole number of 0 or more.');
 	}
 	if (numbering.style === 'bates') {
 		const b = numbering.bates;

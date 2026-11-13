@@ -8,7 +8,7 @@
  * any change to the shape below (or to the stamp kinds it copies) bumps SCHEMA.
  */
 import type { Asset, FormValue, FormValues, PageRef, PageSize, Rotation, Source, Stamp, StampBlank, StampBox } from '../core/types';
-import { DEFAULT_FORM, type ExportForm } from '../workspace/logic';
+import { DEFAULT_FORM, FORM_CHOICES, type ExportForm } from '../workspace/logic';
 
 /**
  * Bump on any change to SessionRecord or to the stamp shapes copied below.
@@ -229,6 +229,8 @@ export function cleanExportForm(form: Partial<ExportForm>): SavedExportForm {
 	const out = { ...DEFAULT_FORM } as SavedExportForm & { password?: unknown; filename?: unknown };
 	for (const key of Object.keys(DEFAULT_FORM) as (keyof SavedExportForm)[]) {
 		const v = form[key];
+		const allowed = FORM_CHOICES[key];
+		if (allowed && !allowed.includes(v as string)) continue;
 		if (typeof v === typeof DEFAULT_FORM[key]) (out as Record<string, unknown>)[key] = v;
 	}
 	delete out.password;
