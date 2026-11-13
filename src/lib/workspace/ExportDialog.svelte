@@ -12,8 +12,10 @@
 	import Toggle from '../ui/Toggle.svelte';
 	import OptionPicker from './OptionPicker.svelte';
 	import { exportForm } from './export-form.svelte';
-	import { OCR_HINT, OCR_LABEL, countScanned, isDesktop, ocrCapNotice, ocrProgressText, ocrSummary } from './ocr-option';
-	import { PRINT_CAP_LABEL, countOversized, printCapHint, printCapLine, printCapProgressText } from './print-cap-option';
+	import { OCR_HINT, OCR_LABEL, countScanned, isDesktop, ocrCapNotice, ocrSummary } from './ocr-option';
+	import { PRINT_CAP_LABEL, countOversized, printCapHint, printCapLine } from './print-cap-option';
+	import { progressFraction, progressSample, progressText } from './export-progress';
+	import { TimeLeft } from './time-left';
 	import {
 		FIT_CHOICES,
 		NUMBER_POSITIONS,
@@ -119,6 +121,19 @@
 		});
 	});
 	let progress = $state<ExportProgress | null>(null);
+	const stepText = $derived(progressText(progress));
+	// The remaining-time line ("About 30 seconds left"), from the progress the engine measures.
+	let timeLeft: TimeLeft | null = null;
+	let clock = $state(0);
+	const leftText = $derived.by(() => {
+		void progress;
+		return phase.kind === 'working' && timeLeft ? timeLeft.text(clock) : null;
+	});
+	$effect(() => {
+		if (phase.kind !== 'working') return;
+		const id = setInterval(() => (clock = performance.now()), 1000);
+		return () => clearInterval(id);
+	});
 	let abort = $state<AbortController | null>(null);
 	let cancelled = $state(false);
 
@@ -207,6 +222,8 @@
 			fitting: built.options.targetBytes ? `Fitting under ${formatMB(built.options.targetBytes)}. Large scans can take a minute.` : null
 		};
 		progress = null;
+		timeLeft = new TimeLeft(performance.now());
+		clock = performance.now();
 		cancelled = false;
 		const control = built.options.ocr || built.options.printCap ? new AbortController() : null;
 		abort = control;
@@ -214,7 +231,11 @@
 			const s = store.state;
 			const result = await engine.exportPlan(exportPlan, [...s.sources], [...s.assets], {
 				signal: control?.signal,
-				onProgress: (p) => (progress = p)
+				onProgress: (p) => {
+					clock = performance.now();
+					timeLeft?.update(clock, progressSample(p));
+					progress = p;
+				}
 			});
 			if (control?.signal.aborted) {
 				// Finished as Cancel was pressed: the user asked for nothing, so nothing is offered.
@@ -239,6 +260,7 @@
 		} finally {
 			abort = null;
 			progress = null;
+			timeLeft = null;
 		}
 	}
 
@@ -504,11 +526,10 @@
 		</form>
 	{:else if phase.kind === 'working'}
 		<div class="working" role="status">
-			<Progress
-				label="Building and checking your file"
-				value={(progress?.stage === 'ocr' || progress?.stage === 'pictures') && progress.done < progress.total ? progress.done / progress.total : undefined}
-			/>
-			<p>{ocrProgressText(progress) ?? printCapProgressText(progress) ?? phase.fitting ?? `Building and checking ${plural(plan.count, 'page')}…`}</p>
+			<Progress label="Building and checking your file" value={progressFraction(progress)} />
+			<p>{phase.fitting ?? stepText ?? `Building and checking ${plural(plan.count, 'page')}…`}</p>
+			{#if phase.fitting && stepText}<p class="step">{stepText}</p>{/if}
+			{#if leftText}<p class="left num">{leftText}</p>{/if}
 			<p class="caption">Every export is re-opened and checked before you can save it.</p>
 		</div>
 	{:else if phase.kind === 'done'}
@@ -679,6 +700,11 @@
 
 	.working {
 		padding: var(--s-3) 0;
+	}
+
+	.working .step,
+	.working .left {
+		color: var(--ink-soft);
 	}
 
 	.verified {
