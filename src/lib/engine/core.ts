@@ -21,6 +21,7 @@ import type {
 	Engine,
 	ExportControl,
 	ExportPlan,
+	ExportProgress,
 	ExportResult,
 	FormValues,
 	PageRef,
@@ -432,6 +433,8 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			compress: plan.options.compress || target !== undefined
 		};
 		const password = options.password;
+		// The stages added for the remaining-time estimate report through this (ExportProgress).
+		const report = control?.onProgress ? throttleProgress(control.onProgress) : undefined;
 		if (password !== undefined) validatePassword(password);
 		if (target !== undefined) validateTarget(target);
 		if (options.numbering !== undefined) validateNumbering(options.numbering);
@@ -614,8 +617,8 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			// Shrinking finalizes every step it tries: the MuPDF cleanup runs once, here,
 			// and each step gets the stream pass only (no JPEG repack either).
 			const cleaned = await cleanupOnly(bytes);
-			const finalize = (b: Uint8Array) => finalizeBytes(b, options, warnings, undefined, false);
-			const r = await shrinkToTarget(deps, cleaned, target, finalize, capOn ? { cap: () => capPictures(deps, cleaned, capOpts), capPpi: capRules?.ppi ?? CAP_PPI } : {});
+			const finalize = (b: Uint8Array) => finalizeBytes(b, { ...options, report }, warnings, undefined, false);
+			const r = await shrinkToTarget(deps, cleaned, target, finalize, { onProgress: report, ...(capOn ? { cap: () => capPictures(deps, cleaned, capOpts), capPpi: capRules?.ppi ?? CAP_PPI } : {}) });
 			final = r.bytes;
 			shrink = r.shrink;
 			printCap = r.printCap;
@@ -634,14 +637,17 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 				}
 			}
 			throwIfCancelled(control);
-			final = await finalizeBytes(bytes, options, warnings, alt, true, loadedBefore);
+			final = await finalizeBytes(bytes, { ...options, report }, warnings, alt, true, loadedBefore);
 		}
 
 		throwIfCancelled(control);
 
 		// (f) Verify.
+		// Whether the structure check is the last slow part (the checks below it are not quick).
+		const last = !formsRan && redactJobs.length === 0 && !numbering && made.length === 0 && layered.size === 0;
+		const checkProgress = report && ((done: number, total: number) => report({ stage: 'check', done, total, last }));
 		const verifyAll = async (file: Uint8Array, w: string[]) => {
-			const checks = await verify(file, expected, password, options.stripMetadata, used, w);
+			const checks = await verify(file, expected, password, options.stripMetadata, used, w, checkProgress);
 			if (formsRan) checks.push(...(await verifyForms(deps, file, formsCtx, password)));
 			if (redactJobs.length) checks.push(...(await verifyRedactions(deps, file, redactJobs, allowedText, password, (shrink?.imagesChanged ?? 0) > 0 || (printCap?.images ?? 0) > 0)));
 			if (numbering) checks.push(...(await verifyNumbering(deps, file, numbering.labels, password, numbering.numbering)));
@@ -692,7 +698,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 	 */
 	async function finalizeBytes(
 		bytes: Uint8Array,
-		options: { compress: boolean; stripMetadata: boolean; password?: string },
+		options: { compress: boolean; stripMetadata: boolean; password?: string; report?: (p: ExportProgress) => void },
 		warnings: string[],
 		alt?: Alternative,
 		full = true,
@@ -705,7 +711,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		const packWarnings: string[] = [];
 		let packed: Uint8Array | unknown;
 		try {
-			packed = await finalizeRun(await losslessPre(bytes, { cleanup: full, pack: true, jpeg: full, loaded }), options, packWarnings);
+			packed = await finalizeRun(await losslessPre(bytes, { cleanup: full, pack: true, jpeg: full, loaded, report: options.report }), options, packWarnings);
 		} catch (e) {
 			if (isWasmFault(e)) throw e;
 			packed = e;
@@ -743,7 +749,10 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 	 * → stream pass (with the JPEG repack when `which.jpeg`). Each one that errors, runs out of time or would change the
 	 * file's structure is skipped (debug note only); `bytes` is the fallback.
 	 */
-	async function losslessPre(bytes: Uint8Array, which: { cleanup: boolean; pack: boolean; jpeg: boolean; loaded?: boolean } = { cleanup: true, pack: true, jpeg: true }): Promise<Uint8Array> {
+	async function losslessPre(
+		bytes: Uint8Array,
+		which: { cleanup: boolean; pack: boolean; jpeg: boolean; loaded?: boolean; report?: (p: ExportProgress) => void } = { cleanup: true, pack: true, jpeg: true }
+	): Promise<Uint8Array> {
 		const doCleanup = passes.cleanup !== false && which.cleanup;
 		const doPack = passes.pack && which.pack;
 		if (!doPack && !doCleanup) return bytes;
@@ -809,7 +818,8 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 				// 1 s on a phone): its own clock, 4 s plus 0.15 s per MB of file, and at most 64 MB
 				// of JPEG data; images over 48 MB of coefficients stay as they are (pack.ts).
 				jpeg: passes.jpeg && which.jpeg ? { ms: 4_000 + 150 * mb, bytes: 64e6, signed: isSigned(dump.objects) } : false,
-				note: debug
+				note: debug,
+				progress: which.report && ((done, total) => which.report!({ stage: 'pack', done, total }))
 			},
 			dump
 		);
@@ -913,14 +923,21 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		password: string | undefined,
 		stripMetadata: boolean,
 		sources: Source[],
-		warnings: string[]
+		warnings: string[],
+		/** Progress of the structure check: bytes of `bytes` qpdf has read. */
+		progress?: (done: number, total: number) => void
 	): Promise<VerifyCheck[]> {
 		const checks: VerifyCheck[] = [];
 		const pw = password !== undefined ? [`--password=${password}`] : [];
 		const lib = await pdfjs();
 
 		// Structure and page count from qpdf.
-		const res = await qpdf.run({ args: [...pw, '--check', '--show-npages', '/v.pdf'], inputs: { '/v.pdf': bytes } });
+		progress?.(0, bytes.length);
+		const res = await qpdf.run({
+			args: [...pw, '--check', '--show-npages', '/v.pdf'],
+			inputs: { '/v.pdf': bytes },
+			readProgress: progress && { path: '/v.pdf', report: progress }
+		});
 		let clean = res.code === QPDF_OK && /No syntax or stream encoding errors found/.test(res.stdout);
 		let detail = clean
 			? 'qpdf --check found no syntax or stream errors.'
@@ -1044,6 +1061,23 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 }
 
 // ---------------------------------------------------------------------------
+
+/**
+ * Progress for the dialog without flooding the message port: a new stage, its start and
+ * its end go through at once, other updates at most every 100 ms.
+ */
+export function throttleProgress(on: (p: ExportProgress) => void, everyMs = 100, clock: () => number = () => performance.now()): (p: ExportProgress) => void {
+	let stage = '';
+	let last = -Infinity;
+	return (p) => {
+		const t = clock();
+		const edge = p.stage !== stage || !('done' in p) || p.done === 0 || p.done >= p.total;
+		if (!edge && t - last < everyMs) return;
+		stage = p.stage;
+		last = t;
+		on(p);
+	};
+}
 
 /** The second candidate of a compressed finalize, kept for a fallback when the chosen one fails verification. */
 interface Alternative {

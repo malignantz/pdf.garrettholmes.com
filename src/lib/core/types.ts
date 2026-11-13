@@ -341,7 +341,24 @@ export type ExportProgress =
 	/** `done` of `total` pages read so far. */
 	| { stage: 'ocr'; done: number; total: number }
 	/** Print-size cap: `done` of `total` oversized pictures handled so far ("Reducing picture 3 of 20"). */
-	| { stage: 'pictures'; done: number; total: number };
+	| { stage: 'pictures'; done: number; total: number }
+	// Added 2026-11-13 (remaining-time estimate). Each stage starts again at done 0; a stage
+	// may run more than once (fit under a size tries steps; a failed check retries).
+	/** Compress: `done` of `total` bytes of stream data through the lossless pass (it may stop early on its time budget). */
+	| { stage: 'pack'; done: number; total: number }
+	/** Print-size cap, before 'pictures': `done` of `total` JPEG pictures read and measured (their size after the lossless repack). */
+	| { stage: 'pictures-read'; done: number; total: number }
+	/** Fit under a size: `done` of `total` pictures re-encoded for the step being tried. */
+	| { stage: 'reduce'; done: number; total: number }
+	/** Fit under a size and the print-size cap: `done` of `total` pages rendered before and after and compared. */
+	| { stage: 'compare'; done: number; total: number }
+	/**
+	 * The final check (qpdf --check, which decodes every stream: most of a long export of
+	 * scans): `done` of `total` bytes of the exported file read so far. `last`: nothing
+	 * slow follows it (no form, redaction, numbering, field or text-layer check), so its
+	 * end is about the end of the export.
+	 */
+	| { stage: 'check'; done: number; total: number; last: boolean };
 
 /** Optional extras for Engine.exportPlan. */
 export interface ExportControl {

@@ -136,7 +136,7 @@ describe('print-size cap: through the export', () => {
 		expect(on.printCap!.savedBytes).toBeGreaterThan(10_000);
 		expect(on.bytes.length).toBeLessThan(off.bytes.length);
 		expect(on.checks.find((c) => c.name === 'visual')?.detail).toMatch(/^Rendered the 1 page with reduced pictures/);
-		expect(progress).toEqual([
+		expect(progress.filter((p) => p.stage === 'pictures')).toEqual([
 			{ stage: 'pictures', done: 0, total: 1 },
 			{ stage: 'pictures', done: 1, total: 1 }
 		]);

@@ -22,6 +22,8 @@ interface EmscriptenFS {
 	readFile(path: string): Uint8Array;
 	unlink(path: string): void;
 	readdir(path: string): string[];
+	/** Every file read of the run goes through this (Emscripten FS.read); see `watchReads`. */
+	read(stream: { path?: string; position: number }, buffer: unknown, offset: number, length: number, position?: number): number;
 }
 
 interface QpdfInstance {
@@ -49,6 +51,13 @@ export interface QpdfRunOptions {
 	 * back after it (for `--json-stream-data=file`, whose file names are not known in advance).
 	 */
 	outputDirs?: string[];
+	/**
+	 * How much of one input file qpdf has read so far, reported while the run is going
+	 * (from inside it, synchronously): `read` of `total` bytes, each 4 KB block counted
+	 * once, at most every `everyMs` (default 200 ms). qpdf reads a stream's data as it
+	 * decodes it, so for the long runs (`--check` of a file of scans) this tracks the work done.
+	 */
+	readProgress?: { path: string; report: (read: number, total: number) => void; everyMs?: number };
 }
 
 export interface QpdfResult {
@@ -114,7 +123,7 @@ export class Qpdf {
 		return next;
 	}
 
-	async #runNow({ args, inputs = {}, outputs = [], outputDirs = [] }: QpdfRunOptions): Promise<QpdfResult> {
+	async #runNow({ args, inputs = {}, outputs = [], outputDirs = [], readProgress }: QpdfRunOptions): Promise<QpdfResult> {
 		const [module, factory] = await Promise.all([this.#getModule(), this.#getFactory()]);
 		const out: number[] = [];
 		const err: number[] = [];
@@ -151,6 +160,8 @@ export class Qpdf {
 			}
 			for (const path of outputs) ensureDirs(qpdf.FS, path);
 			for (const dir of outputDirs) ensureDirs(qpdf.FS, `${dir}/x`);
+			const watched = readProgress && inputs[readProgress.path];
+			if (readProgress && watched) watchReads(qpdf.FS, readProgress.path, watched.length, readProgress.report, readProgress.everyMs ?? READ_EVERY_MS);
 			let code: number;
 			try {
 				code = qpdf.callMain([...args]);
@@ -210,6 +221,45 @@ function ensureDirs(fs: EmscriptenFS, path: string) {
 			// Exists.
 		}
 	}
+}
+
+const READ_BLOCK = 4096;
+const READ_EVERY_MS = 200;
+
+/**
+ * Wraps this instance's FS.read (each run has its own instance, so nothing is restored)
+ * to count the 4 KB blocks of `path` read so far. The cost is a few operations per read
+ * call (qpdf reads in 1 KB to megabyte pieces) and one byte per block.
+ */
+function watchReads(fs: EmscriptenFS, path: string, total: number, report: (read: number, total: number) => void, everyMs: number) {
+	const seen = new Uint8Array(Math.max(1, Math.ceil(total / READ_BLOCK)));
+	let blocks = 0;
+	let last = performance.now();
+	const read = fs.read;
+	fs.read = function (stream, buffer, offset, length, position) {
+		const n = read.call(this, stream, buffer, offset, length, position);
+		if (n > 0 && stream?.path === path) {
+			// Without `position` the stream's own position was used and has moved on by n.
+			const start = typeof position === 'number' ? position : stream.position - n;
+			const end = Math.min(seen.length - 1, Math.floor((start + n - 1) / READ_BLOCK));
+			for (let b = Math.max(0, Math.floor(start / READ_BLOCK)); b <= end; b++) {
+				if (seen[b] === 0) {
+					seen[b] = 1;
+					blocks++;
+				}
+			}
+			const t = performance.now();
+			if (t - last >= everyMs) {
+				last = t;
+				try {
+					report(Math.min(total, blocks * READ_BLOCK), total);
+				} catch {
+					// A listener's trouble must not stop qpdf.
+				}
+			}
+		}
+		return n;
+	};
 }
 
 function decode(bytes: number[]): string {
