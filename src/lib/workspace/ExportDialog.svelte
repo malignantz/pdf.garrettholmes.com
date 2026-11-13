@@ -91,6 +91,8 @@
 				/** "12 pictures in one zip, 3.4 MB"; null for one PDF. */
 				line: string | null;
 				notes: string[];
+				/** Split: one line per file made ("name-part-01.pdf: pages 1–2, 120 KB"). */
+				files: string[];
 			}
 		| { kind: 'failed'; error: EngineErrorShape };
 
@@ -355,10 +357,12 @@
 					url: '',
 					blob: out.blob,
 					made: 'pictures',
-					checks: out.checks,
+					// The PDF behind the pictures never has a password: that line would only confuse.
+					checks: out.checks.filter((c) => c.name !== 'encryption'),
 					pageCount: out.pageCount,
 					warnings: out.warnings,
 					result: null,
+					files: [],
 					headline: headline(out.checks, out.pageCount),
 					line,
 					notes: [
@@ -398,7 +402,8 @@
 					result: null,
 					headline: `Checked: ${plural(out.parts.length, 'file')}, ${plural(out.pageCount, 'page')} in all, each opens cleanly.`,
 					line: `${out.parts.length} files in one zip, ${formatBytes(out.blob.size)}`,
-					notes: splitNotes(out)
+					notes: splitNotes(out),
+					files: out.parts.map((p) => `${p.name}: ${p.pages}, ${formatBytes(p.bytes)}`)
 				};
 			} else {
 				const result = await engine.exportPlan(store.toExportPlan(options, mode === 'extract' ? ids : undefined), sources, assets, {
@@ -418,7 +423,8 @@
 					result,
 					headline: headline(result.checks, result.pageCount),
 					line: null,
-					notes: []
+					notes: [],
+					files: []
 				};
 			}
 			if (control?.signal.aborted) {
@@ -808,6 +814,13 @@
 					{#each phase.notes as line, i (i)}<p class="caption">{line}</p>{/each}
 				</div>
 			{/if}
+			{#if phase.files.length}
+				<ul class="files caption num">
+					{#each phase.files.length > 8 ? [...phase.files.slice(0, 6), `…and ${phase.files.length - 6} more`] : phase.files as line, i (i)}
+						<li>{line}</li>
+					{/each}
+				</ul>
+			{/if}
 			{#if r}
 				{#if shrinkSummary(r)}
 					{@const sh = shrinkSummary(r)!}
@@ -930,6 +943,20 @@
 	.shrink > p:first-child,
 	.blanks {
 		font-weight: 550;
+	}
+
+	.shrink.made > p {
+		font-weight: 400;
+		color: var(--ink-soft);
+	}
+
+	.files {
+		list-style: none;
+		padding: 0;
+		display: grid;
+		gap: 2px;
+		color: var(--ink-soft);
+		overflow-wrap: anywhere;
 	}
 
 	.split {

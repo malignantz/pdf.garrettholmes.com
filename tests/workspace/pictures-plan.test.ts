@@ -78,7 +78,7 @@ describe('names, budget, estimate', () => {
 		expect(tooManyPictures(260, jpg, budget, 'jpg', 150)).toBeNull();
 		const png = estimatePictures(pages, [letter], 'png', 300, budget);
 		const msg = tooManyPictures(260, png, budget, 'png', 300)!;
-		expect(msg).toMatch(/^260 pictures at this quality would need about \d+ MB, more than this device can hold at once\. Save up to \d+ pages at a time or choose Screen quality\.$/);
+		expect(msg).toMatch(/^260 pictures at this quality would need about [\d.]+ (MB|GB), more than this device can hold at once\. Save up to \d+ pages at a time or choose Screen quality\.$/);
 		expect(png.fit).toBeLessThan(260);
 		expect(png.fit * (png.bytes / 260)).toBeLessThanOrEqual(budget);
 	});

@@ -106,7 +106,8 @@ export function estimatePictures(
 export function tooManyPictures(count: number, est: PictureEstimate, budget: number, kind: 'jpg' | 'png', dpi: number): string | null {
 	if (est.bytes <= budget) return null;
 	const lower = dpi > 150 ? ' or choose Screen quality' : kind === 'png' ? ' or choose JPG' : '';
-	return `${plural(count, 'picture')} at this quality would need about ${formatBytes(est.bytes)}, more than this device can hold at once. Save up to ${est.fit} pages at a time${lower}.`;
+	const need = est.bytes >= 1024 ** 3 ? `${(est.bytes / 1024 ** 3).toFixed(1)} GB` : formatBytes(est.bytes);
+	return `${plural(count, 'picture')} at this quality would need about ${need}, more than this device can hold at once. Save up to ${est.fit} pages at a time${lower}.`;
 }
 
 /** The same, when the pictures turn out bigger than estimated while saving. */

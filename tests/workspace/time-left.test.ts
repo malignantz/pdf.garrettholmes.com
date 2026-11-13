@@ -148,5 +148,11 @@ describe('export progress for the dialog', () => {
 		expect(progressSample({ stage: 'pictures', done: 1, total: 4 })?.final).toBe(false);
 		expect(progressSample({ stage: 'ocr-load' })).toBeNull();
 		expect(progressSample({ stage: 'pack', done: 1, total: 4 })).toBeNull();
+		// Pictures and split parts are counted across the whole job: their end is its end.
+		expect(progressText({ stage: 'picture', done: 2, total: 20 })).toBe('Saving picture 3 of 20');
+		expect(progressText({ stage: 'part', done: 1, total: 9 })).toBe('Making file 2 of 9');
+		expect(progressText({ stage: 'part', done: 9, total: 9 })).toBeNull();
+		expect(progressSample({ stage: 'picture', done: 5, total: 20 })).toEqual({ step: 'picture', fraction: 0.25, final: true });
+		expect(progressSample({ stage: 'part', done: 0, total: 9 })).toEqual({ step: 'part', fraction: 0, final: true });
 	});
 });
