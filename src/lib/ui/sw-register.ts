@@ -4,7 +4,8 @@ import { toasts } from './toasts.svelte';
  * Register the service worker (production builds only) and offer a reload when
  * a new version has installed. The worker waits until the user says so, so a
  * half-finished document is never reloaded out from under them. When `idle`
- * says there is no document open, the new version is taken at once.
+ * says there is nothing to lose (no document, no file being picked or opened),
+ * the new version is taken at once.
  */
 export async function registerServiceWorker(idle: () => boolean = () => false) {
 	if (!('serviceWorker' in navigator)) return;

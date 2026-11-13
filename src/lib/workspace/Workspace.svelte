@@ -27,6 +27,7 @@
 	import { exportForm } from './export-form.svelte';
 	import { play, snapshot } from './flip';
 	import { createIntake, type PasswordAsk } from './intake.svelte';
+	import { holdBusy } from '../ui/busy';
 	import { addedMessage, keyboardMoveSlot, pastTense, plural, slotAfterSelection } from './logic';
 
 	const { store, engine, renderer } = getApp();
@@ -190,6 +191,11 @@
 			removeEventListener('pagehide', hide);
 			document.removeEventListener('visibilitychange', vis);
 		};
+	});
+
+	// No reload for a new version while files are opening or saved work is coming back.
+	$effect(() => {
+		if (intake.busy || saved.restoring) return holdBusy();
 	});
 
 	// The export options are saved with the work (never the password).
