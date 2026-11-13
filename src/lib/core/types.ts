@@ -214,7 +214,10 @@ export interface PageRef {
 
 export interface ExportOptions {
 	filename: string;
-	/** Lossless only: recompress streams, pack objects, drop unreferenced objects. */
+	/**
+	 * Recompress streams, pack objects, drop unreferenced objects: lossless, except that
+	 * with `printCap` oversized photos are brought down to 300 ppi as drawn.
+	 */
 	compress: boolean;
 	/** AES-256 open password, or undefined for none. */
 	password?: string;
@@ -238,6 +241,14 @@ export interface ExportOptions {
 	blankFields?: boolean;
 	/** Make scanned pages searchable: an invisible OCR text layer (see OcrReport). Desktop only in the app. */
 	ocr?: boolean;
+	/**
+	 * Print-size cap (2026-11-13), only with `compress`: photos and scans that hold more
+	 * pixels than a 300 ppi print of the size they are drawn at are brought down to
+	 * 300 ppi (JPEG). Flat-colour images, masks, 1-bit, CMYK and anything the engine
+	 * cannot follow everywhere it is drawn stay exactly as they are, as does every image
+	 * of a digitally signed file. Undefined or false: off. See ExportResult.printCap.
+	 */
+	printCap?: boolean;
 }
 
 export interface ExportPlan {
@@ -259,7 +270,7 @@ export interface VerifyCheck {
 		| 'forms'
 		/** Every numbered page carries its number. */
 		| 'numbering'
-		/** After shrinking images, every page still looks like it did before. */
+		/** After shrinking or capping images, every page still looks like it did before. */
 		| 'visual'
 		/** Reports the final size. ok even when the target was not reached; ExportResult.shrink.reached says which. */
 		| 'target-size'
@@ -294,6 +305,14 @@ export interface ExportResult {
 	blankFields?: { fields: number; plain: number };
 	/** Present when ExportOptions.ocr was set. */
 	ocr?: OcrReport;
+	/**
+	 * Present when ExportOptions.printCap was on (with compress). `images`: pictures
+	 * brought down to `ppi` (0 when none needed it or none could be changed safely).
+	 * `savedBytes`: what that saved. With targetBytes it is exact (finalized size without
+	 * the cap minus with it); without, it is the saving on the image streams themselves
+	 * (finalizing twice to know it exactly would double the work).
+	 */
+	printCap?: { images: number; savedBytes: number; ppi: 300 };
 }
 
 /**
@@ -320,7 +339,9 @@ export type ExportProgress =
 	/** Loading the OCR engine (the first time: a download of a few megabytes). */
 	| { stage: 'ocr-load' }
 	/** `done` of `total` pages read so far. */
-	| { stage: 'ocr'; done: number; total: number };
+	| { stage: 'ocr'; done: number; total: number }
+	/** Print-size cap: `done` of `total` oversized pictures handled so far ("Reducing picture 3 of 20"). */
+	| { stage: 'pictures'; done: number; total: number };
 
 /** Optional extras for Engine.exportPlan. */
 export interface ExportControl {
@@ -374,6 +395,14 @@ export interface Engine {
 	 * Loads MuPDF only when a page has a picture large enough to qualify.
 	 */
 	scannedPages(source: Source): Promise<number[]>;
+	/**
+	 * Pictures the print-size cap (ExportOptions.printCap) would bring down: one entry
+	 * per picture, the 0-based pages of `source` it is drawn on. [] for blank sources,
+	 * signed files and files without such pictures. A hint for the export dialog; the
+	 * export decides for itself. Loads MuPDF only when a big enough image exists (for a
+	 * picture the app placed itself, a JPEG filling an image source's page, not at all).
+	 */
+	oversizedPictures(source: Source): Promise<number[][]>;
 }
 
 /**

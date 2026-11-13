@@ -2454,5 +2454,23 @@
 			1,
 			2
 		]
+	},
+	"print-cap.pdf": {
+		"pages": 3,
+		"label": "print-cap",
+		"size": [
+			360,
+			288
+		],
+		"note": "p1 photo JPEG at 500 ppi (capped to 600×450), p2 flat chart at 500 ppi (left), p3 photo at 300 ppi (left)"
+	},
+	"print-cap-signed.pdf": {
+		"pages": 1,
+		"label": "print-cap-signed",
+		"size": [
+			360,
+			288
+		],
+		"note": "oversized photo in a signed file: left as it is"
 	}
 }

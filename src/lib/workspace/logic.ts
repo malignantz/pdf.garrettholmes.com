@@ -335,7 +335,7 @@ export function plainCheck(
 		case 'numbering':
 			return c.ok ? 'Every numbered page carries its number.' : 'Some page numbers are missing.';
 		case 'visual':
-			return c.ok ? 'Every page still looks the same after shrinking.' : 'Some pages looked different after shrinking.';
+			return c.ok ? 'Every page still looks the same with the smaller pictures.' : 'Some pages looked different with the smaller pictures.';
 		case 'target-size':
 			// ok also when the target was out of reach: the smallest verified file is still delivered.
 			if (!c.ok) return 'The file size could not be checked.';
@@ -424,6 +424,8 @@ export interface ExportForm {
 	keepBlanks: boolean;
 	/** Make scanned pages searchable (offered on desktops only, for files with scanned pages). */
 	ocr: boolean;
+	/** Reduce oversized pictures (ExportOptions.printCap); applies only with Compress. */
+	printCap: boolean;
 }
 
 export const DEFAULT_FORM: Omit<ExportForm, 'filename'> = {
@@ -442,7 +444,8 @@ export const DEFAULT_FORM: Omit<ExportForm, 'filename'> = {
 	digits: '6',
 	lockForms: false,
 	keepBlanks: false,
-	ocr: false
+	ocr: false,
+	printCap: true
 };
 
 /** Filled blanks on the pages of a plan: text and ticks still linked to the blank they were snapped into. */
@@ -556,6 +559,8 @@ export function buildExportOptions(
 	if ((ctx.hasForm && f.lockForms) || redacting) options.flattenForms = true;
 	if (f.keepBlanks && (ctx.blanks ?? 0) > 0 && !options.flattenForms) options.blankFields = true;
 	if (f.ocr && (ctx.scanned ?? 0) > 0) options.ocr = true;
+	// Sent whether or not the dialog has counted oversized pictures yet: the engine decides.
+	if (options.compress && f.printCap) options.printCap = true;
 	return { ok: true, options };
 }
 
@@ -566,6 +571,8 @@ export function shrinkSummary(r: ExportResult): { size: string; changed: string 
 	const size = s.reached
 		? `Fits under ${formatMB(s.targetBytes)}: ${formatBytes(r.bytes.length)}.`
 		: `Smallest possible is ${formatBytes(r.bytes.length)}. You asked for ${formatMB(s.targetBytes)}.`;
-	const changed = s.imagesChanged > 0 && s.dpi > 0 ? `Photos and scans were reduced to about ${s.dpi} dpi.` : null;
+	// Only the print-size cap changed pictures: its own line says so (printCapLine).
+	const capOnly = !!r.printCap && s.dpi === r.printCap.ppi && s.imagesChanged === r.printCap.images;
+	const changed = s.imagesChanged > 0 && s.dpi > 0 && !capOnly ? `Photos and scans were reduced to about ${s.dpi} dpi.` : null;
 	return { size, changed };
 }

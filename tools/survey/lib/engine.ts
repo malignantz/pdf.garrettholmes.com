@@ -51,7 +51,12 @@ export function engine(): Engine {
 	// SURVEY_MUPDF=download: behave like a first visit in the browser (MuPDF not on the device yet).
 	const assets = nodeAssets();
 	if (process.env.SURVEY_MUPDF === 'download') assets.mupdfCached = async () => false;
-	shared ??= createCoreEngine(assets, { debug: (n) => debugNotes.push(n), lossless });
+	// SURVEY_PRINT_CAP_RULES=keep=0.444,quality=80,matchSource=0 overrides the print-size cap's rules (measuring only).
+	const rulesEnv = process.env.SURVEY_PRINT_CAP_RULES;
+	const printCapRules = rulesEnv
+		? Object.fromEntries(rulesEnv.split(',').filter(Boolean).map((kv) => { const [k, v] = kv.split('='); return [k, k === 'matchSource' ? v === '1' : Number(v)]; }))
+		: undefined;
+	shared ??= createCoreEngine(assets, { debug: (n) => debugNotes.push(n), lossless, printCapRules });
 	return shared;
 }
 

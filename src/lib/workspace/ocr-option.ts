@@ -53,6 +53,7 @@ export function ocrCapNotice(scanned: number): string | null {
 export function ocrProgressText(p: ExportProgress | null): string | null {
 	if (!p) return null;
 	if (p.stage === 'ocr-load') return 'Getting the text reader ready…';
+	if (p.stage !== 'ocr') return null;
 	// Every page read: the rest is the ordinary build and check.
 	if (p.done >= p.total) return null;
 	return `Reading page ${p.done + 1} of ${p.total}`;

@@ -13,6 +13,7 @@
 	import OptionPicker from './OptionPicker.svelte';
 	import { exportForm } from './export-form.svelte';
 	import { OCR_HINT, OCR_LABEL, countScanned, isDesktop, ocrCapNotice, ocrProgressText, ocrSummary } from './ocr-option';
+	import { PRINT_CAP_LABEL, countOversized, printCapHint, printCapLine, printCapProgressText } from './print-cap-option';
 	import {
 		FIT_CHOICES,
 		NUMBER_POSITIONS,
@@ -105,6 +106,18 @@
 			if (seq === scanSeq) scanned = n;
 		});
 	});
+	// "Reduce oversized pictures": only when a page shows a picture with more pixels than a print needs.
+	let oversized = $state(0);
+	let capSeq = 0;
+	$effect(() => {
+		const pages = plan.pages;
+		const sources = store.state.sources;
+		const seq = ++capSeq;
+		if (!open) return;
+		countOversized(engine, pages, sources).then((n) => {
+			if (seq === capSeq) oversized = n;
+		});
+	});
 	let progress = $state<ExportProgress | null>(null);
 	let abort = $state<AbortController | null>(null);
 	let cancelled = $state(false);
@@ -115,6 +128,7 @@
 		if (open && !wasOpen) {
 			cancelled = false;
 			scanned = 0;
+			oversized = 0;
 			filename = defaultFilename(plan.names, mode);
 			phase = { kind: 'form' };
 			password = '';
@@ -194,7 +208,7 @@
 		};
 		progress = null;
 		cancelled = false;
-		const control = built.options.ocr ? new AbortController() : null;
+		const control = built.options.ocr || built.options.printCap ? new AbortController() : null;
 		abort = control;
 		try {
 			const s = store.state;
@@ -361,8 +375,11 @@
 					onchange={(v) => (f.compress = v)}
 					disabled={f.fit}
 					label="Compress"
-					hint="Lossless: images and text stay exactly as they are."
+					hint={f.printCap ? 'Text and drawings stay exactly as they are.' : 'Lossless: images and text stay exactly as they are.'}
 				/>
+				{#if oversized > 0 && (f.compress || f.fit)}
+					<Toggle bind:checked={f.printCap} label={PRINT_CAP_LABEL} hint={printCapHint(oversized)} />
+				{/if}
 
 				<Toggle
 					bind:checked={f.fit}
@@ -489,9 +506,9 @@
 		<div class="working" role="status">
 			<Progress
 				label="Building and checking your file"
-				value={progress?.stage === 'ocr' && progress.done < progress.total ? progress.done / progress.total : undefined}
+				value={(progress?.stage === 'ocr' || progress?.stage === 'pictures') && progress.done < progress.total ? progress.done / progress.total : undefined}
 			/>
-			<p>{ocrProgressText(progress) ?? phase.fitting ?? `Building and checking ${plural(plan.count, 'page')}…`}</p>
+			<p>{ocrProgressText(progress) ?? printCapProgressText(progress) ?? phase.fitting ?? `Building and checking ${plural(plan.count, 'page')}…`}</p>
 			<p class="caption">Every export is re-opened and checked before you can save it.</p>
 		</div>
 	{:else if phase.kind === 'done'}
@@ -509,6 +526,7 @@
 					{#if sh.changed}<p class="caption">{sh.changed}</p>{/if}
 				</div>
 			{/if}
+			{#if printCapLine(r)}<p class="blanks">{printCapLine(r)}</p>{/if}
 			{#if blankFieldsLine(r)}<p class="blanks">{blankFieldsLine(r)}</p>{/if}
 			{#if ocrSummary(r.ocr).length}
 				<div class="shrink ocr-result">
