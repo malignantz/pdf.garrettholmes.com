@@ -46,6 +46,11 @@ sits outside the V8 heap), and a child silent for `--timeout` seconds is killed.
 remaining scenarios of that file continue in a new child. Poppler runs under
 `prlimit --as=2G` with its own timeout. Default memory: 3 × 1.8 GB.
 
+Environment switches for measuring (all off by default): `SURVEY_LOSSLESS=pack,level9,…`
+(lossless passes to keep), `SURVEY_MUPDF=download` (MuPDF not on the device yet),
+`SURVEY_PRINT_CAP=1` (the print-size cap on in every scenario; it acts where compress is on:
+`plain`, `arrange`, `target`), `SURVEY_PRINT_CAP_RULES=keep=0.444,quality=80` (other cap rules).
+
 ## Scenarios (`run`)
 
 `open`, `plain` (all pages, lossless compress), `arrange` (reverse, rotate one,

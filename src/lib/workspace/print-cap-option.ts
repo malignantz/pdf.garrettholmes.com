@@ -8,11 +8,13 @@ import type { Engine, ExportProgress, ExportResult, PageRef, Source, SourceId } 
 import { formatBytes, plural } from './logic';
 
 export const PRINT_CAP_LABEL = 'Reduce oversized pictures';
+/** The engine's cap (engine/print-cap.ts CAP_PPI, not imported: it pulls in the engine; checked by a test). */
+export const PRINT_CAP_PPI = 300;
 
 export function printCapHint(count: number): string {
 	return count === 1
-		? 'One picture holds more detail than a printer can use. It is brought down to 300 dpi; text stays sharp.'
-		: `${count} pictures hold more detail than a printer can use. They are brought down to 300 dpi; text stays sharp.`;
+		? `One picture holds more detail than a printer can use. It is brought down to ${PRINT_CAP_PPI} dpi; text stays sharp.`
+		: `${count} pictures hold more detail than a printer can use. They are brought down to ${PRINT_CAP_PPI} dpi; text stays sharp.`;
 }
 
 /** Oversized pictures per source (each with the pages it is drawn on), asked once per source. */

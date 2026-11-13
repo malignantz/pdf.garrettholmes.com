@@ -308,11 +308,11 @@ export interface ExportResult {
 	/**
 	 * Present when ExportOptions.printCap was on (with compress). `images`: pictures
 	 * brought down to `ppi` (0 when none needed it or none could be changed safely).
-	 * `savedBytes`: what that saved. With targetBytes it is exact (finalized size without
+	 * `ppi`: the cap (print-cap.ts CAP_PPI). `savedBytes`: what that saved. With targetBytes it is exact (finalized size without
 	 * the cap minus with it); without, it is the saving on the image streams themselves
 	 * (finalizing twice to know it exactly would double the work).
 	 */
-	printCap?: { images: number; savedBytes: number; ppi: 300 };
+	printCap?: { images: number; savedBytes: number; ppi: number };
 }
 
 /**

@@ -105,6 +105,8 @@ export interface CapBuild {
 	streamSaved: number;
 	/** The visual check's detail line. */
 	visual: string;
+	/** The resolution pictures were brought down to. */
+	ppi: number;
 }
 
 export interface CapOptions {
@@ -255,7 +257,7 @@ export async function capPictures(deps: EngineDeps, bytes: Uint8Array, opts: Cap
 			const ps = v.failed.map((p) => p + 1);
 			visual += ` Pictures on page${ps.length === 1 ? '' : 's'} ${ps.join(', ')} were kept as they were because the reduced version did not match closely enough.`;
 		}
-		return { bytes: out, images, streamSaved: saved, visual };
+		return { bytes: out, images, streamSaved: saved, visual, ppi: r.ppi };
 	} catch (e) {
 		if (e instanceof EngineError && e.code === 'cancelled') throw e;
 		if (isWasmFault(e) || isRetired(m)) throw e;

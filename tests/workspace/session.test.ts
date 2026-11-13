@@ -223,6 +223,12 @@ describe('format', () => {
 		expect(cleanExportForm({ ...DEFAULT_FORM, password: 'x' } as never)).toEqual(DEFAULT_FORM);
 	});
 
+	it('keeps the print-size cap choice; records from before it read as on (the default)', () => {
+		expect(cleanExportForm({ ...DEFAULT_FORM, printCap: false }).printCap).toBe(false);
+		const { printCap: _gone, ...old } = DEFAULT_FORM;
+		expect(cleanExportForm(old).printCap).toBe(true);
+	});
+
 	it('still reads schema 1 records (before links to blanks)', () => {
 		const rec = base();
 		const v1 = structuredClone({ ...rec, schema: 1 }) as unknown as { pages: { stamps: Record<string, unknown>[] }[] };

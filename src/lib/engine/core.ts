@@ -52,7 +52,7 @@ import { PdfjsOpenError, inspectWithPdfjs, type PdfjsLib } from './pdfjs';
 import { QPDF_ERROR, QPDF_OK, QPDF_WARNINGS, Qpdf, type QpdfLoader, type QpdfResult } from './qpdf';
 import { applyRedactions, verifyRedactions, type RedactJob } from './redact';
 import { shrinkToTarget, type PrintCapReport, type ShrinkReport } from './shrink';
-import { capPictures, oversizedPictures, type CapRules } from './print-cap';
+import { CAP_PPI, capPictures, oversizedPictures, type CapRules } from './print-cap';
 import { applyStamps, type StampJob } from './stamps';
 import { linked, precheck, proveFields, verifyBlankFields, type BlankFieldsJob, type MadeField, type PlainReason } from './blank-fields';
 import { cleanupWithMupdf, cleanupWorthIt, estimateCleanup, sameStructure } from './cleanup';
@@ -615,23 +615,26 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			// and each step gets the stream pass only (no JPEG repack either).
 			const cleaned = await cleanupOnly(bytes);
 			const finalize = (b: Uint8Array) => finalizeBytes(b, options, warnings, undefined, false);
-			const r = await shrinkToTarget(deps, cleaned, target, finalize, capOn ? { cap: () => capPictures(deps, cleaned, capOpts) } : {});
+			const r = await shrinkToTarget(deps, cleaned, target, finalize, capOn ? { cap: () => capPictures(deps, cleaned, capOpts), capPpi: capRules?.ppi ?? CAP_PPI } : {});
 			final = r.bytes;
 			shrink = r.shrink;
 			printCap = r.printCap;
 			stageChecks.push(...r.checks);
 		} else {
+			// The cleanup's rule depends on whether MuPDF is loaded already: the cap loading it
+			// must not change that rule (or a file it leaves alone could come out different).
+			const loadedBefore = mupdfLoaded();
 			if (capOn) {
 				const c = await capPictures(deps, bytes, capOpts);
 				// Saved bytes are the image streams' own (finalizing without the cap too would double the work).
-				printCap = { images: c?.images ?? 0, savedBytes: c?.streamSaved ?? 0, ppi: 300 };
+				printCap = { images: c?.images ?? 0, savedBytes: c?.streamSaved ?? 0, ppi: capRules?.ppi ?? CAP_PPI };
 				if (c) {
 					bytes = c.bytes;
 					stageChecks.push({ name: 'visual', ok: true, detail: c.visual });
 				}
 			}
 			throwIfCancelled(control);
-			final = await finalizeBytes(bytes, options, warnings, alt);
+			final = await finalizeBytes(bytes, options, warnings, alt, true, loadedBefore);
 		}
 
 		throwIfCancelled(control);
@@ -692,7 +695,9 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		options: { compress: boolean; stripMetadata: boolean; password?: string },
 		warnings: string[],
 		alt?: Alternative,
-		full = true
+		full = true,
+		/** Whether MuPDF counts as loaded for the cleanup rule (default: whether it is). */
+		loaded?: boolean
 	): Promise<Uint8Array> {
 		if (!options.compress) return finalizeRun(bytes, options, warnings);
 		const plainWarnings: string[] = [];
@@ -700,7 +705,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		const packWarnings: string[] = [];
 		let packed: Uint8Array | unknown;
 		try {
-			packed = await finalizeRun(await losslessPre(bytes, { cleanup: full, pack: true, jpeg: full }), options, packWarnings);
+			packed = await finalizeRun(await losslessPre(bytes, { cleanup: full, pack: true, jpeg: full, loaded }), options, packWarnings);
 		} catch (e) {
 			if (isWasmFault(e)) throw e;
 			packed = e;
@@ -738,7 +743,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 	 * → stream pass (with the JPEG repack when `which.jpeg`). Each one that errors, runs out of time or would change the
 	 * file's structure is skipped (debug note only); `bytes` is the fallback.
 	 */
-	async function losslessPre(bytes: Uint8Array, which = { cleanup: true, pack: true, jpeg: true }): Promise<Uint8Array> {
+	async function losslessPre(bytes: Uint8Array, which: { cleanup: boolean; pack: boolean; jpeg: boolean; loaded?: boolean } = { cleanup: true, pack: true, jpeg: true }): Promise<Uint8Array> {
 		const doCleanup = passes.cleanup !== false && which.cleanup;
 		const doPack = passes.pack && which.pack;
 		if (!doPack && !doCleanup) return bytes;
@@ -758,7 +763,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		let src = bytes;
 		if (doCleanup) {
 			const est = await estimateCleanup(dump);
-			const cost = mupdfLoaded() ? 'loaded' : (await assets.mupdfCached?.().catch(() => false)) === false ? 'download' : 'cached';
+			const cost = (which.loaded ?? mupdfLoaded()) ? 'loaded' : (await assets.mupdfCached?.().catch(() => false)) === false ? 'download' : 'cached';
 			const run = passes.cleanup === 'always' || cleanupWorthIt(est, bytes.length, cost);
 			debug(`cleanup: estimate ${Math.round(est.gain)} bytes (fonts ${est.fontBytes}, whole ${est.fullFontBytes}, duplicates ${est.dupBytes}, subset ${est.subset}), MuPDF ${cost}: ${run ? 'run' : 'skip'}`);
 			if (run) {

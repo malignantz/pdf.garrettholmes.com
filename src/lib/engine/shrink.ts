@@ -114,6 +114,8 @@ export interface ShrinkOptions {
 	 * ladder (the ladder starts again from the original pixels).
 	 */
 	cap?: () => Promise<CapBuild | null>;
+	/** The cap's resolution, for the report when it changed nothing. */
+	capPpi?: number;
 }
 export type Limits = { blockMean: number; blockBias: number; pageMean: number };
 
@@ -149,7 +151,7 @@ export async function shrinkToTarget(
 	// The print-size cap's file, finalized, when it changed anything and came out smaller.
 	let capped: { build: CapBuild; final: Uint8Array } | null = null;
 	const report = (): PrintCapReport | undefined =>
-		opts.cap ? { images: capped?.build.images ?? 0, savedBytes: capped ? lossless.length - capped.final.length : 0, ppi: 300 } : undefined;
+		opts.cap ? { images: capped?.build.images ?? 0, savedBytes: capped ? lossless.length - capped.final.length : 0, ppi: opts.capPpi ?? 300 } : undefined;
 	const done = (out: Uint8Array, changed: number, ppi: number, visual: string, why?: string) => {
 		const reached = out.length <= targetBytes;
 		const fromCap = capped !== null && out === capped.final;
@@ -174,7 +176,7 @@ export async function shrinkToTarget(
 		}
 		trace(`print-size cap ${ms(t)} ms: ${capped ? `${capped.build.images} images → ${capped.final.length} bytes` : 'nothing changed'}`);
 	}
-	const cappedDone = (why?: string) => done(capped!.final, capped!.build.images, 300, capped!.build.visual, why);
+	const cappedDone = (why?: string) => done(capped!.final, capped!.build.images, capped!.build.ppi, capped!.build.visual, why);
 	if (capped && capped.final.length <= targetBytes) return cappedDone();
 	if (lossless.length <= targetBytes) return done(lossless, 0, 0, untouched);
 	// Below: the ladder from the original pixels; the capped file is the fallback when it cannot help.

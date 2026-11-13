@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { ExportResult, PageRef, Source } from '../../src/lib/core/types';
 import { DEFAULT_FORM, shrinkSummary } from '../../src/lib/workspace/logic';
-import { PRINT_CAP_LABEL, countOversized, printCapHint, printCapLine, printCapProgressText } from '../../src/lib/workspace/print-cap-option';
+import { CAP_PPI } from '../../src/lib/engine/print-cap';
+import { PRINT_CAP_PPI, PRINT_CAP_LABEL, countOversized, printCapHint, printCapLine, printCapProgressText } from '../../src/lib/workspace/print-cap-option';
 import { ocrProgressText } from '../../src/lib/workspace/ocr-option';
 
 describe('Reduce oversized pictures: dialog words', () => {
+	it('states the engine\'s cap', () => {
+		expect(PRINT_CAP_PPI).toBe(CAP_PPI);
+	});
+
 	it('is on by default and says what it does', () => {
 		expect(DEFAULT_FORM.printCap).toBe(true);
 		expect(PRINT_CAP_LABEL).toBe('Reduce oversized pictures');
