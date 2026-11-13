@@ -178,6 +178,11 @@ export async function capPictures(deps: EngineDeps, bytes: Uint8Array, opts: Cap
 		}
 		trace(`analysis ${ms(t)} ms: ${found.length} oversized, ${cands.length} photo-like`);
 		if (cands.length === 0) return null;
+		// JPEG originals: their delivered size, and any that libjpeg finds corrupt (left alone).
+		const facts = await jpegFacts(deps.qpdf, bytes, orig, cands);
+		for (const [num, f] of facts) if (f.damaged) note(`print-cap: ${num} has JPEG data libjpeg finds corrupt; left as it is`);
+		cands.splice(0, cands.length, ...cands.filter((c) => !facts.get(c.num)?.damaged));
+		if (cands.length === 0) return null;
 		const total = cands.length;
 		const progress = (done: number) => opts.control?.onProgress?.({ stage: 'pictures', done, total });
 		progress(0);
@@ -185,13 +190,26 @@ export async function capPictures(deps: EngineDeps, bytes: Uint8Array, opts: Cap
 		t = now();
 		for (const [i, c] of cands.entries()) {
 			check();
-			const e = capImage(m, orig, c, r, note);
+			// An image MuPDF reads with any complaint (damaged data it papers over) stays as it is:
+			// re-encoding would bake MuPDF's guess into a clean new stream.
+			const complaints: string[] = [];
+			m.setLog({ error: (x: string) => complaints.push(x), warning: (x: string) => complaints.push(x) });
+			let e: Capped | null;
+			try {
+				e = capImage(m, orig, c, r, note);
+			} finally {
+				m.setLog(null);
+			}
+			if (e && complaints.length) {
+				note(`print-cap: ${c.num} read with "${complaints[0].slice(0, 80)}"; left as it is`);
+				e = null;
+			}
 			if (e) {
 				e.data = await baseline(e.data, note);
 				// Measured against the original as a compressed export delivers it: a JPEG
 				// source after the lossless repack (often 5–30% smaller than stored).
-				if (e.data.length <= r.gain * c.rawLength) e.before = await deliveredSize(orig, c);
-				if (e.data.length <= r.gain * (e.before ?? 0)) enc.set(c.num, e);
+				e.before = facts.get(c.num)?.before ?? c.rawLength;
+				if (e.data.length <= r.gain * e.before) enc.set(c.num, e);
 			}
 			progress(i + 1);
 			// A macrotask, so the worker sees a cancel message between images.
@@ -293,33 +311,58 @@ type Capped = {
 	data: Uint8Array;
 	width: number;
 	height: number;
-	/** The original's stream size as a compressed export would deliver it (deliveredSize). */
+	/** The original's stream size as a compressed export would deliver it (jpegFacts). */
 	before?: number;
 };
 
 /**
- * The stored size of an image as the lossless passes leave it: for a plain /DCTDecode
- * stream, the lossless repack's size when it is smaller (pack.ts would use it; the
- * coefficient check is left to that pass, this is only a size). Otherwise the stored size.
+ * What the JPEG originals among `cands` are like, before anything is decoded for the cap:
+ * - `before`: the stored size as the lossless passes leave it (the repack's size when it is
+ *   smaller, as pack.ts would deliver it; the coefficient check is left to that pass);
+ * - `damaged`: libjpeg (the repack's module, or qpdf --check for images too big for it)
+ *   finds the data corrupt. MuPDF decodes such data without a word, so re-encoding would
+ *   bake its guess into a clean stream and turn a file today's export refuses into one it
+ *   delivers: such images stay as they are.
  */
-async function deliveredSize(doc: PDFDocument, c: Candidate): Promise<number> {
-	if (!c.jpegSource) return c.rawLength;
-	const obj = doc.newIndirect(c.num);
-	const f = obj.get('Filter');
-	const name = f.isName() ? f.asName() : f.isArray() && f.length === 1 && f.get(0).isName() ? f.get(0).asName() : null;
-	if (name !== 'DCTDecode' && name !== 'DCT') return c.rawLength;
-	const raw = obj.readRawStream();
-	try {
-		const jpeg = raw.asUint8Array();
-		const a = parseJpeg(jpeg);
-		if (!a.ok || a.info.coefBytes > BASELINE_MAX_COEF) return c.rawLength;
-		const r = await repackJpeg(jpeg, BASELINE_MAX_COEF);
-		return r.ok ? Math.min(c.rawLength, r.jpeg.length) : c.rawLength;
-	} catch {
-		return c.rawLength;
-	} finally {
-		raw.destroy();
+async function jpegFacts(qpdf: Qpdf, bytes: Uint8Array, doc: PDFDocument, cands: Candidate[]): Promise<Map<number, { before: number; damaged: boolean }>> {
+	const out = new Map<number, { before: number; damaged: boolean }>();
+	const unchecked: number[] = [];
+	for (const c of cands) {
+		if (!c.jpegSource) continue;
+		const fact = { before: c.rawLength, damaged: false };
+		out.set(c.num, fact);
+		const obj = doc.newIndirect(c.num);
+		const f = obj.get('Filter');
+		const name = f.isName() ? f.asName() : f.isArray() && f.length === 1 && f.get(0).isName() ? f.get(0).asName() : null;
+		if (name !== 'DCTDecode' && name !== 'DCT') {
+			unchecked.push(c.num);
+			continue;
+		}
+		const raw = obj.readRawStream();
+		try {
+			const jpeg = raw.asUint8Array();
+			const a = parseJpeg(jpeg);
+			if (!a.ok) fact.damaged = true;
+			else if (a.info.coefBytes > BASELINE_MAX_COEF) unchecked.push(c.num);
+			else {
+				const r = await repackJpeg(jpeg, BASELINE_MAX_COEF);
+				if (r.ok) fact.before = Math.min(c.rawLength, r.jpeg.length);
+				else if (r.why === 'warning') fact.damaged = true;
+				else unchecked.push(c.num);
+			}
+		} catch {
+			unchecked.push(c.num);
+		} finally {
+			raw.destroy();
+		}
 	}
+	if (unchecked.length) {
+		// One qpdf --check of the file (it decodes every JPEG with libjpeg); it does not say
+		// which image, so on a complaint every unchecked one stays.
+		const res = await qpdf.run({ args: ['--check', '/c.pdf'], inputs: { '/c.pdf': bytes } });
+		if (/Pl_DCT|JPEG/i.test(`${res.stderr}\n${res.stdout}`)) for (const n of unchecked) out.get(n)!.damaged = true;
+	}
+	return out;
 }
 
 /**

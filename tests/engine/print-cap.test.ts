@@ -208,6 +208,37 @@ describe('print-size cap: through the export', () => {
 		expect(CAP_RULES).toMatchObject({ ppi: 300, quality: 85, keep: 0.8, gain: 0.8 });
 	}, T);
 
+	it('leaves a JPEG whose data libjpeg finds corrupt (MuPDF would decode it without a word)', async () => {
+		const m = await mupdf();
+		const doc = new m.PDFDocument((await openCorpus('print-cap.pdf')).bytes);
+		let img: PDFObject | null = null;
+		doc.findPage(0)
+			.getInheritable('Resources')
+			.get('XObject')
+			.forEach((v) => {
+				if (v.get('Subtype').asName() === 'Image') img = v;
+			});
+		const o = img as unknown as PDFObject;
+		const raw = o.readRawStream();
+		const src = raw.asUint8Array().slice();
+		raw.destroy();
+		// A stray restart marker in the middle of the entropy-coded data (the file has no restart
+		// interval): libjpeg warns "Corrupt JPEG data"; the frame and markers still parse.
+		const mid = Math.floor(src.length / 2);
+		const j = new Uint8Array(src.length + 2);
+		j.set(src.subarray(0, mid));
+		j.set([0xff, 0xd3], mid);
+		j.set(src.subarray(mid), mid + 2);
+		o.writeRawStream(j);
+		const buf = doc.saveToBuffer('');
+		const bytes = buf.asUint8Array().slice();
+		buf.destroy();
+		doc.destroy();
+		const notes: string[] = [];
+		expect(await capPictures(deps, bytes, { debug: (n) => notes.push(n) })).toBeNull();
+		expect(notes.some((n) => /JPEG data libjpeg finds corrupt; left as it is/.test(n))).toBe(true);
+	}, T);
+
 	it('restores the pictures when the reduced page does not match', async () => {
 		const bytes = (await openCorpus('print-cap.pdf')).bytes;
 		const notes: string[] = [];
