@@ -179,7 +179,7 @@ export async function capPictures(deps: EngineDeps, bytes: Uint8Array, opts: Cap
 		trace(`analysis ${ms(t)} ms: ${found.length} oversized, ${cands.length} photo-like`);
 		if (cands.length === 0) return null;
 		// JPEG originals: their delivered size, and any that libjpeg finds corrupt (left alone).
-		const facts = await jpegFacts(deps.qpdf, bytes, orig, cands);
+		const facts = await jpegFacts(deps.qpdf, bytes, orig, cands, opts.control?.onProgress && ((done, total) => opts.control!.onProgress!({ stage: 'pictures-read', done, total })));
 		for (const [num, f] of facts) if (f.damaged) note(`print-cap: ${num} has JPEG data libjpeg finds corrupt; left as it is`);
 		cands.splice(0, cands.length, ...cands.filter((c) => !facts.get(c.num)?.damaged));
 		if (cands.length === 0) return null;
@@ -325,11 +325,18 @@ type Capped = {
  *   bake its guess into a clean stream and turn a file today's export refuses into one it
  *   delivers: such images stay as they are.
  */
-async function jpegFacts(qpdf: Qpdf, bytes: Uint8Array, doc: PDFDocument, cands: Candidate[]): Promise<Map<number, { before: number; damaged: boolean }>> {
+async function jpegFacts(
+	qpdf: Qpdf,
+	bytes: Uint8Array,
+	doc: PDFDocument,
+	cands: Candidate[],
+	progress?: (done: number, total: number) => void
+): Promise<Map<number, { before: number; damaged: boolean }>> {
 	const out = new Map<number, { before: number; damaged: boolean }>();
 	const unchecked: number[] = [];
-	for (const c of cands) {
-		if (!c.jpegSource) continue;
+	const jpegs = cands.filter((c) => c.jpegSource);
+	for (const [i, c] of jpegs.entries()) {
+		progress?.(i, jpegs.length);
 		const fact = { before: c.rawLength, damaged: false };
 		out.set(c.num, fact);
 		const obj = doc.newIndirect(c.num);

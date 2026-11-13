@@ -346,6 +346,8 @@ export type ExportProgress =
 	// may run more than once (fit under a size tries steps; a failed check retries).
 	/** Compress: `done` of `total` bytes of stream data through the lossless pass (it may stop early on its time budget). */
 	| { stage: 'pack'; done: number; total: number }
+	/** Print-size cap, before 'pictures': `done` of `total` JPEG pictures read and measured (their size after the lossless repack). */
+	| { stage: 'pictures-read'; done: number; total: number }
 	/** Fit under a size: `done` of `total` pictures re-encoded for the step being tried. */
 	| { stage: 'reduce'; done: number; total: number }
 	/** Fit under a size and the print-size cap: `done` of `total` pages rendered before and after and compared. */

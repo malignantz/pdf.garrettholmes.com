@@ -21,6 +21,8 @@ export function progressText(p: ExportProgress | null): string | null {
 	switch (p.stage) {
 		case 'pack':
 			return 'Compressing…';
+		case 'pictures-read':
+			return `Looking at picture ${p.done + 1} of ${p.total}`;
 		case 'reduce':
 			return `Reducing picture ${p.done + 1} of ${p.total}`;
 		case 'compare':

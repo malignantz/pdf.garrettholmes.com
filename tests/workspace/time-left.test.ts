@@ -134,6 +134,7 @@ describe('export progress for the dialog', () => {
 	it('words each stage plainly', () => {
 		expect(progressText({ stage: 'ocr', done: 2, total: 12 })).toBe('Reading page 3 of 12');
 		expect(progressText({ stage: 'pictures', done: 2, total: 20 })).toBe('Reducing picture 3 of 20');
+		expect(progressText({ stage: 'pictures-read', done: 4, total: 260 })).toBe('Looking at picture 5 of 260');
 		expect(progressText({ stage: 'reduce', done: 0, total: 260 })).toBe('Reducing picture 1 of 260');
 		expect(progressText({ stage: 'compare', done: 9, total: 260 })).toBe('Comparing page 10 of 260');
 		expect(progressText({ stage: 'pack', done: 10, total: 100 })).toBe('Compressing…');
