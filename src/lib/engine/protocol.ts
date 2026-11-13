@@ -67,7 +67,8 @@ export const METHODS: readonly EngineMethod[] = [
 	'formFields',
 	'pageBlanks',
 	'pageText',
-	'scannedPages'
+	'scannedPages',
+	'oversizedPictures'
 ];
 
 /**

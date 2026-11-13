@@ -90,7 +90,7 @@ test('fit under a size: reached', async ({ page }) => {
 	await expect(done.getByText('Checked: 12 pages, opens cleanly.')).toBeVisible({ timeout: 150_000 });
 	await expect(done.getByText(/^Fits under 0\.3 MB: \d+ KB\.$/)).toBeVisible();
 	await expect(done.getByText(/^Photos and scans were reduced to about \d+ dpi\.$/)).toBeVisible();
-	await expect(done.getByText('Every page still looks the same after shrinking.')).toBeVisible();
+	await expect(done.getByText('Every page still looks the same with the smaller pictures.')).toBeVisible();
 	// The choice stays when the dialog is reopened.
 	await done.getByRole('button', { name: 'Close', exact: true }).last().click();
 	await page.getByRole('button', { name: 'Export', exact: true }).click();

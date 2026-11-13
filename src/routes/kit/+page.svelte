@@ -134,7 +134,7 @@
 		<div class="group">
 			<h3>Toggles and slider</h3>
 			<div class="stack">
-				<Toggle bind:checked={compress} label="Compress" hint="Lossless: images and text are untouched." />
+				<Toggle bind:checked={compress} label="Compress" hint="Text and drawings stay exactly as they are." />
 				<Toggle bind:checked={strip} label="Remove metadata" />
 				<Toggle checked={false} disabled label="Disabled option" />
 				<Slider bind:value={size} min={1} max={6} label="Thumbnail size" valueText={(v) => `Size ${v} of 6`}>

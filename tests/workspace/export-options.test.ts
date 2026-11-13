@@ -44,7 +44,14 @@ describe('size target', () => {
 describe('options mapping', () => {
 	it('keeps defaults plain', () => {
 		const r = buildExportOptions(form(), ctx);
-		expect(r).toEqual({ ok: true, options: { filename: 'a.pdf', compress: true, stripMetadata: false, password: undefined } });
+		expect(r).toEqual({ ok: true, options: { filename: 'a.pdf', compress: true, stripMetadata: false, password: undefined, printCap: true } });
+	});
+
+	it('sends the print-size cap only with compression (fit implies it), whatever the dialog counted', () => {
+		expect(buildExportOptions(form({ compress: false }), ctx)).toMatchObject({ ok: true, options: { compress: false } });
+		expect((buildExportOptions(form({ compress: false }), ctx) as { options: object }).options).not.toHaveProperty('printCap');
+		expect(buildExportOptions(form({ compress: false, fit: true }), ctx)).toMatchObject({ ok: true, options: { compress: true, printCap: true } });
+		expect((buildExportOptions(form({ printCap: false }), ctx) as { options: object }).options).not.toHaveProperty('printCap');
 	});
 
 	it('fit implies compress and sets targetBytes', () => {

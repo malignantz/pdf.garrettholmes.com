@@ -183,7 +183,8 @@ const SCENARIO_FNS: Record<Exclude<Scenario, 'open'>, (c: Ctx) => Promise<Partia
 	target: targetScenario
 };
 
-const baseOptions: ExportOptions = { filename: 'out.pdf', compress: false, stripMetadata: false };
+// SURVEY_PRINT_CAP=1: the print-size cap on (it acts only where compress is on: plain, arrange, target).
+const baseOptions: ExportOptions = { filename: 'out.pdf', compress: false, stripMetadata: false, ...(process.env.SURVEY_PRINT_CAP === '1' ? { printCap: true } : {}) };
 
 async function exportPlan(c: Ctx, plan: ExportPlan, extraSources: Source[] = []): Promise<ExportResult> {
 	return c.eng.exportPlan(plan, [c.src, ...extraSources], []);

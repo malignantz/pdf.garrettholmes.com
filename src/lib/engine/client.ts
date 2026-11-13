@@ -188,6 +188,7 @@ export function createEngine(options: { createWorker?: () => WorkerLike } = {}):
 		formFields: (source) => call('formFields', [source]),
 		pageBlanks: (source, pageIndex) => call('pageBlanks', [source, pageIndex]),
 		scannedPages: (source) => call('scannedPages', [source]),
+		oversizedPictures: (source) => call('oversizedPictures', [source]),
 		pageText: async (source, pageIndex) => {
 			if (textSent.has(source.id)) {
 				try {

@@ -32,11 +32,13 @@
 
 import type { Matrix, PDFDocument, PDFObject, Pixmap } from 'mupdf';
 import type { ExportResult, VerifyCheck } from '../core/types';
+import type { CapBuild } from './print-cap';
 import type { EngineDeps } from './deps';
 import { EngineError } from './errors';
 import { isRetired, isWasmFault, rethrowFault, type Mupdf } from './mupdf';
 
 export type ShrinkReport = NonNullable<ExportResult['shrink']>;
+export type PrintCapReport = NonNullable<ExportResult['printCap']>;
 
 export interface LadderStep {
 	/** Cap on pixels per inch as the image is drawn at its largest. */
@@ -82,9 +84,9 @@ export const BLOCK = 16;
 export const LIMITS: Readonly<Limits> = { blockMean: 24, blockBias: 14, pageMean: 6 };
 
 /** A re-encoded image. Flate output uses PNG row predictors (/Predictor 15). */
-type Encoded = { data: Uint8Array; filter: 'DCTDecode' | 'FlateDecode'; width: number; height: number; n: number };
+export type Encoded = { data: Uint8Array; filter: 'DCTDecode' | 'FlateDecode'; width: number; height: number; n: number };
 
-interface Candidate {
+export interface Candidate {
 	num: number;
 	width: number;
 	height: number;
@@ -106,6 +108,14 @@ export interface ShrinkOptions {
 	limits?: Limits;
 	/** Called with a line per phase (timings, sizes). */
 	trace?: (line: string) => void;
+	/**
+	 * The print-size cap (print-cap.ts), when ExportOptions.printCap is on: applied when
+	 * the lossless file fits already, and otherwise tried as the mildest step before the
+	 * ladder (the ladder starts again from the original pixels).
+	 */
+	cap?: () => Promise<CapBuild | null>;
+	/** The cap's resolution, for the report when it changed nothing. */
+	capPpi?: number;
 }
 export type Limits = { blockMean: number; blockBias: number; pageMean: number };
 
@@ -133,30 +143,50 @@ export async function shrinkToTarget(
 	targetBytes: number,
 	finalize: (b: Uint8Array) => Promise<Uint8Array>,
 	opts: ShrinkOptions = {}
-): Promise<{ bytes: Uint8Array; shrink: ShrinkReport; checks: VerifyCheck[] }> {
+): Promise<{ bytes: Uint8Array; shrink: ShrinkReport; checks: VerifyCheck[]; printCap?: PrintCapReport }> {
 	const trace = opts.trace ?? (() => {});
 	let t = now();
 	const lossless = await finalize(bytes);
 	trace(`lossless finalize ${ms(t)} ms → ${lossless.length} bytes`);
+	// The print-size cap's file, finalized, when it changed anything and came out smaller.
+	let capped: { build: CapBuild; final: Uint8Array } | null = null;
+	const report = (): PrintCapReport | undefined =>
+		opts.cap ? { images: capped?.build.images ?? 0, savedBytes: capped ? lossless.length - capped.final.length : 0, ppi: opts.capPpi ?? 300 } : undefined;
 	const done = (out: Uint8Array, changed: number, ppi: number, visual: string, why?: string) => {
 		const reached = out.length <= targetBytes;
+		const fromCap = capped !== null && out === capped.final;
+		if (capped && !fromCap) capped = null;
 		return {
 			bytes: out,
 			shrink: { targetBytes, reached, imagesChanged: changed, dpi: changed > 0 ? ppi : 0 },
 			checks: [
 				{ name: 'visual' as const, ok: true, detail: visual },
 				{ name: 'target-size' as const, ok: true, detail: sizeDetail(out.length, targetBytes, changed, ppi, why) }
-			]
+			],
+			printCap: report()
 		};
 	};
 	const untouched = 'No image was changed, so every page is exactly as before.';
+	if (opts.cap) {
+		t = now();
+		const build = await opts.cap();
+		if (build) {
+			const final = await finalize(build.bytes);
+			if (final.length < lossless.length) capped = { build, final };
+		}
+		trace(`print-size cap ${ms(t)} ms: ${capped ? `${capped.build.images} images → ${capped.final.length} bytes` : 'nothing changed'}`);
+	}
+	const cappedDone = (why?: string) => done(capped!.final, capped!.build.images, capped!.build.ppi, capped!.build.visual, why);
+	if (capped && capped.final.length <= targetBytes) return cappedDone();
 	if (lossless.length <= targetBytes) return done(lossless, 0, 0, untouched);
+	// Below: the ladder from the original pixels; the capped file is the fallback when it cannot help.
+	const fallback = (why: string, visual = untouched) => (capped ? cappedDone(why) : done(lossless, 0, 0, visual, why));
 
 	let m: Mupdf;
 	try {
 		m = await deps.mupdf();
 	} catch {
-		return done(lossless, 0, 0, untouched, 'The image engine could not be loaded on this device.');
+		return fallback('The image engine could not be loaded on this device.');
 	}
 	let orig: PDFDocument | null = null;
 	try {
@@ -164,16 +194,13 @@ export async function shrinkToTarget(
 		orig = new m.PDFDocument(bytes);
 		const candidates = findCandidates(orig);
 		trace(`analysis ${ms(t)} ms: ${candidates.length} candidate images`);
-		if (candidates.length === 0) return done(lossless, 0, 0, untouched, 'It has no photos or scans that can be reduced safely.');
-		const outcome = await search(m, bytes, orig, candidates, lossless.length, targetBytes, finalize, opts.limits ?? LIMITS, trace);
-		if (!outcome) return done(lossless, 0, 0, untouched, 'Reducing its images did not make it smaller.');
+		if (candidates.length === 0) return fallback('It has no photos or scans that can be reduced safely.');
+		const outcome = await search(m, bytes, orig, candidates, lossless.length, capped?.final.length ?? lossless.length, targetBytes, finalize, opts.limits ?? LIMITS, trace);
+		if (!outcome) return fallback('Reducing its images did not make it smaller.');
 		if (outcome.kind === 'reverted') {
-			return done(
-				lossless,
-				0,
-				0,
-				`Reduced images did not match the original closely enough on page ${outcome.pages.map((p) => p + 1).join(', ')}, so no image was changed.`,
-				'Its images could not be reduced without changing how pages look.'
+			return fallback(
+				'Its images could not be reduced without changing how pages look.',
+				`Reduced images did not match the original closely enough on page ${outcome.pages.map((p) => p + 1).join(', ')}, so no image was changed.`
 			);
 		}
 		if (isRetired(m)) throw new EngineError('internal', 'The PDF engine had to restart. Try again.');
@@ -181,7 +208,7 @@ export async function shrinkToTarget(
 	} catch (e) {
 		// A wasm trap is not a soft "could not reduce": MuPDF must be replaced (core.ts).
 		if (isWasmFault(e) || isRetired(m)) throw e;
-		return done(lossless, 0, 0, untouched, 'Its images could not be reduced safely.');
+		return fallback('Its images could not be reduced safely.');
 	} finally {
 		// After a trap, touching the instance again could trap once more and hide the first error.
 		if (!isRetired(m)) {
@@ -208,6 +235,8 @@ async function search(
 	orig: PDFDocument,
 	cands: Candidate[],
 	losslessSize: number,
+	/** A step is used only when its file is smaller than this (the lossless or the print-capped file). */
+	beat: number,
 	target: number,
 	finalize: (b: Uint8Array) => Promise<Uint8Array>,
 	limits: Limits,
@@ -252,7 +281,7 @@ async function search(
 	for (let guard = 0; guard < 3 * LADDER.length; guard++) {
 		tried.add(k);
 		let b = await build(k);
-		if (b.changed === 0 || b.final.length >= losslessSize) {
+		if (b.changed === 0 || b.final.length >= beat) {
 			if (k < last) {
 				k++;
 				continue;
@@ -284,7 +313,7 @@ async function search(
 			const again = compareDocs(m, orig, b.pdf, v.failed, limits);
 			if (again.failed.length > 0) return revertedOutcome();
 		}
-		if (b.changed === 0 || b.final.length >= losslessSize || (b.final.length > target && k < last)) {
+		if (b.changed === 0 || b.final.length >= beat || (b.final.length > target && k < last)) {
 			if (k < last) {
 				k++;
 				continue;
@@ -453,7 +482,7 @@ export function isPhotoLike(px: ArrayLike<number>, w: number, h: number, n: numb
 }
 
 /** Drops APP1–APP13, APP15 and COM segments (metadata, embedded profiles); keeps JFIF APP0 and Adobe APP14. */
-function stripJpeg(j: Uint8Array): Uint8Array {
+export function stripJpeg(j: Uint8Array): Uint8Array {
 	const parts: Uint8Array[] = [j.subarray(0, 2)];
 	let i = 2;
 	while (i + 4 <= j.length && j[i] === 0xff) {
@@ -538,7 +567,7 @@ const ALLOWED_FILTERS = new Set([
 ]);
 const SKIP_KEYS = new Set(['Parent', 'P', 'Annots', 'Dest', 'A', 'Next', 'Prev', 'First', 'Last', 'Popup', 'IRT', 'StructParent', 'Pg']);
 
-function findCandidates(doc: PDFDocument): Candidate[] {
+export function findCandidates(doc: PDFDocument): Candidate[] {
 	const placed = new Map<number, { inW: number; inH: number; pages: Set<number> }>();
 	const foreign = new Set<number>();
 	const visited = new Set<number>();
@@ -950,7 +979,7 @@ export function metricsPass(x: PageMetrics, limits: Limits = LIMITS): boolean {
  * soon as they are compared). Returns the failing pages and the worst metrics
  * among the pages that passed.
  */
-function compareDocs(
+export function compareDocs(
 	m: Mupdf,
 	orig: PDFDocument,
 	candidate: Uint8Array,
