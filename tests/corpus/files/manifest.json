@@ -2580,5 +2580,12 @@
 		"label": "unlock-standard-r9",
 		"expect": "declined",
 		"handler": "Standard R9 (no such revision)"
+	},
+	"unlock-pubsec-damaged.pdf": {
+		"pages": 2,
+		"label": "unlock-pubsec-damaged",
+		"expect": "declined",
+		"handler": "Adobe.PubSec",
+		"note": "every xref offset off by 64"
 	}
 }

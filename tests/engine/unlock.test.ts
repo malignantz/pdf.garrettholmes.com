@@ -106,6 +106,7 @@ describe('openPdf declines what it cannot open honestly', () => {
 	const cases: [string, RegExp][] = [
 		['unlock-filter-fopn.pdf', /rights-management system, so it cannot be opened here/],
 		['unlock-filter-pubsec.pdf', /locked to a digital certificate, so it cannot be opened here/],
+		['unlock-pubsec-damaged.pdf', /locked to a digital certificate, so it cannot be opened here/],
 		['unlock-standard-r9.pdf', /locked in a way this app does not support/]
 	];
 	for (const [name, message] of cases) {

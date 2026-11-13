@@ -49,7 +49,7 @@ import {
 import { discardMupdf, isWasmFault, mupdf as loadMupdf, mupdfLoaded, type Mupdf } from './mupdf';
 import { assemble } from './assemble';
 import { hasGenerationConflict, listPages } from './intake';
-import { DAMAGED_LOCKED_MESSAGE, declinedMessage, limitsSet, mentionsEncrypt, openNote, parseLimits } from './limits';
+import { DAMAGED_LOCKED_MESSAGE, declinedByName, declinedMessage, limitsSet, mentionsEncrypt, openNote, parseLimits } from './limits';
 import { numberingLabels, validateNumbering, verifyNumbering, type NumberingJob } from './numbering';
 import { PdfjsOpenError, inspectWithPdfjs, type PdfjsLib } from './pdfjs';
 import { QPDF_ERROR, QPDF_OK, QPDF_WARNINGS, Qpdf, type QpdfLoader, type QpdfResult } from './qpdf';
@@ -259,7 +259,12 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 					const declined = declinedMessage(res.stderr, bytes);
 					if (declined) throw new EngineError('unsupported', declined);
 					const repaired = await repair(bytes);
-					if (!repaired) throw new EngineError('unreadable', mentionsEncrypt(bytes) ? DAMAGED_LOCKED_MESSAGE : unreadableMessage(res.stderr));
+					if (!repaired) {
+						if (!mentionsEncrypt(bytes)) throw new EngineError('unreadable', unreadableMessage(res.stderr));
+						// Damaged before qpdf reached the lock: a handler the app declines anyway says so first.
+						const byName = declinedByName(bytes);
+						throw byName ? new EngineError('unsupported', byName) : new EngineError('unreadable', DAMAGED_LOCKED_MESSAGE);
+					}
 					out = repaired.bytes;
 					notes = repaired.notes;
 				} else if (res.code === QPDF_OK || res.code === QPDF_WARNINGS) {

@@ -106,6 +106,27 @@ export function declinedMessage(stderr: string, bytes: Uint8Array): string | nul
 	return null;
 }
 
+/**
+ * For a file qpdf could not read at all (damage before it reached the encryption
+ * dictionary): the message for a security handler named in its bytes that the app
+ * would decline anyway, or null. Only a failed open pays for this scan.
+ */
+export function declinedByName(bytes: Uint8Array): string | null {
+	if (find(bytes, '/Adobe.PubSec') >= 0) return CERTIFICATE_MESSAGE;
+	if (find(bytes, '/FOPN_') >= 0 || find(bytes, '/Adobe.APS') >= 0) return RIGHTS_MESSAGE;
+	return null;
+}
+
+function find(bytes: Uint8Array, text: string): number {
+	const pat = Array.from(text, (c) => c.charCodeAt(0));
+	const first = pat[0];
+	outer: for (let i = bytes.indexOf(first); i >= 0 && i <= bytes.length - pat.length; i = bytes.indexOf(first, i + 1)) {
+		for (let k = 1; k < pat.length; k++) if (bytes[i + k] !== pat[k]) continue outer;
+		return i;
+	}
+	return -1;
+}
+
 /** Whether a file qpdf could not read names an /Encrypt dictionary (its trailer sits near either end). */
 export function mentionsEncrypt(bytes: Uint8Array): boolean {
 	const span = 1 << 20;

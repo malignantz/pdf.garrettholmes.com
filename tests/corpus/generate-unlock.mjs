@@ -16,6 +16,7 @@
  *   unlock-aes-128-userpw.pdf   R4, open password "user", owner "owner", form filling not allowed
  *   unlock-filter-fopn.pdf      /Encrypt with a non-standard /Filter (FileOpen-style name)  → declined
  *   unlock-filter-pubsec.pdf    /Encrypt with /Filter /Adobe.PubSec (certificate security)  → declined
+ *   unlock-pubsec-damaged.pdf   unlock-filter-pubsec.pdf with every xref offset off by 64  → declined (named in the bytes)
  *   unlock-standard-r9.pdf      /Encrypt /Standard with a revision that does not exist (R 9)  → declined
  *   unlock-damaged-xref.pdf     unlock-rc4-128-copy.pdf with every xref offset off by 64   → unreadable
  *
@@ -133,14 +134,13 @@ export default async function generateUnlockCorpus(write) {
 		handlerFile('unlock-filter-fopn', '<< /Filter /FOPN_foweb /V 1 /R 2 /Length 40 /P -4 /INFO (synthetic) >>'),
 		meta('unlock-filter-fopn.pdf', { expect: 'declined', handler: 'FOPN_foweb' })
 	);
-	write(
-		'unlock-filter-pubsec.pdf',
-		handlerFile(
-			'unlock-filter-pubsec',
-			'<< /Filter /Adobe.PubSec /SubFilter /adbe.pkcs7.s5 /V 4 /R 4 /Length 128 /CF << /DefaultCryptFilter << /CFM /AESV2 /AuthEvent /DocOpen /Recipients [<3082000a020100300506032b0e03>] >> >> /StmF /DefaultCryptFilter /StrF /DefaultCryptFilter >>'
-		),
-		meta('unlock-filter-pubsec.pdf', { expect: 'declined', handler: 'Adobe.PubSec' })
+	const pubsec = handlerFile(
+		'unlock-filter-pubsec',
+		'<< /Filter /Adobe.PubSec /SubFilter /adbe.pkcs7.s5 /V 4 /R 4 /Length 128 /CF << /DefaultCryptFilter << /CFM /AESV2 /AuthEvent /DocOpen /Recipients [<3082000a020100300506032b0e03>] >> >> /StmF /DefaultCryptFilter /StrF /DefaultCryptFilter >>'
 	);
+	made.set('unlock-filter-pubsec.pdf', pubsec);
+	write('unlock-filter-pubsec.pdf', pubsec, meta('unlock-filter-pubsec.pdf', { expect: 'declined', handler: 'Adobe.PubSec' }));
+	write('unlock-pubsec-damaged.pdf', shiftXref(made.get('unlock-filter-pubsec.pdf'), 64), meta('unlock-pubsec-damaged.pdf', { expect: 'declined', handler: 'Adobe.PubSec', note: 'every xref offset off by 64' }));
 	const pad = `<${'00'.repeat(32)}>`;
 	write(
 		'unlock-standard-r9.pdf',
