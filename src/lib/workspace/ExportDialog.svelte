@@ -17,6 +17,7 @@
 	import { progressFraction, progressSample, progressText } from './export-progress';
 	import { TimeLeft } from './time-left';
 	import { exportPictures, exportSplit, partIds, splitNotes } from './multi-export';
+	import { limitWords, removedLine, unionLimits } from '../engine/limits';
 	import {
 		OUTPUT_CHOICES,
 		QUALITY_CHOICES,
@@ -126,6 +127,10 @@
 			inputBytes: sources.reduce((n, x) => n + x.originalSize, 0),
 			names,
 			encryptedInput: sources.some((x) => x.wasEncrypted),
+			/** A source needed a password to open (sources from before Source.limits count as needing one). */
+			passwordInput: sources.some((x) => x.wasEncrypted && (x.limits?.password ?? true)),
+			/** What the encrypted originals limited, together ("Remove printing and copying limits"). */
+			limits: unionLimits(sources.map((x) => x.limits)),
 			hasForm: sources.some((x) => x.hasForm),
 			redactions: redactionCount(pages),
 			blanks: filledBlankCount(pages)
@@ -309,6 +314,8 @@
 		if (!built.ok) return;
 		const options = mkPictures ? pictureExportOptions(built.options) : built.options;
 		const inputBytes = plan.inputBytes;
+		// Said on the result of a PDF or split export: the limits of the files its pages came from are gone.
+		const limitsLine = removedLine(plan.limits);
 		const target = options.targetBytes;
 		phase = {
 			kind: 'working',
@@ -402,7 +409,7 @@
 					result: null,
 					headline: `Checked: ${plural(out.parts.length, 'file')}, ${plural(out.pageCount, 'page')} in all, each opens cleanly.`,
 					line: `${out.parts.length} files in one zip, ${formatBytes(out.blob.size)}`,
-					notes: splitNotes(out),
+					notes: [...splitNotes(out), ...(limitsLine ? [limitsLine] : [])],
 					files: out.parts.map((p) => `${p.name}: ${p.pages}, ${formatBytes(p.bytes)}`)
 				};
 			} else {
@@ -423,7 +430,7 @@
 					result,
 					headline: headline(result.checks, result.pageCount),
 					line: null,
-					notes: [],
+					notes: limitsLine ? [limitsLine] : [],
 					files: []
 				};
 			}
@@ -779,8 +786,12 @@
 					</label>
 					<p class="caption">There is no way to recover a forgotten password. Keep it somewhere safe.</p>
 				</div>
-			{:else if plan.encryptedInput}
+			{:else if plan.passwordInput}
 				<p class="note"><Icon name="lock" size={18} />A file you opened had a password. This export will have none unless you add one.</p>
+			{:else if plan.limits.length}
+				<p class="note" data-testid="limits-note"><Icon name="lock" size={18} />A file you opened limited {limitWords(plan.limits)}. This export will not.</p>
+			{:else if plan.encryptedInput}
+				<p class="note"><Icon name="lock" size={18} />A file you opened was locked. This export will not be, unless you add a password.</p>
 			{/if}
 
 			<p class="summary num">

@@ -483,7 +483,7 @@ describe('shrink: through the whole export', () => {
 
 	it('gives clean results for every corpus file at the smallest target', async () => {
 		for (const [name, meta] of Object.entries(manifest)) {
-			if (meta.expect === 'unreadable') continue;
+			if (meta.expect === 'unreadable' || meta.expect === 'declined') continue;
 			let src: Source;
 			if (name.endsWith('.jpg')) src = await engine().openImage(corpus(name), 'image/jpeg', name);
 			else if (name.endsWith('.png')) src = await engine().openImage(corpus(name), 'image/png', name);

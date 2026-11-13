@@ -84,7 +84,13 @@ function fakeEngine(password = 'secret') {
 		async openPdf(bytes: Uint8Array, name: string, pw?: string): Promise<Source> {
 			calls.push({ name, pw });
 			if (pw !== password) throw new EngineError(pw === undefined ? 'password-required' : 'password-wrong', 'needs a password');
-			return { ...source('fresh', 2), name, bytes: pdfBytes(`decrypted-${bytes.length}`), wasEncrypted: true };
+			return {
+				...source('fresh', 2),
+				name,
+				bytes: pdfBytes(`decrypted-${bytes.length}`),
+				wasEncrypted: true,
+				limits: { password: true, print: true, copy: true, edit: false, fill: false }
+			};
 		}
 	};
 }
@@ -629,7 +635,7 @@ describe('session', () => {
 		const r = rig();
 		await r.session.init();
 		const original = pdfBytes('ENCRYPTED-ORIGINAL', 80);
-		const prot: Source = { ...source('p', 2), wasEncrypted: true, bytes: pdfBytes('DECRYPTED-SECRET') };
+		const prot: Source = { ...source('p', 2), wasEncrypted: true, bytes: pdfBytes('DECRYPTED-SECRET'), limits: { password: true, print: true, copy: true, edit: false, fill: false } };
 		r.session.noteOpened(prot, { original, needsPassword: true });
 		r.store.addSource(prot);
 		r.store.addSource(source('a', 1));
@@ -642,6 +648,8 @@ describe('session', () => {
 		expect(p.stored).toBe('original');
 		expect(p.needsPassword).toBe(true);
 		expect(p.hash).toBe(await sha256Hex(original));
+		// What the file limited is derived when it opens, never stored.
+		expect(JSON.stringify(r.storage.raw())).not.toContain('limits');
 		// The decrypted bytes are stored nowhere.
 		for (const b of r.storage.blobs.values()) expect(new TextDecoder().decode(b)).not.toContain('DECRYPTED-SECRET');
 
@@ -658,6 +666,7 @@ describe('session', () => {
 		expect(asks).toEqual([undefined, 'That password did not open the file. Check it and try again.']);
 		expect(r2.store.state.pages.map((x) => x.sourceId)).toEqual(['p', 'p', 'a']);
 		expect(r2.store.state.sources[0].id).toBe('p');
+		expect(r2.store.state.sources[0].limits).toEqual({ password: true, print: true, copy: true, edit: false, fill: false });
 		expect(r2.store.state.formValues).toEqual({ p: { f: 'x' } });
 
 		// Restore again, skipping the protected file: its pages, answers and stamps go; the rest is whole.

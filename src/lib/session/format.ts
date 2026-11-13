@@ -122,7 +122,8 @@ const PAGE_REF_KEYS = ['id', 'sourceId', 'pageIndex', 'rotation', 'stamps'] as c
 const pageRefCovered: Exclude<keyof PageRef, (typeof PAGE_REF_KEYS)[number]> extends never ? true : false = true;
 void pageRefCovered;
 
-const SOURCE_KEYS = ['id', 'name', 'kind', 'bytes', 'pages', 'originalSize', 'wasEncrypted', 'notes', 'hasForm'] as const satisfies readonly (keyof Source)[];
+// `limits` is not stored: only protected files have it, and they are stored as given and opened again on restore.
+const SOURCE_KEYS = ['id', 'name', 'kind', 'bytes', 'pages', 'originalSize', 'wasEncrypted', 'notes', 'hasForm', 'limits'] as const satisfies readonly (keyof Source)[];
 const sourceCovered: Exclude<keyof Source, (typeof SOURCE_KEYS)[number]> extends never ? true : false = true;
 void sourceCovered;
 

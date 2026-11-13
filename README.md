@@ -10,6 +10,9 @@ before you can download it.
 - **One workspace** instead of one tool per page.
 - **No uploads.** A Content-Security-Policy blocks the page from contacting any other server.
 - **Verified output.** Each export passes a structure check, a page comparison and a re-open test.
+- **Unlocks files that block printing or copying.** A file that opens without a password
+  but limits printing, copying, editing or form filling exports without those limits.
+  A file that needs a password to open still needs it: the app never guesses or gets around one.
 
 ## Develop
 

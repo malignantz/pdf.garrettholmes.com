@@ -27,12 +27,35 @@ export interface Source {
 	pages: PageSize[];
 	/** Size in bytes of the file the user gave us, before normalizing. */
 	originalSize: number;
-	/** True when the original was password-protected. */
+	/** True when the original was encrypted: it needed a password, or it opened without one but had limits (see `limits`). */
 	wasEncrypted: boolean;
 	/** Human-readable notes from intake, e.g. "Repaired a damaged cross-reference table." */
 	notes: string[];
 	/** True when the file has AcroForm fields this app can fill. See Engine.formFields. */
 	hasForm?: boolean;
+	/**
+	 * Added 2026-11-13 ("Remove printing and copying limits"): what the encrypted original
+	 * limited, read from its permission flags at open. Present only when `wasEncrypted`
+	 * and the flags could be read. The limits never reach an export: `bytes` is decrypted,
+	 * so an export has no encryption unless ExportOptions.password sets one (and then
+	 * allows everything). Derived at every open and never stored by the session (a
+	 * restored protected file is opened again); absent on sources from before this field.
+	 */
+	limits?: SourceLimits;
+}
+
+/** What an encrypted original did not allow (true: limited). See Source.limits. */
+export interface SourceLimits {
+	/** It was opened with a password the user typed (the open password or the owner password); false: it opened without one. */
+	password: boolean;
+	/** Printing not allowed, or only at low quality. */
+	print: boolean;
+	/** Copying text and pictures not allowed. */
+	copy: boolean;
+	/** Changing the pages' content, their order (assembly) or their comments not allowed. */
+	edit: boolean;
+	/** Filling in form fields not allowed. */
+	fill: boolean;
 }
 
 /**
