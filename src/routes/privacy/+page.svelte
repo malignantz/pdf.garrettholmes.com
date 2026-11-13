@@ -68,6 +68,11 @@
 				locked, and asks for the password again.
 			</li>
 			<li>
+				<strong>Passwords are never guessed.</strong> A file that needs a password to open still needs that
+				password here; the app never guesses or gets around one. Once a file is open, limits it sets on printing or
+				copying are not carried into your export.
+			</li>
+			<li>
 				<strong>Private windows</strong> keep nothing once closed. Some browsers, Safari among them, may also clear
 				it when the site has not been used for a while.
 			</li>

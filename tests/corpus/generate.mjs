@@ -487,6 +487,7 @@ await (await import('./generate-jpeg.mjs')).default(write);
 await (await import('./generate-fill-fields.mjs')).default(write);
 await (await import('./generate-ocr.mjs')).default(write);
 await (await import('./generate-print-cap.mjs')).default(write);
+await (await import('./generate-unlock.mjs')).default(write);
 
 fs.writeFileSync(path.join(outDir, 'manifest.json'), JSON.stringify(manifest, null, '\t') + '\n');
 const total = fs.readdirSync(outDir).reduce((n, f) => n + fs.statSync(path.join(outDir, f)).size, 0);

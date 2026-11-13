@@ -28,6 +28,7 @@ import type {
 	PageSize,
 	Rotation,
 	Source,
+	SourceLimits,
 	Stamp,
 	VerifyCheck
 } from '../core/types';
@@ -48,6 +49,7 @@ import {
 import { discardMupdf, isWasmFault, mupdf as loadMupdf, mupdfLoaded, type Mupdf } from './mupdf';
 import { assemble } from './assemble';
 import { hasGenerationConflict, listPages } from './intake';
+import { DAMAGED_LOCKED_MESSAGE, declinedMessage, limitsSet, mentionsEncrypt, openNote, parseLimits } from './limits';
 import { numberingLabels, validateNumbering, verifyNumbering, type NumberingJob } from './numbering';
 import { PdfjsOpenError, inspectWithPdfjs, type PdfjsLib } from './pdfjs';
 import { QPDF_ERROR, QPDF_OK, QPDF_WARNINGS, Qpdf, type QpdfLoader, type QpdfResult } from './qpdf';
@@ -253,8 +255,11 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 							? new EngineError('password-wrong', 'That password did not open the file. Check it and try again.')
 							: new EngineError('password-required', 'This file is protected with a password. Enter it to open the file.');
 					}
+					// Certificate and rights-management protection, unknown revisions: declined (limits.ts).
+					const declined = declinedMessage(res.stderr, bytes);
+					if (declined) throw new EngineError('unsupported', declined);
 					const repaired = await repair(bytes);
-					if (!repaired) throw new EngineError('unreadable', unreadableMessage(res.stderr));
+					if (!repaired) throw new EngineError('unreadable', mentionsEncrypt(bytes) ? DAMAGED_LOCKED_MESSAGE : unreadableMessage(res.stderr));
 					out = repaired.bytes;
 					notes = repaired.notes;
 				} else if (res.code === QPDF_OK || res.code === QPDF_WARNINGS) {
@@ -271,6 +276,12 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 
 				const enc = await qpdf.run({ args: [...pw, '--is-encrypted', '/in.pdf'], inputs: { '/in.pdf': bytes } });
 				const wasEncrypted = enc.code === QPDF_OK;
+				// What the original limited (its permission flags); the opened bytes are decrypted, so no export has them.
+				let limits: SourceLimits | null = null;
+				if (wasEncrypted) {
+					const shown = await qpdf.run({ args: [...pw, '--show-encryption', '/in.pdf'], inputs: { '/in.pdf': bytes } });
+					limits = parseLimits(shown.stdout, pw.length > 0);
+				}
 				const listed = await listPages(qpdf, out);
 				if (listed && listed.fixedPages > 0) {
 					out = listed.bytes;
@@ -295,13 +306,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 						throw new EngineError('unreadable', 'This file has a page without a usable size.');
 					}
 				}
-				if (wasEncrypted) {
-					notes.push(
-						pw.length
-							? 'Opened with its password. Exports have no password unless you set one.'
-							: 'This file was encrypted without an open password; the encryption and its restrictions were removed. Exports have no password unless you set one.'
-					);
-				}
+				if (wasEncrypted) notes.push(openNote(limits, pw.length > 0));
 				if (info.hasSignatures) {
 					notes.push('This file has a digital signature. Exported pages will not carry a valid signature.');
 				}
@@ -319,7 +324,8 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 					originalSize: bytes.length,
 					wasEncrypted,
 					notes: [...new Set(notes)],
-					...(form.hasForm ? { hasForm: true } : {})
+					...(form.hasForm ? { hasForm: true } : {}),
+					...(limits ? { limits } : {})
 				};
 			}),
 
@@ -486,7 +492,9 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 
 		const warnings: string[] = [];
 		for (const s of used) {
-			if (s.wasEncrypted && password === undefined) {
+			// A file that only had limits opened without a password: nothing to warn about
+			// (the dialog says the limits were removed). Sources without `limits` keep the warning.
+			if (s.wasEncrypted && password === undefined && (s.limits?.password ?? true)) {
 				warnings.push(`${s.name} had a password; the exported file has none.`);
 			}
 		}
@@ -1023,13 +1031,15 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			} catch (e) {
 				locked = e instanceof PdfjsOpenError && e.kind === 'password-required';
 			}
-			const ok = aes256 && locked && info !== null;
+			// The app's own password allows everything (--encrypt with no restrictions): no limits carried over.
+			const limited = limitsSet(parseLimits(res.stdout, true) ?? { print: true, copy: true, edit: true, fill: true });
+			const ok = aes256 && locked && info !== null && limited.length === 0;
 			checks.push({
 				name: 'encryption',
 				ok,
 				detail: ok
-					? 'AES-256: the file opens only with the password.'
-					: `Encryption problem: ${!aes256 ? 'not AES-256. ' : ''}${!locked ? 'opens without the password. ' : ''}${info ? '' : 'does not open with the password.'}`.trim()
+					? 'AES-256: the file opens only with the password, and allows printing, copying and editing.'
+					: `Encryption problem: ${!aes256 ? 'not AES-256. ' : ''}${!locked ? 'opens without the password. ' : ''}${info ? '' : 'does not open with the password. '}${limited.length ? `limits ${limited.join(', ')}.` : ''}`.trim()
 			});
 		} else {
 			const enc = await qpdf.run({ args: ['--is-encrypted', '/v.pdf'], inputs: { '/v.pdf': bytes } });

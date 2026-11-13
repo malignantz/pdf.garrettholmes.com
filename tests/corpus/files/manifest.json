@@ -2472,5 +2472,113 @@
 			288
 		],
 		"note": "oversized photo in a signed file: left as it is"
+	},
+	"unlock-rc4-40-print.pdf": {
+		"pages": 2,
+		"label": "unlock-rc4-40-print",
+		"R": 2,
+		"password": null,
+		"limits": {
+			"print": true,
+			"copy": false,
+			"edit": false,
+			"fill": false
+		}
+	},
+	"unlock-rc4-128-copy.pdf": {
+		"pages": 2,
+		"label": "unlock-rc4-128-copy",
+		"R": 3,
+		"password": null,
+		"limits": {
+			"print": false,
+			"copy": true,
+			"edit": false,
+			"fill": false
+		}
+	},
+	"unlock-aes-128-edit.pdf": {
+		"pages": 2,
+		"label": "unlock-aes-128-edit",
+		"R": 4,
+		"password": null,
+		"limits": {
+			"print": false,
+			"copy": false,
+			"edit": true,
+			"fill": false
+		}
+	},
+	"unlock-aes-256-all.pdf": {
+		"pages": 2,
+		"label": "unlock-aes-256-all",
+		"R": 6,
+		"password": null,
+		"limits": {
+			"print": true,
+			"copy": true,
+			"edit": true,
+			"fill": true
+		}
+	},
+	"unlock-aes-256-open.pdf": {
+		"pages": 2,
+		"label": "unlock-aes-256-open",
+		"R": 6,
+		"password": null,
+		"limits": {
+			"print": false,
+			"copy": false,
+			"edit": false,
+			"fill": false
+		}
+	},
+	"unlock-aes-256-userpw.pdf": {
+		"pages": 2,
+		"label": "unlock-aes-256-userpw",
+		"R": 6,
+		"password": "user",
+		"ownerPassword": "owner",
+		"limits": {
+			"print": true,
+			"copy": true,
+			"edit": false,
+			"fill": false
+		}
+	},
+	"unlock-aes-128-userpw.pdf": {
+		"pages": 2,
+		"label": "unlock-aes-128-userpw",
+		"R": 4,
+		"password": "user",
+		"ownerPassword": "owner",
+		"limits": {
+			"print": false,
+			"copy": false,
+			"edit": false,
+			"fill": true
+		}
+	},
+	"unlock-filter-fopn.pdf": {
+		"pages": 2,
+		"label": "unlock-filter-fopn",
+		"expect": "declined",
+		"handler": "FOPN_foweb"
+	},
+	"unlock-filter-pubsec.pdf": {
+		"pages": 2,
+		"label": "unlock-filter-pubsec",
+		"expect": "declined",
+		"handler": "Adobe.PubSec"
+	},
+	"unlock-damaged-xref.pdf": {
+		"expect": "unreadable",
+		"note": "encrypted, every xref offset off by 64"
+	},
+	"unlock-standard-r9.pdf": {
+		"pages": 2,
+		"label": "unlock-standard-r9",
+		"expect": "declined",
+		"handler": "Standard R9 (no such revision)"
 	}
 }
