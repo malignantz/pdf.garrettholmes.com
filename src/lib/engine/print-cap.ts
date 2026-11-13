@@ -239,7 +239,8 @@ export async function capPictures(deps: EngineDeps, bytes: Uint8Array, opts: Cap
 		const touched = [...shownOn].sort((a, b) => a - b);
 		const limits = opts.limits ?? LIMITS;
 		t = now();
-		const v = compareDocs(m, orig, out, touched, limits);
+		const compared = opts.control?.onProgress && ((done: number, total: number) => opts.control!.onProgress!({ stage: 'compare', done, total }));
+		const v = compareDocs(m, orig, out, touched, limits, compared);
 		trace(`visual ${ms(t)} ms: ${touched.length} pages, ${v.failed.length} failed`);
 		if (v.failed.length) {
 			for (const c of cands) if ([...c.pages].some((p) => v.failed.includes(p))) exclude.add(c.num);
@@ -249,7 +250,7 @@ export async function capPictures(deps: EngineDeps, bytes: Uint8Array, opts: Cap
 			}
 			out = await write();
 			if (!out) return null;
-			const again = compareDocs(m, orig, out, v.failed, limits);
+			const again = compareDocs(m, orig, out, v.failed, limits, compared);
 			if (again.failed.length) {
 				note('print-cap: pages still differed with their pictures restored; pictures left as they are');
 				return null;

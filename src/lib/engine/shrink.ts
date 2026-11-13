@@ -31,7 +31,7 @@
  */
 
 import type { Matrix, PDFDocument, PDFObject, Pixmap } from 'mupdf';
-import type { ExportResult, VerifyCheck } from '../core/types';
+import type { ExportProgress, ExportResult, VerifyCheck } from '../core/types';
 import type { CapBuild } from './print-cap';
 import type { EngineDeps } from './deps';
 import { EngineError } from './errors';
@@ -116,6 +116,8 @@ export interface ShrinkOptions {
 	cap?: () => Promise<CapBuild | null>;
 	/** The cap's resolution, for the report when it changed nothing. */
 	capPpi?: number;
+	/** Progress of the ladder steps ('reduce', 'compare'). */
+	onProgress?: (p: ExportProgress) => void;
 }
 export type Limits = { blockMean: number; blockBias: number; pageMean: number };
 
@@ -195,7 +197,7 @@ export async function shrinkToTarget(
 		const candidates = findCandidates(orig);
 		trace(`analysis ${ms(t)} ms: ${candidates.length} candidate images`);
 		if (candidates.length === 0) return fallback('It has no photos or scans that can be reduced safely.');
-		const outcome = await search(m, bytes, orig, candidates, lossless.length, capped?.final.length ?? lossless.length, targetBytes, finalize, opts.limits ?? LIMITS, trace);
+		const outcome = await search(m, bytes, orig, candidates, lossless.length, capped?.final.length ?? lossless.length, targetBytes, finalize, opts.limits ?? LIMITS, trace, opts.onProgress);
 		if (!outcome) return fallback('Reducing its images did not make it smaller.');
 		if (outcome.kind === 'reverted') {
 			return fallback(
@@ -240,8 +242,10 @@ async function search(
 	target: number,
 	finalize: (b: Uint8Array) => Promise<Uint8Array>,
 	limits: Limits,
-	trace: (line: string) => void
+	trace: (line: string) => void,
+	onProgress?: (p: ExportProgress) => void
 ): Promise<Outcome | null> {
+	const compared = onProgress && ((done: number, total: number) => onProgress({ stage: 'compare', done, total }));
 	const last = LADDER.length - 1;
 	let t = now();
 	const est = await estimate(m, orig, cands, losslessSize);
@@ -267,8 +271,9 @@ async function search(
 		const step = LADDER[index];
 		const enc = new Map<number, Encoded>();
 		const t = now();
-		for (const c of cands) {
-			if (exclude.has(c.num)) continue;
+		const todo = cands.filter((c) => !exclude.has(c.num));
+		for (const [i, c] of todo.entries()) {
+			onProgress?.({ stage: 'reduce', done: i, total: todo.length });
 			const [e] = await encodeImage(m, orig, c, [step]);
 			if (e) enc.set(c.num, e);
 		}
@@ -303,14 +308,14 @@ async function search(
 		}
 		// Verify the file we mean to return.
 		t = now();
-		const v = compareDocs(m, orig, b.pdf, null, limits);
+		const v = compareDocs(m, orig, b.pdf, null, limits, compared);
 		trace(`visual check ${ms(t)} ms: ${v.failed.length} pages failed`);
 		if (v.failed.length === 0) return finish(b, v.worst, v.pages, reverted, limits);
 		for (const p of v.failed) reverted.add(p);
 		for (const c of cands) if (v.failed.some((p) => c.pages.has(p))) exclude.add(c.num);
 		b = await assemble(b.step, b.enc);
 		if (b.changed > 0) {
-			const again = compareDocs(m, orig, b.pdf, v.failed, limits);
+			const again = compareDocs(m, orig, b.pdf, v.failed, limits, compared);
 			if (again.failed.length > 0) return revertedOutcome();
 		}
 		if (b.changed === 0 || b.final.length >= beat || (b.final.length > target && k < last)) {
@@ -984,7 +989,9 @@ export function compareDocs(
 	orig: PDFDocument,
 	candidate: Uint8Array,
 	only: number[] | null,
-	limits: Limits
+	limits: Limits,
+	/** Called before each page with `done` of `total` pages compared so far. */
+	onPage?: (done: number, total: number) => void
 ): { failed: number[]; worst: PageMetrics; pages: number } {
 	const cand = new m.PDFDocument(candidate);
 	const worst: PageMetrics = { pageMean: 0, blockMean: 0, blockBias: 0 };
@@ -993,7 +1000,8 @@ export function compareDocs(
 		const count = orig.countPages();
 		const pages = only ?? Array.from({ length: count }, (_, i) => i);
 		if (cand.countPages() !== count) return { failed: pages, worst, pages: pages.length };
-		for (const p of pages) {
+		for (const [i, p] of pages.entries()) {
+			onPage?.(i, pages.length);
 			const x = renderAndCompare(m, orig, cand, p);
 			m.emptyStore(); // decoded images of this page are not needed again
 			if (!x || !metricsPass(x, limits)) {

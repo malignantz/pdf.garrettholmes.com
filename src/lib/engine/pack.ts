@@ -70,6 +70,8 @@ export interface PackOptions {
 	jpeg?: JpegPassOptions | false;
 	/** Debug notes (never shown to the user). */
 	note?: (s: string) => void;
+	/** Progress of the main pass: `done` of `total` bytes of stream data looked at (ExportProgress 'pack'). */
+	progress?: (done: number, total: number) => void;
 }
 
 export interface JpegPassOptions {
@@ -541,8 +543,16 @@ export async function packStreams(
 	const chosen = new Map<string, Choice>();
 	const jpeg = await jpegPass(d, opts, note);
 	let deadline = opts.deadline;
+	const progress = opts.progress;
+	let seen = 0;
+	const all = progress ? keys.reduce((n, k) => n + d.data.get(k)!.length, 0) : 0;
+	progress?.(0, all);
 	for (const key of keys) {
 		const raw = d.data.get(key)!;
+		if (progress) {
+			progress(seen, all);
+			seen += raw.length;
+		}
 		const obj = d.objects[key];
 		if (!obj.stream) continue;
 		stats.streams++;
