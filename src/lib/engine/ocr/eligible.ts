@@ -6,6 +6,8 @@
  *  - is essentially one picture: an image (or image mask) covering at least 85% of
  *    the page, of at least 200 pixels per inch along both sides as drawn (the best
  *    such picture counts: a scan stored as a background plus a sharp mask qualifies);
+ *    (qpdf's list of a page's images leaves out inline images and images inside form
+ *    XObjects, so pages drawn that way are not offered);
  *  - fits the render budget: at most 25 MP rendered at 300 dpi, the picture at most
  *    36 MP (a 600 dpi Letter scan), UserUnit 1.
  *
@@ -39,7 +41,8 @@ export async function imageCandidates(qpdf: Qpdf, bytes: Uint8Array, pages: Page
 	(parsed.pages ?? []).forEach((p, i) => {
 		const size = pages[i];
 		if (!size) return;
-		const need = MIN_COVER * ((size.width / 72) * MIN_PPI) * ((size.height / 72) * MIN_PPI);
+		// Pixels a picture needs to cover 85% of the page at 200 ppi (rounded, as below).
+		const need = MIN_COVER * ((size.width / 72) * (MIN_PPI - 0.5)) * ((size.height / 72) * (MIN_PPI - 0.5));
 		const ok = (p.images ?? []).some((im) => {
 			const w = Number(im.width);
 			const h = Number(im.height);
@@ -122,7 +125,9 @@ export function checkScanPage(m: Mupdf, doc: MU.Document, index: number): ScanCh
 		const ppi = best?.ppi ?? 0;
 		if (text) return { eligible: false, reason: 'text', cover, ppi };
 		if (!best) return { eligible: false, reason: 'no picture', cover, ppi };
-		if (best.ppi < MIN_PPI) return { eligible: false, reason: 'low resolution', cover, ppi };
+		// Rounded, as the measurement counted it: a 200 ppi scan of a page whose size is not a
+		// whole number of pixels comes out at 199.99.
+		if (Math.round(best.ppi) < MIN_PPI) return { eligible: false, reason: 'low resolution', cover, ppi };
 		if (best.px > MAX_IMAGE_PIXELS || W * H * (OCR_DPI / 72) ** 2 > MAX_RENDER_PIXELS) return { eligible: false, reason: 'too large', cover, ppi };
 		return { eligible: true, cover, ppi };
 	} finally {

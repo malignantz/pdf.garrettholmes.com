@@ -142,6 +142,27 @@ describe('OCR: which pages qualify', () => {
 		}
 	});
 
+	it('counts a 200 ppi scan whose page size is not a whole number of pixels as 200 ppi', async () => {
+		const doc = await PL.PDFDocument.create();
+		const ppi = async (w: number) => {
+			const page = doc.addPage([612.004, 792]);
+			const img = doc.context.register(doc.context.flateStream(new Uint8Array(w * 2200).fill(200), { Type: 'XObject', Subtype: 'Image', Width: w, Height: 2200, ColorSpace: 'DeviceGray', BitsPerComponent: 8 }));
+			const name = page.node.newXObject('Im', img);
+			page.node.set(PL.PDFName.of('Contents'), doc.context.register(doc.context.flateStream(`q 612.004 0 0 792 0 0 cm ${name.asString()} Do Q`)));
+		};
+		await ppi(1700);
+		await ppi(1650);
+		const m = await mupdf();
+		const d = m.Document.openDocument(await doc.save(), 'application/pdf');
+		try {
+			expect(checkScanPage(m, d, 0)).toMatchObject({ eligible: true });
+			expect(checkScanPage(m, d, 0).ppi).toBeLessThan(200);
+			expect(checkScanPage(m, d, 1)).toMatchObject({ eligible: false, reason: 'low resolution' });
+		} finally {
+			d.destroy();
+		}
+	});
+
 	it('skips the highlighter corpus scan page without text only when it is too coarse', async () => {
 		const m = await mupdf();
 		const doc = m.Document.openDocument(corpus('hl-text.pdf'), 'application/pdf');
