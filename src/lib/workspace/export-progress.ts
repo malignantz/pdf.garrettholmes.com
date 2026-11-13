@@ -29,6 +29,10 @@ export function progressText(p: ExportProgress | null): string | null {
 			return `Comparing page ${p.done + 1} of ${p.total}`;
 		case 'check':
 			return 'Checking the finished file…';
+		case 'picture':
+			return `Saving picture ${p.done + 1} of ${p.total}`;
+		case 'part':
+			return `Making file ${p.done + 1} of ${p.total}`;
 		default:
 			return null;
 	}
@@ -42,5 +46,7 @@ export function progressText(p: ExportProgress | null): string | null {
 export function progressSample(p: ExportProgress | null): StepSample | null {
 	const fraction = progressFraction(p);
 	if (!p || fraction === undefined || p.stage === 'pack') return null;
-	return { step: p.stage, fraction, final: p.stage === 'check' && p.last };
+	// Pictures and parts are counted by the dialog across the whole job: their end is its end.
+	const final = (p.stage === 'check' && p.last) || p.stage === 'picture' || p.stage === 'part';
+	return { step: p.stage, fraction, final };
 }

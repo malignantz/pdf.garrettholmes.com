@@ -59,6 +59,20 @@ describe('numberingLabels', () => {
 	});
 });
 
+describe('numbering total (a part of a split file)', () => {
+	it('prints the given total in the of-total styles only', () => {
+		expect(numberingLabels(nb({ style: 'page-n-of-total', start: 7, total: 12 }), 2)).toEqual(['Page 7 of 12', 'Page 8 of 12']);
+		expect(numberingLabels(nb({ style: 'n-of-total', start: 3, skip: 1, total: 9 }), 3)).toEqual([null, '3 of 9', '4 of 9']);
+		expect(numberingLabels(nb({ style: 'page-n', start: 7, total: 12 }), 1)).toEqual(['Page 7']);
+	});
+
+	it('refuses a total below the last number, and bad values', () => {
+		expect(fails(() => numberingLabels(nb({ style: 'n-of-total', start: 5, total: 5 }), 2)).code).toBe('internal');
+		expect(fails(() => validateNumbering(nb({ total: -1 }))).code).toBe('unsupported');
+		expect(fails(() => validateNumbering(nb({ total: 1.5 }))).code).toBe('unsupported');
+	});
+});
+
 describe('validateNumbering', () => {
 	const bad: [string, Partial<PageNumbering>][] = [
 		['style', { style: 'roman' as never }],

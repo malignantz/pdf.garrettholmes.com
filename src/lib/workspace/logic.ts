@@ -6,6 +6,8 @@
 
 import type { ExportOptions, ExportResult, PageId, PageNumbering, PageRef, Source, VerifyCheck } from '../core/types';
 import { numberingLabels } from '../engine/numbering';
+import type { OutputKind, PictureQuality } from './pictures-plan';
+import type { SplitRule } from './split-plan';
 
 // ---------------------------------------------------------------- drop slots
 
@@ -226,6 +228,11 @@ export function normalizeFilename(input: string, fallback = 'document.pdf'): str
 	return s ? `${s}.pdf` : fallback;
 }
 
+/** The name without its extension, made safe, for outputs that are not one PDF (pictures, zips). */
+export function nameBase(input: string, fallback = 'document'): string {
+	return sanitize(input.replace(/\.(pdf|zip|jpe?g|png)$/i, '')) || fallback;
+}
+
 /** Mirror of the engine's password rules, for inline validation. Null when fine. */
 export function passwordProblem(pw: string): string | null {
 	if (pw.length === 0) return 'Choose a password with at least one character.';
@@ -426,7 +433,26 @@ export interface ExportForm {
 	ocr: boolean;
 	/** Reduce oversized pictures (ExportOptions.printCap); applies only with Compress. */
 	printCap: boolean;
+	// Added 2026-11-13 (pictures and split export). Old saved sessions read the defaults.
+	/** What to save: a PDF, or every page as a JPG or PNG picture. */
+	output: OutputKind;
+	/** Pictures only: 'screen' 150 dpi, 'print' 300 dpi. */
+	pictureQuality: PictureQuality;
+	/** PDF only, more than one page: split into several files (one zip). */
+	split: boolean;
+	splitRule: SplitRule;
+	/** "Every N pages": N as typed. */
+	splitEvery: string;
+	/** "At these pages": the pages as typed ("5, 12"). */
+	splitAt: string;
 }
+
+/** Allowed values of the form's choice fields, for reading saved sessions. */
+export const FORM_CHOICES: { readonly [K in keyof ExportForm]?: readonly string[] } = {
+	output: ['pdf', 'jpg', 'png'],
+	pictureQuality: ['screen', 'print'],
+	splitRule: ['each', 'every', 'files', 'at']
+};
 
 export const DEFAULT_FORM: Omit<ExportForm, 'filename'> = {
 	compress: true,
@@ -445,7 +471,13 @@ export const DEFAULT_FORM: Omit<ExportForm, 'filename'> = {
 	lockForms: false,
 	keepBlanks: false,
 	ocr: false,
-	printCap: true
+	printCap: true,
+	output: 'pdf',
+	pictureQuality: 'screen',
+	split: false,
+	splitRule: 'each',
+	splitEvery: '2',
+	splitAt: ''
 };
 
 /** Filled blanks on the pages of a plan: text and ticks still linked to the blank they were snapped into. */

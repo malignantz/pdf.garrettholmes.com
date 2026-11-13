@@ -229,6 +229,16 @@ describe('format', () => {
 		expect(cleanExportForm(old).printCap).toBe(true);
 	});
 
+	it('pictures and split choices: kept when valid, defaults for old records and odd values', () => {
+		const kept = cleanExportForm({ ...DEFAULT_FORM, output: 'png', pictureQuality: 'print', split: true, splitRule: 'at', splitEvery: '3', splitAt: '5, 12' });
+		expect(kept).toMatchObject({ output: 'png', pictureQuality: 'print', split: true, splitRule: 'at', splitEvery: '3', splitAt: '5, 12' });
+		const { output: _o, pictureQuality: _q, split: _s, splitRule: _r, splitEvery: _e, splitAt: _a, ...old } = DEFAULT_FORM;
+		expect(cleanExportForm(old)).toEqual(DEFAULT_FORM);
+		expect(cleanExportForm(old)).toMatchObject({ output: 'pdf', split: false, splitRule: 'each' });
+		const odd = cleanExportForm({ ...DEFAULT_FORM, output: 'gif' as never, splitRule: 'random' as never, pictureQuality: 7 as never });
+		expect(odd).toMatchObject({ output: 'pdf', splitRule: 'each', pictureQuality: 'screen' });
+	});
+
 	it('still reads schema 1 records (before links to blanks)', () => {
 		const rec = base();
 		const v1 = structuredClone({ ...rec, schema: 1 }) as unknown as { pages: { stamps: Record<string, unknown>[] }[] };

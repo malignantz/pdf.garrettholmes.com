@@ -16,6 +16,21 @@
 	import { PRINT_CAP_LABEL, countOversized, printCapHint, printCapLine } from './print-cap-option';
 	import { progressFraction, progressSample, progressText } from './export-progress';
 	import { TimeLeft } from './time-left';
+	import { exportPictures, exportSplit, partIds, splitNotes } from './multi-export';
+	import {
+		OUTPUT_CHOICES,
+		QUALITY_CHOICES,
+		deviceBudget,
+		estimatePictures,
+		pictureExportOptions,
+		pictureName,
+		picturesLine,
+		qualityDpi,
+		reducedLine,
+		tooManyPictures
+	} from './pictures-plan';
+	import { SPLIT_RULES, openedFileCount, partName, partNumbering, planSplit, splitSummary } from './split-plan';
+	import { untrack } from 'svelte';
 	import {
 		FIT_CHOICES,
 		NUMBER_POSITIONS,
@@ -29,6 +44,7 @@
 		formatBytes,
 		formatMB,
 		keepBlanksBlocked,
+		nameBase,
 		keepBlanksHint,
 		normalizeFilename,
 		numberingPreview,
@@ -48,8 +64,8 @@
 		ids: readonly PageId[];
 		store: DocStore;
 		engine: EngineClient;
-		/** The user saved or shared the file. */
-		onsaved: (info: { filename: string; mode: 'all' | 'extract' }) => void;
+		/** The user saved or shared the file. `kind`: one PDF, a zip of split PDFs, or pictures. */
+		onsaved: (info: { filename: string; mode: 'all' | 'extract'; kind: 'pdf' | 'split' | 'pictures' }) => void;
 		onclose: () => void;
 	}
 
@@ -58,7 +74,24 @@
 	type Phase =
 		| { kind: 'form' }
 		| { kind: 'working'; fitting: string | null }
-		| { kind: 'done'; result: ExportResult; filename: string; inputBytes: number; url: string }
+		| {
+				kind: 'done';
+				filename: string;
+				inputBytes: number;
+				url: string;
+				blob: Blob;
+				/** What was made: one PDF, a zip of PDFs, or pictures (one, or a zip). */
+				made: 'pdf' | 'split' | 'pictures';
+				checks: VerifyCheck[];
+				pageCount: number;
+				warnings: string[];
+				/** The single PDF's result (made 'pdf' only). */
+				result: ExportResult | null;
+				headline: string;
+				/** "12 pictures in one zip, 3.4 MB"; null for one PDF. */
+				line: string | null;
+				notes: string[];
+			}
 		| { kind: 'failed'; error: EngineErrorShape };
 
 	let phase = $state<Phase>({ kind: 'form' });
@@ -85,6 +118,8 @@
 			.map((x) => x!.name);
 		return {
 			pages,
+			sources,
+			openedFiles: openedFileCount(pages, s.sources),
 			count: pages.length,
 			inputBytes: sources.reduce((n, x) => n + x.originalSize, 0),
 			names,
@@ -121,7 +156,10 @@
 		});
 	});
 	let progress = $state<ExportProgress | null>(null);
+	/** Split only: the engine's progress within the file being made (progress counts the files). */
+	let step = $state<ExportProgress | null>(null);
 	const stepText = $derived(progressText(progress));
+	const innerText = $derived(progressText(step));
 	// The remaining-time line ("About 30 seconds left"), from the progress the engine measures.
 	let timeLeft: TimeLeft | null = null;
 	let clock = $state(0);
@@ -155,6 +193,18 @@
 		}
 		if (!open && wasOpen) revoke();
 		wasOpen = open;
+	});
+	// The file name's extension follows what will be saved (.pdf, .zip, .jpg, .png).
+	let shownExt = '';
+	$effect(() => {
+		const ext = targetExt;
+		if (!open) {
+			shownExt = '';
+			return;
+		}
+		if (ext === shownExt) return;
+		shownExt = ext;
+		filename = `${nameBase(untrack(() => filename))}.${ext}`;
 	});
 
 	const pwError = $derived(usePassword && touched ? passwordProblem(password) : null);
@@ -193,11 +243,49 @@
 	});
 	const numPreview = $derived(numResult && 'numbering' in numResult ? numberingPreview(numResult.numbering, plan.count) : '');
 
+	// What to save: a PDF (maybe split into several), or the pages as pictures.
+	const pictures = $derived(f.output !== 'pdf');
+	const pictureKind = $derived(f.output === 'png' ? 'png' : 'jpg');
+	const dpi = $derived(qualityDpi(f.pictureQuality));
+	const budget = deviceBudget();
+	const estimate = $derived(pictures ? estimatePictures(plan.pages, plan.sources, pictureKind, dpi, budget) : null);
+	const picturesProblem = $derived(estimate ? tooManyPictures(plan.count, estimate, budget, pictureKind, dpi) : null);
+	const canSplit = $derived(!pictures && plan.count > 1);
+	const splitRules = $derived(SPLIT_RULES.filter((r) => r.value !== 'files' || plan.openedFiles > 1));
+	const splitRule = $derived(splitRules.some((r) => r.value === f.splitRule) ? f.splitRule : 'each');
+	const splitting = $derived(canSplit && f.split);
+	const split = $derived(splitting ? planSplit(plan.pages, plan.sources, splitRule, f.splitEvery, f.splitAt) : null);
+	const splitProblem = $derived(split && !split.ok ? split.problem : null);
+	const splitLine = $derived.by(() => {
+		if (!split?.ok) return '';
+		if (splitRule !== 'files') return splitSummary(split.parts);
+		const kinds = new Map(plan.sources.map((x) => [x.id, x]));
+		const names = split.parts.map((part) => {
+			const own = part.find((i) => kinds.get(plan.pages[i].sourceId)?.kind !== 'blank') ?? part[0];
+			return kinds.get(plan.pages[own].sourceId)?.name ?? 'pages';
+		});
+		return splitSummary(split.parts, names);
+	});
+	/** The extension the file name field shows. */
+	const targetExt = $derived(pictures ? (plan.count === 1 ? pictureKind : 'zip') : splitting ? 'zip' : 'pdf');
+	const zipContents = $derived.by(() => {
+		const base = nameBase(filename);
+		if (pictures && plan.count > 1) {
+			return `A zip of ${pictureName(base, 0, plan.count, pictureKind)} to ${pictureName(base, plan.count - 1, plan.count, pictureKind)}, in page order.`;
+		}
+		if (split?.ok) {
+			const n = split.parts.length;
+			return `A zip of ${partName(base, 0, n)} to ${partName(base, n - 1, n)}.`;
+		}
+		return null;
+	});
+
 	const canExport = $derived(
 		plan.count > 0 &&
-			fitOk &&
 			!numProblem &&
-			(!usePassword || (!passwordProblem(password) && confirm === password))
+			(pictures
+				? !picturesProblem
+				: fitOk && !splitProblem && (!usePassword || (!passwordProblem(password) && confirm === password)))
 	);
 
 	function revoke() {
@@ -208,43 +296,139 @@
 		e?.preventDefault();
 		touched = true;
 		if (!canExport || phase.kind === 'working') return;
-		const name = normalizeFilename(filename);
+		const mkPictures = pictures;
+		const mkSplit = !mkPictures && split?.ok ? split.parts : null;
+		const name = mkPictures || mkSplit ? `${nameBase(filename)}.${targetExt}` : normalizeFilename(filename);
 		filename = name;
 		const built = buildExportOptions(
-			{ ...f, filename: name, password: usePassword ? password : undefined },
+			{ ...f, filename: name, password: usePassword && !mkPictures ? password : undefined },
 			{ pageCount: plan.count, redactions: plan.redactions, hasForm: plan.hasForm, blanks: plan.blanks, scanned }
 		);
 		if (!built.ok) return;
-		const exportPlan = store.toExportPlan(built.options, mode === 'extract' ? ids : undefined);
+		const options = mkPictures ? pictureExportOptions(built.options) : built.options;
 		const inputBytes = plan.inputBytes;
+		const target = options.targetBytes;
 		phase = {
 			kind: 'working',
-			fitting: built.options.targetBytes ? `Fitting under ${formatMB(built.options.targetBytes)}. Large scans can take a minute.` : null
+			fitting: target ? `Fitting ${mkSplit ? 'each file' : ''} under ${formatMB(target)}. Large scans can take a minute.`.replace('  ', ' ') : null
 		};
 		progress = null;
+		step = null;
 		timeLeft = new TimeLeft(performance.now());
 		clock = performance.now();
 		cancelled = false;
-		const control = built.options.ocr || built.options.printCap ? new AbortController() : null;
+		const control = mkPictures || mkSplit || options.ocr || options.printCap ? new AbortController() : null;
 		abort = control;
+		const report = (p: ExportProgress) => {
+			clock = performance.now();
+			const sample = progressSample(p);
+			// The PDF the pictures are drawn from is not the end of the job.
+			if (sample && mkPictures && p.stage !== 'picture') sample.final = false;
+			timeLeft?.update(clock, sample);
+			progress = p;
+		};
 		try {
 			const s = store.state;
-			const result = await engine.exportPlan(exportPlan, [...s.sources], [...s.assets], {
-				signal: control?.signal,
-				onProgress: (p) => {
-					clock = performance.now();
-					timeLeft?.update(clock, progressSample(p));
-					progress = p;
-				}
-			});
+			const sources = [...s.sources];
+			const assets = [...s.assets];
+			const exportPlan = engine.exportPlan.bind(engine);
+			let done: Extract<Phase, { kind: 'done' }>;
+			if (mkPictures) {
+				const out = await exportPictures({
+					exportPlan,
+					plan: store.toExportPlan(options, mode === 'extract' ? ids : undefined),
+					sources,
+					assets,
+					base: nameBase(name),
+					kind: pictureKind,
+					dpi,
+					budget,
+					signal: control?.signal,
+					onProgress: report
+				});
+				const line = picturesLine(out.count, out.blob.size);
+				const reduced = reducedLine(out.reduced, dpi);
+				done = {
+					kind: 'done',
+					filename: out.filename,
+					inputBytes,
+					url: '',
+					blob: out.blob,
+					made: 'pictures',
+					checks: out.checks,
+					pageCount: out.pageCount,
+					warnings: out.warnings,
+					result: null,
+					headline: headline(out.checks, out.pageCount),
+					line,
+					notes: [
+						`Drawn at ${dpi} dpi from the checked PDF, so they show exactly what it shows.`,
+						...(reduced ? [reduced] : [])
+					]
+				};
+			} else if (mkSplit) {
+				const numbering = options.numbering ? partNumbering(options.numbering, mkSplit) : null;
+				const groups = partIds(plan.pages, mkSplit);
+				const plans = groups.map((g, i) => {
+					const o = { ...options, numbering: numbering ? numbering[i] : undefined };
+					if (!o.numbering) delete o.numbering;
+					return store.toExportPlan(o, g);
+				});
+				const out = await exportSplit({
+					exportPlan,
+					plans,
+					parts: mkSplit,
+					sources,
+					assets,
+					base: nameBase(name),
+					signal: control?.signal,
+					onProgress: report,
+					onStep: (p) => (step = p)
+				});
+				done = {
+					kind: 'done',
+					filename: out.filename,
+					inputBytes,
+					url: '',
+					blob: out.blob,
+					made: 'split',
+					checks: out.checks,
+					pageCount: out.pageCount,
+					warnings: out.warnings,
+					result: null,
+					headline: `Checked: ${plural(out.parts.length, 'file')}, ${plural(out.pageCount, 'page')} in all, each opens cleanly.`,
+					line: `${out.parts.length} files in one zip, ${formatBytes(out.blob.size)}`,
+					notes: splitNotes(out)
+				};
+			} else {
+				const result = await engine.exportPlan(store.toExportPlan(options, mode === 'extract' ? ids : undefined), sources, assets, {
+					signal: control?.signal,
+					onProgress: report
+				});
+				done = {
+					kind: 'done',
+					filename: name,
+					inputBytes,
+					url: '',
+					blob: new Blob([result.bytes as BlobPart], { type: 'application/pdf' }),
+					made: 'pdf',
+					checks: result.checks,
+					pageCount: result.pageCount,
+					warnings: result.warnings,
+					result,
+					headline: headline(result.checks, result.pageCount),
+					line: null,
+					notes: []
+				};
+			}
 			if (control?.signal.aborted) {
 				// Finished as Cancel was pressed: the user asked for nothing, so nothing is offered.
 				phase = { kind: 'form' };
 				cancelled = true;
 				return;
 			}
-			const blob = new Blob([result.bytes as BlobPart], { type: 'application/pdf' });
-			phase = { kind: 'done', result, filename: name, inputBytes, url: URL.createObjectURL(blob) };
+			done.url = URL.createObjectURL(done.blob);
+			phase = done;
 		} catch (err) {
 			if (isEngineErrorShape(err) && err.code === 'cancelled') {
 				phase = { kind: 'form' };
@@ -260,6 +444,7 @@
 		} finally {
 			abort = null;
 			progress = null;
+			step = null;
 			timeLeft = null;
 		}
 	}
@@ -267,7 +452,7 @@
 	function markSaved() {
 		if (phase.kind !== 'done') return;
 		saved = true;
-		onsaved({ filename: phase.filename, mode });
+		onsaved({ filename: phase.filename, mode, kind: phase.made });
 	}
 
 	function download() {
@@ -293,13 +478,14 @@
 	async function saveAs() {
 		if (phase.kind !== 'done' || !picker) return;
 		const p = phase;
+		const ext = p.filename.slice(p.filename.lastIndexOf('.'));
 		try {
 			const handle = await picker({
 				suggestedName: p.filename,
-				types: [{ description: 'PDF document', accept: { 'application/pdf': ['.pdf'] } }]
+				types: [{ description: SAVE_TYPES[ext]?.[0] ?? 'File', accept: { [p.blob.type || 'application/octet-stream']: [ext] } }]
 			});
 			const w = await handle.createWritable();
-			await w.write(new Blob([p.result.bytes as BlobPart], { type: 'application/pdf' }));
+			await w.write(p.blob);
 			await w.close();
 			markSaved();
 		} catch (e) {
@@ -309,7 +495,7 @@
 
 	const shareFile = $derived.by(() => {
 		if (phase.kind !== 'done' || !coarse || typeof navigator.canShare !== 'function') return null;
-		const file = new File([phase.result.bytes as BlobPart], phase.filename, { type: 'application/pdf' });
+		const file = new File([phase.blob], phase.filename, { type: phase.blob.type });
 		try {
 			return navigator.canShare({ files: [file] }) ? file : null;
 		} catch {
@@ -342,19 +528,34 @@
 		'text-layer': 'Searchable text'
 	};
 
-	function headline(r: ExportResult): string {
-		const opens = r.checks.some((c) => c.name === 'reopen' && c.ok);
-		return `Checked: ${plural(r.pageCount, 'page')}${opens ? ', opens cleanly' : ''}.`;
+	function headline(checks: VerifyCheck[], pageCount: number): string {
+		const opens = checks.some((c) => c.name === 'reopen' && c.ok);
+		return `Checked: ${plural(pageCount, 'page')}${opens ? ', opens cleanly' : ''}.`;
 	}
+
+	const SAVE_TYPES: Record<string, [string]> = {
+		'.pdf': ['PDF document'],
+		'.zip': ['ZIP archive'],
+		'.jpg': ['JPEG picture'],
+		'.png': ['PNG picture']
+	};
 
 	const title = $derived(
 		phase.kind === 'done'
-			? 'Your file is ready'
+			? phase.made === 'pdf'
+				? 'Your file is ready'
+				: phase.made === 'split'
+					? 'Your files are ready'
+					: phase.pageCount === 1
+						? 'Your picture is ready'
+						: 'Your pictures are ready'
 			: phase.kind === 'failed'
 				? 'Export stopped'
 				: mode === 'extract'
 					? `Export ${plural(plan.count, 'selected page')}`
-					: 'Export PDF'
+					: pictures
+						? 'Export pictures'
+						: 'Export PDF'
 	);
 </script>
 
@@ -380,18 +581,69 @@
 <Dialog bind:open {title} width="480px" dismissable={phase.kind !== 'working'} {onclose}>
 	{#if phase.kind === 'form'}
 		<form id="export-form" class="form" onsubmit={run} novalidate>
-			<Field label="File name" bind:value={filename} autocomplete="off" spellcheck="false" />
+			<OptionPicker label="Save as" bind:value={f.output} options={OUTPUT_CHOICES} />
+			<Field label="File name" bind:value={filename} autocomplete="off" spellcheck="false" hint={zipContents ?? undefined} />
+			{#if pictures}
+				<div class="section">
+					<OptionPicker label="Quality" bind:value={f.pictureQuality} options={QUALITY_CHOICES} />
+					<p class="caption preview">
+						{pictureKind === 'jpg' ? 'JPG: smaller files, for sharing and the web.' : 'PNG: exact colours, larger files.'}
+						{plan.count === 1 ? 'One picture of the page.' : `One picture per page, ${plan.count} in all.`}
+					</p>
+					{#if picturesProblem}
+						<p class="problem" role="alert">{picturesProblem}</p>
+					{:else if estimate && estimate.reduced > 0}
+						<p class="caption preview">
+							{estimate.reduced === 1 ? 'One very large page is' : `${estimate.reduced} very large pages are`} saved at a lower resolution so this device can draw {estimate.reduced === 1 ? 'it' : 'them'}.
+						</p>
+					{/if}
+				</div>
+			{/if}
 
 			{#if redacting}
 				<p class="notice" role="note">
 					<Icon name="lock" size={18} />
 					<span>
-						{plural(plan.redactions, 'area')} will be redacted. What is under {plan.redactions === 1 ? 'it is' : 'them is'} removed from the file.
+						{plural(plan.redactions, 'area')} will be redacted. What is under {plan.redactions === 1 ? 'it is' : 'them is'} removed from the file{pictures ? ' before the pictures are drawn' : ''}.
 					</span>
 				</p>
 			{/if}
 
+			{#if canSplit}
+				<div class="split">
+					<Toggle
+						bind:checked={f.split}
+						label="Split into several files"
+						hint={usePassword ? 'Each file is checked like any export and gets the password. You get one zip.' : 'Each file is checked like any export. You get one zip.'}
+					/>
+					{#if f.split}
+						<div class="section">
+							<Select label="How to split" bind:value={f.splitRule} options={splitRules} />
+							{#if splitRule === 'every'}
+								<Field label="Pages per file" bind:value={f.splitEvery} inputmode="numeric" autocomplete="off" />
+							{:else if splitRule === 'at'}
+								<Field
+									label="New file starts at pages"
+									bind:value={f.splitAt}
+									inputmode="numeric"
+									autocomplete="off"
+									placeholder="5, 12"
+								/>
+							{:else if splitRule === 'files'}
+								<p class="caption preview">Pages go with the file they came from, in their current order. Added blank pages go with the page before them.</p>
+							{/if}
+							{#if splitProblem}
+								<p class="problem" role="alert">{splitProblem}</p>
+							{:else if splitLine}
+								<p class="preview caption">{splitLine}</p>
+							{/if}
+						</div>
+					{/if}
+				</div>
+			{/if}
+
 			<div class="toggles">
+				{#if !pictures}
 				<Toggle
 					checked={f.compress || f.fit}
 					onchange={(v) => (f.compress = v)}
@@ -406,7 +658,7 @@
 				<Toggle
 					bind:checked={f.fit}
 					label="Fit under a size"
-					hint="Lowers the quality of photos and scans until the file fits. Text stays sharp."
+					hint={splitting ? 'Lowers the quality of photos and scans until each file fits. Text stays sharp.' : 'Lowers the quality of photos and scans until the file fits. Text stays sharp.'}
 				/>
 				{#if f.fit}
 					<div class="section">
@@ -426,6 +678,7 @@
 							/>
 						{/if}
 					</div>
+				{/if}
 				{/if}
 
 				<Toggle
@@ -453,9 +706,11 @@
 						{:else if numPreview}
 							<p class="preview num caption">{numPreview}</p>
 						{/if}
+						{#if splitting}<p class="preview caption">Numbers continue from one file to the next.</p>{/if}
 					</div>
 				{/if}
 
+				{#if !pictures}
 				{#if plan.hasForm || redacting}
 					{#if plan.hasForm}
 						<Toggle
@@ -488,9 +743,12 @@
 					<Toggle bind:checked={f.ocr} label={OCR_LABEL} hint={OCR_HINT} />
 					{#if f.ocr && ocrCapNotice(scanned)}<p class="caption ocr-note">{ocrCapNotice(scanned)}</p>{/if}
 				{/if}
+				{/if}
 			</div>
 
-			{#if usePassword}
+			{#if pictures}
+				<!-- Password, metadata and file options belong to a PDF; pictures carry none of them. -->
+			{:else if usePassword}
 				<div class="password">
 					<Field
 						label="Password"
@@ -529,35 +787,47 @@
 			<Progress label="Building and checking your file" value={progressFraction(progress)} />
 			<p>{phase.fitting ?? stepText ?? `Building and checking ${plural(plan.count, 'page')}…`}</p>
 			{#if phase.fitting && stepText}<p class="step">{stepText}</p>{/if}
+			{#if innerText}<p class="step">{innerText}</p>{/if}
 			{#if leftText}<p class="left num">{leftText}</p>{/if}
 			<p class="caption">Every export is re-opened and checked before you can save it.</p>
 		</div>
 	{:else if phase.kind === 'done'}
 		{@const r = phase.result}
 		<div class="result" role="status">
-			<p class="verified"><span class="seal"><Icon name="check" size={18} /></span>{headline(r)}</p>
+			<p class="verified"><span class="seal"><Icon name="check" size={18} /></span>{phase.headline}</p>
 			<p class="sizes num">
 				{phase.filename}<br />
-				<span class="caption io">{formatBytes(phase.inputBytes)} in → {formatBytes(r.bytes.length)} out</span>
+				{#if phase.line}
+					<span class="caption io">{phase.line}</span>
+				{:else}
+					<span class="caption io">{formatBytes(phase.inputBytes)} in → {formatBytes(phase.blob.size)} out</span>
+				{/if}
 			</p>
-			{#if shrinkSummary(r)}
-				{@const sh = shrinkSummary(r)!}
-				<div class="shrink">
-					<p>{sh.size}</p>
-					{#if sh.changed}<p class="caption">{sh.changed}</p>{/if}
+			{#if phase.notes.length}
+				<div class="shrink made">
+					{#each phase.notes as line, i (i)}<p class="caption">{line}</p>{/each}
 				</div>
 			{/if}
-			{#if printCapLine(r)}<p class="blanks">{printCapLine(r)}</p>{/if}
-			{#if blankFieldsLine(r)}<p class="blanks">{blankFieldsLine(r)}</p>{/if}
-			{#if ocrSummary(r.ocr).length}
-				<div class="shrink ocr-result">
-					{#each ocrSummary(r.ocr) as line, i (i)}<p>{line}</p>{/each}
-				</div>
+			{#if r}
+				{#if shrinkSummary(r)}
+					{@const sh = shrinkSummary(r)!}
+					<div class="shrink">
+						<p>{sh.size}</p>
+						{#if sh.changed}<p class="caption">{sh.changed}</p>{/if}
+					</div>
+				{/if}
+				{#if printCapLine(r)}<p class="blanks">{printCapLine(r)}</p>{/if}
+				{#if blankFieldsLine(r)}<p class="blanks">{blankFieldsLine(r)}</p>{/if}
+				{#if ocrSummary(r.ocr).length}
+					<div class="shrink ocr-result">
+						{#each ocrSummary(r.ocr) as line, i (i)}<p>{line}</p>{/each}
+					</div>
+				{/if}
 			{/if}
-			{@render checkList(r.checks, r.pageCount)}
-			{#if r.warnings.length}
+			{@render checkList(phase.checks, phase.pageCount)}
+			{#if phase.warnings.length}
 				<ul class="warnings">
-					{#each r.warnings as w, i (i)}<li><Icon name="warning" size={18} /><span>{w}</span></li>{/each}
+					{#each phase.warnings as w, i (i)}<li><Icon name="warning" size={18} /><span>{w}</span></li>{/each}
 				</ul>
 			{/if}
 			{#if saved}<p class="caption saved">Saved. You can keep working; nothing here has changed.</p>{/if}
@@ -576,10 +846,16 @@
 	{#snippet actions()}
 		{#if phase.kind === 'form'}
 			<Button variant="quiet" onclick={() => (open = false)}>Cancel</Button>
-			<Button variant="primary" icon="download" type="submit" form="export-form" disabled={plan.count === 0 || !fitOk || !!numProblem}>Export</Button>
+			<Button
+				variant="primary"
+				icon="download"
+				type="submit"
+				form="export-form"
+				disabled={plan.count === 0 || !!numProblem || (pictures ? !!picturesProblem : !fitOk || !!splitProblem)}>Export</Button
+			>
 		{:else if phase.kind === 'working'}
 			{#if abort}<Button variant="quiet" onclick={() => abort?.abort()}>Cancel</Button>{/if}
-			<Button variant="primary" loading>Checking…</Button>
+			<Button variant="primary" loading>{progress?.stage === 'picture' ? 'Saving…' : 'Checking…'}</Button>
 		{:else if phase.kind === 'done'}
 			<Button variant="quiet" onclick={() => (open = false)}>{saved ? 'Done' : 'Close'}</Button>
 			{#if picker && !coarse}<Button variant="secondary" onclick={saveAs}>Save as…</Button>{/if}
@@ -654,6 +930,11 @@
 	.shrink > p:first-child,
 	.blanks {
 		font-weight: 550;
+	}
+
+	.split {
+		display: grid;
+		gap: var(--s-3);
 	}
 
 	.password {

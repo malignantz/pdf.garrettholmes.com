@@ -60,3 +60,44 @@ export function computeRenderSize(
 export function bitmapBytes(width: number, height: number): number {
 	return width * height * 4;
 }
+
+/**
+ * Pictures of whole pages (the export dialog's "JPG/PNG pictures"): at most this many
+ * pixels per picture (iOS Safari's canvas limit, as for the page view) and this many
+ * per side (well inside every browser's canvas limits).
+ */
+export const PICTURE_MAX_PIXELS = MAX_PIXELS;
+export const PICTURE_MAX_SIDE = 8192;
+
+export interface PictureSize {
+	width: number;
+	height: number;
+	/** The resolution used: `dpi` asked for, or lower when the page would exceed the caps. */
+	dpi: number;
+	/** True when the resolution had to be lowered. */
+	reduced: boolean;
+}
+
+/**
+ * Pixel size of a page picture. `w` and `h` are the page as displayed, in points (its
+ * /Rotate applied). Sides are rounded to whole pixels (a letter page at 150 dpi is
+ * 1275 × 1650). When the page would exceed PICTURE_MAX_PIXELS or PICTURE_MAX_SIDE, the
+ * resolution is lowered to the largest whole dpi that fits.
+ */
+export function pictureSize(w: number, h: number, dpi: number): PictureSize {
+	const pw = Math.max(1e-3, w);
+	const ph = Math.max(1e-3, h);
+	const at = (d: number) => ({ width: Math.max(1, Math.round((pw * d) / 72)), height: Math.max(1, Math.round((ph * d) / 72)) });
+	const fits = (s: { width: number; height: number }) =>
+		s.width * s.height <= PICTURE_MAX_PIXELS && Math.max(s.width, s.height) <= PICTURE_MAX_SIDE;
+	const first = at(dpi);
+	if (fits(first)) return { ...first, dpi, reduced: false };
+	let d = Math.floor(Math.min(dpi * Math.sqrt(PICTURE_MAX_PIXELS / (first.width * first.height)), (dpi * PICTURE_MAX_SIDE) / Math.max(first.width, first.height)));
+	while (d > 1 && !fits(at(d))) d--;
+	// A page so large that even 1 dpi is too big (beyond PDF's own size limits): scale to fit.
+	if (d <= 1 && !fits(at(1))) {
+		const k = Math.min(Math.sqrt(PICTURE_MAX_PIXELS / (pw * ph)), PICTURE_MAX_SIDE / Math.max(pw, ph));
+		return { width: Math.max(1, Math.floor(pw * k)), height: Math.max(1, Math.floor(ph * k)), dpi: Math.max(0.01, k * 72), reduced: true };
+	}
+	return { ...at(d), dpi: d, reduced: true };
+}

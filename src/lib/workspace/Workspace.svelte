@@ -824,8 +824,8 @@
 	{store}
 	{engine}
 	onclose={() => undefined}
-	onsaved={({ mode }) => {
-		if (mode === 'all') store.markClean();
+	onsaved={({ mode, kind }) => {
+		if (mode === 'all' && kind !== 'pictures') store.markClean();
 	}}
 />
 <ShortcutSheet bind:open={shortcutsOpen} />
