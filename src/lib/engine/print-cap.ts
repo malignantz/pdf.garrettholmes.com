@@ -186,7 +186,10 @@ export async function capPictures(deps: EngineDeps, bytes: Uint8Array, opts: Cap
 			const e = capImage(m, orig, c, r, note);
 			if (e) {
 				e.data = await baseline(e.data, note);
-				if (e.data.length <= r.gain * c.rawLength) enc.set(c.num, e);
+				// Measured against the original as a compressed export delivers it: a JPEG
+				// source after the lossless repack (often 5–30% smaller than stored).
+				if (e.data.length <= r.gain * c.rawLength) e.before = await deliveredSize(orig, c);
+				if (e.data.length <= r.gain * (e.before ?? 0)) enc.set(c.num, e);
 			}
 			progress(i + 1);
 			// A macrotask, so the worker sees a cancel message between images.
@@ -195,7 +198,7 @@ export async function capPictures(deps: EngineDeps, bytes: Uint8Array, opts: Cap
 		trace(`encode ${ms(t)} ms: ${enc.size} of ${total} smaller`);
 		check();
 		if (enc.size === 0) {
-			note(`print-cap: 0 of ${total} oversized pictures capped (not photo-like or not smaller), ${Math.round(now() - t0)} ms`);
+			note(`print-cap: 0 of ${total} oversized pictures capped (none smaller enough), ${Math.round(now() - t0)} ms`);
 			return null;
 		}
 		const keys = keyIndex(list.objects);
@@ -240,7 +243,7 @@ export async function capPictures(deps: EngineDeps, bytes: Uint8Array, opts: Cap
 			const e = enc.get(c.num);
 			if (!e || exclude.has(c.num)) continue;
 			images++;
-			saved += c.rawLength - e.data.length;
+			saved += (e.before ?? c.rawLength) - e.data.length;
 		}
 		note(`print-cap: ${images} of ${total} oversized pictures capped, ${saved} stream bytes saved, ${Math.round(now() - t0)} ms`);
 		const shown = touched.filter((p) => !v.failed.includes(p)).length;
@@ -284,7 +287,38 @@ function pick(c: Candidate, r: CapRules, note: (s: string) => void): boolean {
 
 // --- one image ---------------------------------------------------------------------------
 
-type Capped = { data: Uint8Array; width: number; height: number };
+type Capped = {
+	data: Uint8Array;
+	width: number;
+	height: number;
+	/** The original's stream size as a compressed export would deliver it (deliveredSize). */
+	before?: number;
+};
+
+/**
+ * The stored size of an image as the lossless passes leave it: for a plain /DCTDecode
+ * stream, the lossless repack's size when it is smaller (pack.ts would use it; the
+ * coefficient check is left to that pass, this is only a size). Otherwise the stored size.
+ */
+async function deliveredSize(doc: PDFDocument, c: Candidate): Promise<number> {
+	if (!c.jpegSource) return c.rawLength;
+	const obj = doc.newIndirect(c.num);
+	const f = obj.get('Filter');
+	const name = f.isName() ? f.asName() : f.isArray() && f.length === 1 && f.get(0).isName() ? f.get(0).asName() : null;
+	if (name !== 'DCTDecode' && name !== 'DCT') return c.rawLength;
+	const raw = obj.readRawStream();
+	try {
+		const jpeg = raw.asUint8Array();
+		const a = parseJpeg(jpeg);
+		if (!a.ok || a.info.coefBytes > BASELINE_MAX_COEF) return c.rawLength;
+		const r = await repackJpeg(jpeg, BASELINE_MAX_COEF);
+		return r.ok ? Math.min(c.rawLength, r.jpeg.length) : c.rawLength;
+	} catch {
+		return c.rawLength;
+	} finally {
+		raw.destroy();
+	}
+}
 
 /**
  * Decodes one image, scales it to 300 ppi as drawn and encodes it as JPEG. Null when
