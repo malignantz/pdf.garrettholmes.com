@@ -60,5 +60,5 @@ export function printCapProgressText(p: ExportProgress | null): string | null {
 export function printCapLine(r: Pick<ExportResult, 'printCap'>): string | null {
 	const c = r.printCap;
 	if (!c || c.images === 0) return null;
-	return `${plural(c.images, 'picture')} reduced to ${c.ppi} dpi, ${formatBytes(Math.max(0, c.savedBytes))} saved.`;
+	return `${plural(c.images, 'picture')} reduced to ${c.ppi} dpi, about ${formatBytes(Math.max(0, c.savedBytes))} saved.`;
 }

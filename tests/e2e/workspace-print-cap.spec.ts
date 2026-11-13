@@ -66,7 +66,7 @@ test('an oversized photo is offered, reduced to 300 ppi and reported', async ({ 
 	await expect(cap).toBeChecked();
 
 	const { done, bytes } = await exportAndDownload(page, dialog);
-	await expect(done.getByText(/^1 picture reduced to 300 dpi, \d+ KB saved\.$/)).toBeVisible();
+	await expect(done.getByText(/^1 picture reduced to 300 dpi, about \d+ KB saved\.$/)).toBeVisible();
 	await expect(done.getByText('Every page still looks the same with the smaller pictures.')).toBeVisible();
 	const before = firstImage(new Uint8Array(readFileSync(corpus('print-cap.pdf'))));
 	expect(before).toMatchObject({ width: 1000, height: 750 });

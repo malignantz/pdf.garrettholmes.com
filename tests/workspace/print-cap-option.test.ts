@@ -28,8 +28,8 @@ describe('Reduce oversized pictures: dialog words', () => {
 	it('says what changed after export, and nothing when nothing did', () => {
 		expect(printCapLine({})).toBeNull();
 		expect(printCapLine({ printCap: { images: 0, savedBytes: 0, ppi: 300 } })).toBeNull();
-		expect(printCapLine({ printCap: { images: 4, savedBytes: 3.2 * 1024 * 1024, ppi: 300 } })).toBe('4 pictures reduced to 300 dpi, 3.2 MB saved.');
-		expect(printCapLine({ printCap: { images: 1, savedBytes: 600 * 1024, ppi: 300 } })).toBe('1 picture reduced to 300 dpi, 600 KB saved.');
+		expect(printCapLine({ printCap: { images: 4, savedBytes: 3.2 * 1024 * 1024, ppi: 300 } })).toBe('4 pictures reduced to 300 dpi, about 3.2 MB saved.');
+		expect(printCapLine({ printCap: { images: 1, savedBytes: 600 * 1024, ppi: 300 } })).toBe('1 picture reduced to 300 dpi, about 600 KB saved.');
 	});
 
 	it('does not repeat the cap in the size-target lines', () => {
