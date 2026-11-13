@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { test, expect } from './fixtures';
 
@@ -181,4 +182,38 @@ test('entry JavaScript for / stays under 150 KB gzip', async ({ page, request })
 	}
 	console.log(`entry JS for /: ${scripts.size} files, ${(total / 1024).toFixed(1)} KB gzip`);
 	expect(total).toBeLessThan(150 * 1024);
+});
+
+const corpus = (name: string) => fileURLToPath(new URL(`../corpus/files/${name}`, import.meta.url));
+
+// A second copy of the worker under another URL stands in for a new deploy.
+const newVersion = () =>
+	navigator.serviceWorker.register('/service-worker.js?next', { type: 'module', scope: '/' }).then(() => {});
+
+test('a new version is taken at once on an empty desk', async ({ page }) => {
+	await page.goto('/');
+	await page.getByRole('button', { name: 'Choose files' }).waitFor();
+	await page.waitForFunction(() => !!navigator.serviceWorker.controller);
+	await page.evaluate(() => ((window as unknown as { marker: number }).marker = 1));
+	await page.evaluate(newVersion);
+	await page.waitForFunction(() => (window as unknown as { marker?: number }).marker === undefined);
+});
+
+test('a new version never reloads the page while a file is being picked', async ({ page }) => {
+	await page.goto('/');
+	const button = page.getByRole('button', { name: 'Choose files' });
+	await button.waitFor();
+	await page.waitForFunction(() => !!navigator.serviceWorker.controller);
+	await page.evaluate(() => ((window as unknown as { marker: number }).marker = 1));
+
+	const chooser = page.waitForEvent('filechooser');
+	await button.click();
+	const picker = await chooser;
+	await page.evaluate(newVersion);
+
+	// Offered, not taken: the page is still the one the picker belongs to.
+	await expect(page.getByText('A new version is available.')).toBeVisible();
+	expect(await page.evaluate(() => (window as unknown as { marker?: number }).marker)).toBe(1);
+	await picker.setFiles([corpus('cropbox.pdf')]);
+	await expect(page.getByRole('option').first()).toBeVisible({ timeout: 30_000 });
 });

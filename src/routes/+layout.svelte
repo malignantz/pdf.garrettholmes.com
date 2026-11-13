@@ -5,13 +5,16 @@
 	import { getApp } from '#lib/app.ts';
 	import ToastRegion from '#lib/ui/ToastRegion.svelte';
 	import TopBar from '#lib/ui/TopBar.svelte';
+	import { isBusy, watchFilePickers } from '#lib/ui/busy.ts';
 	import { registerServiceWorker } from '#lib/ui/sw-register.ts';
 	import type { LayoutProps } from './$types';
 
 	let { children }: LayoutProps = $props();
 
 	onMount(() => {
-		if (!dev) registerServiceWorker(() => getApp().store.state.pages.length === 0);
+		watchFilePickers();
+		// Idle means nothing to lose: no pages, no file picker open, no file still opening.
+		if (!dev) registerServiceWorker(() => getApp().store.state.pages.length === 0 && !isBusy());
 	});
 </script>
 
