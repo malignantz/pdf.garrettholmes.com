@@ -103,6 +103,22 @@
 
 	let press: Press | null = null;
 	let drag = $state.raw<Drag | null>(null);
+
+	// The dragged sheet swings behind the pointer, like paper held by one edge.
+	// Smoothed pointer speed in px/ms; it settles back when the pointer rests.
+	let sway = $state.raw({ x: 0, y: 0 });
+	let swayAt = 0;
+	let swayRest = 0;
+
+	function swing(e: PointerEvent) {
+		if (!drag) return;
+		const dt = Math.min(Math.max(e.timeStamp - swayAt, 8), 64);
+		swayAt = e.timeStamp;
+		const mix = (old: number, v: number) => Math.max(-1, Math.min(1, old * 0.7 + (v / dt) * 0.3));
+		sway = { x: mix(sway.x, e.clientX - drag.x), y: mix(sway.y, e.clientY - drag.y) };
+		clearTimeout(swayRest);
+		swayRest = window.setTimeout(() => (sway = { x: 0, y: 0 }), 90);
+	}
 	/** Tile rectangles relative to the grid, measured once at lift (the layout does not change mid-drag). */
 	let rects: Rect[] = [];
 	/** Clicks that follow a long-press or a drop must not change the selection. */
@@ -146,6 +162,7 @@
 	function onpointermove(e: PointerEvent) {
 		if (drag) {
 			if (e.pointerId !== dragPointer) return;
+			swing(e);
 			drag = { ...drag, x: e.clientX, y: e.clientY };
 			updateSlot();
 			return;
@@ -282,6 +299,8 @@
 		cancelAnimationFrame(scrollRaf);
 		const d = drag;
 		drag = null;
+		clearTimeout(swayRest);
+		sway = { x: 0, y: 0 };
 		try {
 			grid?.releasePointerCapture(dragPointer);
 		} catch {
@@ -466,7 +485,7 @@
 
 {#if drag}
 	<div class="drag-preview" class:touch={drag.touch} aria-hidden="true" style:transform="translate({drag.touch ? Math.min(Math.max(drag.x, 56), innerWidth - 72) : drag.x}px, {drag.y}px)">
-		<div class="stack" class:many={drag.ids.length > 1} style:--a={drag.previewAspect}>
+		<div class="stack" class:many={drag.ids.length > 1} style:--a={drag.previewAspect} style:--sway-x={sway.x} style:--sway-y={sway.y}>
 			{#if drag.ids.length > 1}<span class="under u2"></span><span class="under u1"></span>{/if}
 			<span class="top">
 				{#if drag.preview}<img src={drag.preview} alt="" />{/if}
@@ -563,6 +582,23 @@
 		width: 72px;
 		aspect-ratio: var(--a);
 		max-height: 104px;
+		/* Held near the top (mouse) or from below (finger): the far edge trails the movement. */
+		transform-origin: 20% 0;
+		transform: translate(calc(var(--sway-x) * -5px), calc(var(--sway-y) * -5px)) rotate(calc(var(--sway-x) * 14deg));
+		transition: transform 220ms cubic-bezier(0.2, 0.9, 0.3, 1.3);
+	}
+
+	.touch .stack {
+		transform-origin: 50% 100%;
+		transform: translate(calc(var(--sway-x) * -5px), calc(var(--sway-y) * -5px)) rotate(calc(var(--sway-x) * -14deg));
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.stack,
+		.touch .stack {
+			transform: none;
+			transition: none;
+		}
 	}
 
 	.top,
