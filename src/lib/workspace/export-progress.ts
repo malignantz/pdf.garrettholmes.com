@@ -20,7 +20,7 @@ export function progressText(p: ExportProgress | null): string | null {
 	if (special || !p || !('done' in p) || p.done >= p.total) return special;
 	switch (p.stage) {
 		case 'pack':
-			return 'Compressing…';
+			return 'Optimizing…';
 		case 'pictures-read':
 			return `Looking at picture ${p.done + 1} of ${p.total}`;
 		case 'reduce':

@@ -45,7 +45,7 @@ test('the final check of a long export shows a filling bar and, after 10 seconds
 	await page.getByRole('button', { name: 'Export', exact: true }).click();
 	const dialog = page.getByRole('dialog', { name: 'Export PDF' });
 	// Compress off: the build is quick, so the check is most of the export.
-	await dialog.getByRole('switch', { name: 'Compress' }).click();
+	await dialog.getByRole('switch', { name: 'Optimize' }).click();
 	await dialog.getByRole('button', { name: 'Export', exact: true }).click();
 
 	const bar = page.getByRole('progressbar', { name: 'Building and checking your file' });

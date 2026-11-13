@@ -396,8 +396,8 @@
 					checked={f.compress || f.fit}
 					onchange={(v) => (f.compress = v)}
 					disabled={f.fit}
-					label="Compress"
-					hint={f.printCap ? 'Text and drawings stay exactly as they are.' : 'Lossless: images and text stay exactly as they are.'}
+					label="Optimize"
+					hint={f.printCap ? 'Makes the file smaller. Text and drawings stay exactly as they are.' : 'Makes the file smaller. Nothing changes in how it looks.'}
 				/>
 				{#if oversized > 0 && (f.compress || f.fit)}
 					<Toggle bind:checked={f.printCap} label={PRINT_CAP_LABEL} hint={printCapHint(oversized)} />

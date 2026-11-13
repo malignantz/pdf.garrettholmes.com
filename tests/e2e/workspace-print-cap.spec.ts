@@ -60,9 +60,9 @@ test('an oversized photo is offered, reduced to 300 ppi and reported', async ({ 
 	await expect(dialog.getByText('One picture holds more detail than a printer can use. It is brought down to 300 dpi; text stays sharp.')).toBeVisible();
 	await expect(dialog.getByText('Text and drawings stay exactly as they are.')).toBeVisible();
 	// Only with Compress.
-	await dialog.getByRole('switch', { name: 'Compress' }).click();
+	await dialog.getByRole('switch', { name: 'Optimize' }).click();
 	await expect(cap).toHaveCount(0);
-	await dialog.getByRole('switch', { name: 'Compress' }).click();
+	await dialog.getByRole('switch', { name: 'Optimize' }).click();
 	await expect(cap).toBeChecked();
 
 	const { done, bytes } = await exportAndDownload(page, dialog);
@@ -78,7 +78,7 @@ test('unticked, the photo keeps every pixel; the choice is remembered', async ({
 	const dialog = await open(page, 'print-cap.pdf', 3);
 	await switchOf(dialog).click();
 	await expect(switchOf(dialog)).not.toBeChecked();
-	await expect(dialog.getByText('Lossless: images and text stay exactly as they are.')).toBeVisible();
+	await expect(dialog.getByText('Makes the file smaller. Nothing changes in how it looks.')).toBeVisible();
 	const { done, bytes } = await exportAndDownload(page, dialog);
 	await expect(done.getByText(/picture reduced/)).toHaveCount(0);
 	expect(firstImage(bytes)).toEqual(firstImage(new Uint8Array(readFileSync(corpus('print-cap.pdf')))));
@@ -92,5 +92,5 @@ test('not offered when no picture is oversized', async ({ page }) => {
 	// The question is answered quickly (qpdf alone here); give it time to show if it were going to.
 	await page.waitForTimeout(1500);
 	await expect(switchOf(dialog)).toHaveCount(0);
-	await expect(dialog.getByRole('switch', { name: 'Compress' })).toBeChecked();
+	await expect(dialog.getByRole('switch', { name: 'Optimize' })).toBeChecked();
 });

@@ -75,7 +75,7 @@ test('fit under a size: reached', async ({ page }) => {
 	const dialog = await open(page, 'shrink-photos.pdf', 12);
 	await dialog.getByRole('switch', { name: 'Fit under a size' }).click();
 	await expect(dialog.getByRole('radio', { name: '10 MB' })).toBeChecked();
-	const compress = dialog.getByRole('switch', { name: 'Compress' });
+	const compress = dialog.getByRole('switch', { name: 'Optimize' });
 	await expect(compress).toBeChecked();
 	await expect(compress).toBeDisabled();
 	await dialog.getByRole('radio', { name: 'Other' }).click();
@@ -152,7 +152,7 @@ test('compress (the default) repacks losslessly in the browser worker: smaller, 
 		if (msg.text().startsWith('[engine]')) notes.push(msg.text());
 	});
 	const dialog = await open(page, 'compress-predictor.pdf', 1);
-	await expect(dialog.getByRole('switch', { name: 'Compress' })).toBeChecked();
+	await expect(dialog.getByRole('switch', { name: 'Optimize' })).toBeChecked();
 	await exportButton(dialog).click();
 	const done = page.getByRole('dialog', { name: 'Your file is ready' });
 	await expect(done.getByText('Checked: 1 page, opens cleanly.')).toBeVisible({ timeout: 60_000 });
@@ -190,7 +190,7 @@ test('compress repacks JPEG images losslessly in the browser worker: smaller, pa
 		if (msg.text().startsWith('[engine]')) notes.push(msg.text());
 	});
 	const dialog = await open(page, 'jpeg-kinds.pdf', 11);
-	await expect(dialog.getByRole('switch', { name: 'Compress' })).toBeChecked();
+	await expect(dialog.getByRole('switch', { name: 'Optimize' })).toBeChecked();
 	await exportButton(dialog).click();
 	const done = page.getByRole('dialog', { name: 'Your file is ready' });
 	await expect(done.getByText('Checked: 11 pages, opens cleanly.')).toBeVisible({ timeout: 60_000 });
