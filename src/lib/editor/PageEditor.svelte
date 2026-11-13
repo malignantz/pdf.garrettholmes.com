@@ -1285,6 +1285,21 @@
 		if (store.redo()) announce(`Redid: ${store.state.lastEvent?.label ?? ''}`);
 	}
 
+	/**
+	 * Turn this page 90° right, as the grid's Rotate does. Marks keep their place on the
+	 * page as displayed, not on what is printed under them, so a highlight or redaction
+	 * would stop covering its text: the button works only on a page with no marks.
+	 */
+	const hasMarks = $derived(!!page && page.stamps.length > 0);
+	function rotateHere() {
+		finishEditing(true);
+		endNudge();
+		disarm();
+		selectedId = null;
+		if (!page || page.stamps.length) return;
+		if (store.rotatePages([page.id], 90)) announce('Rotated the page right.');
+	}
+
 	function done() {
 		finishEditing(true);
 		endNudge();
@@ -1472,6 +1487,13 @@
 		<div class="history">
 			<IconButton icon="undo" label="Undo" shortcut="Ctrl+Z" tooltip="bottom" disabled={!canUndoHere && !editing && !nudging} onclick={undo} />
 			<IconButton icon="redo" label="Redo" shortcut="Ctrl+Shift+Z" tooltip="bottom" disabled={!canRedoHere} onclick={redo} />
+			<IconButton
+				icon="rotate-right"
+				label={hasMarks ? 'Rotate page (only before adding marks)' : 'Rotate page'}
+				tooltip="bottom"
+				disabled={hasMarks}
+				onclick={rotateHere}
+			/>
 		</div>
 		<div class="zoom">
 			<IconButton icon="zoom-out" label="Zoom out" shortcut="-" tooltip="bottom" disabled={view.zoom <= 1.0001} onclick={() => zoomBy(0.8)} />

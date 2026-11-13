@@ -774,8 +774,9 @@
 				<Menu label="More for selected pages" items={selectionMenu} />
 				<Button variant="quiet" onclick={clearSelection}>Done</Button>
 			{:else}
-				<Button variant="quiet" icon="add" onclick={pickFiles}>Add files</Button>
-				<Button variant="quiet" icon="select" onclick={() => (selectionMode = true)}>Select</Button>
+				<Button variant="quiet" class="dock-btn" icon="add" onclick={pickFiles}>Add files</Button>
+				<Button variant="quiet" class="dock-btn" icon="rotate-right" onclick={() => rotate(90, pages.map((p) => p.id))}>Rotate all</Button>
+				<Button variant="quiet" class="dock-btn" icon="select" onclick={() => (selectionMode = true)}>Select</Button>
 			{/if}
 		</ActionBar>
 	{/if}
@@ -843,6 +844,13 @@
 <style>
 	.workspace {
 		min-height: calc(100dvh - var(--bar-h) - var(--safe-top));
+	}
+
+	/* Three labelled buttons share one row of the 360 px phone dock. */
+	:global(.btn.dock-btn) {
+		gap: var(--s-1) !important;
+		padding-right: var(--s-1) !important;
+		padding-left: var(--s-1) !important;
 	}
 
 	.history {

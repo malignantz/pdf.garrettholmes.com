@@ -215,6 +215,58 @@ test('whole job on a phone: open, arrange by touch, sign, export with a password
 	await checkOutput(await exportWithPassword(page, 'job pass 2'), 'job pass 2');
 });
 
+test('phone: the editor turns its page, undoes it, and keeps marks off a turned-under page', async ({ page }, info) => {
+	test.skip(info.project.name !== 'phone', 'phone flow');
+	await page.goto('/');
+	await page.locator('input[type=file]').first().setInputFiles([corpus('multi.pdf')]);
+	await expect(options(page)).toHaveCount(6, { timeout: 30_000 });
+	await options(page).nth(0).tap();
+	const editor = page.getByRole('dialog', { name: 'Edit page 1 of 6' });
+	await expect(editor).toBeVisible();
+	const sheet = page.getByTestId('editor-page');
+	const rotate = editor.getByRole('button', { name: /^Rotate page/ });
+	const undo = editor.getByRole('button', { name: 'Undo' });
+	const aspect = async () => {
+		const b = (await sheet.boundingBox())!;
+		return b.width / b.height;
+	};
+	await expect(rotate).toBeVisible();
+	expect(await aspect()).toBeLessThan(1);
+
+	// Rotate, then undo from the editor: the step belongs to this editing session.
+	await rotate.tap();
+	await expect.poll(aspect).toBeGreaterThan(1);
+	await expect(undo).toBeEnabled();
+	await undo.tap();
+	await expect.poll(aspect).toBeLessThan(1);
+	await expect(undo).toBeDisabled();
+
+	// Rotate again and place a tick: it lands where tapped on the turned page, and a page
+	// with a mark on it cannot be turned (the mark would leave the text it sits on).
+	await rotate.tap();
+	await expect.poll(aspect).toBeGreaterThan(1);
+	await chooseTool(page, 'Cross');
+	await tapPage(page, 0.25, 0.25);
+	const mark = page.locator('.stamp.ed').first();
+	await expect(mark).toBeVisible();
+	const pb = (await sheet.boundingBox())!;
+	const mb = (await mark.boundingBox())!;
+	expect(Math.abs(mb.x + mb.width / 2 - (pb.x + pb.width * 0.25))).toBeLessThan(pb.width * 0.03);
+	expect(Math.abs(mb.y + mb.height / 2 - (pb.y + pb.height * 0.25))).toBeLessThan(pb.height * 0.03);
+	await expect(rotate).toBeDisabled();
+	await page.keyboard.press('Escape');
+
+	await editor.getByRole('button', { name: 'Done', exact: true }).tap();
+	await expect(options(page).nth(0)).toHaveAttribute('aria-label', 'Page 1, multi.pdf page 1, rotated 90°, 1 mark');
+	await page.getByRole('button', { name: 'Export', exact: true }).tap();
+	await page.getByRole('dialog', { name: 'Export PDF' }).getByRole('button', { name: 'Export', exact: true }).tap();
+	const done = page.getByRole('dialog', { name: 'Your file is ready' });
+	await expect(done.getByText(/^Checked: 6 pages/)).toBeVisible({ timeout: 60_000 });
+	const [download] = await Promise.all([page.waitForEvent('download'), done.getByRole('button', { name: 'Download' }).tap()]);
+	const out = await shape(readFileSync((await download.path())!));
+	expect(out.map((p) => p.rotate)).toEqual([90, 0, 0, 0, 0, 0]);
+});
+
 test('editor undo is scoped to the editing session', async ({ page }, info) => {
 	test.skip(info.project.name !== 'desktop-chrome', 'desktop flow');
 	await page.goto('/');

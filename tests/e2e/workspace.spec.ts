@@ -437,6 +437,32 @@ test.describe('phone', () => {
 		expect((await shape(bytes)).map((p) => p.rotate)).toEqual([90, 0, 0, 0, 0, 0]);
 	});
 
+	test('Rotate all in the dock turns every page in one step, and Undo restores it', async ({ page }) => {
+		await page.goto('/');
+		await addFiles(page, 'sizes.pdf');
+		await waitForPages(page, 6);
+		const bar = page.getByRole('toolbar', { name: 'Pages' });
+		// Three labelled buttons share one row of the dock.
+		const boxes = await bar.getByRole('button').evaluateAll((els) =>
+			els.map((e) => ({ name: e.textContent?.trim(), ...e.getBoundingClientRect().toJSON(), clipped: e.scrollWidth > e.clientWidth }))
+		);
+		expect(boxes.map((b) => b.name)).toEqual(['Add files', 'Rotate all', 'Select']);
+		expect(new Set(boxes.map((b) => Math.round(b.top))).size).toBe(1);
+		for (const b of boxes) {
+			expect(b.clipped).toBe(false);
+			expect(b.left).toBeGreaterThanOrEqual(0);
+			expect(b.right).toBeLessThanOrEqual(page.viewportSize()!.width);
+		}
+
+		await bar.getByRole('button', { name: 'Rotate all' }).tap();
+		await expect.poll(() => order(page)).toEqual(['s1@90', 's2@90', 's3@90', 's4@90', 's5@90', 's6@90']);
+		await page.getByRole('button', { name: /^Undo: Rotate 6 pages/ }).tap();
+		await expect.poll(() => order(page)).toEqual(['s1', 's2', 's3', 's4', 's5', 's6']);
+		await bar.getByRole('button', { name: 'Rotate all' }).tap();
+		const { bytes } = await exportAndDownload(page);
+		expect((await shape(bytes)).map((p) => p.rotate)).toEqual([90, 90, 90, 90, 90, 90]);
+	});
+
 	test('a swipe over the grid scrolls instead of dragging', async ({ page }) => {
 		await page.goto('/');
 		await addFiles(page, 'multi.pdf', 'sizes.pdf');
