@@ -200,22 +200,22 @@ describe('outline: pages removed, reordered, rotated, repeated', () => {
 		const f = await pdfjsFacts(res.bytes);
 		expect(f.outline).toEqual([
 			BASIC[0],
-			// Chapitre 2 (page 3) and its child on page 3 went, and with them the web link under it
-			// (it belongs to no page and is no longer under a kept bookmark).
+			// Chapitre 2 (page 3) and its child on page 3 went; the web link under it stays, lifted
+			// (it belongs to no page).
+			{ t: 'Web page', d: 'https://example.org/report', kids: [] },
 			{ t: 'Appendix', d: null, n: 2, kids: [{ t: 'Last page', d: [3, 'XYZ', null, null, null], kids: [] }, { t: '“Quoted” — PDFDoc', d: [3, 'FitB'], kids: [] }] },
 			// The empty heading belongs to no page: kept only when the whole file is.
 			{ t: 'Short view', d: [2, 'XYZ', 72, null, null], kids: [] }
 		]);
-		expect(res.bookmarks).toEqual({ kept: true, items: 7 });
+		expect(res.bookmarks).toEqual({ kept: true, items: 8 });
 		const raw = await expanded(res.bytes);
-		expect(found(raw, 'example.org/report')).toBe(false);
 		expect(found(raw, CHAPTER2)).toBe(false);
 		expect(found(raw, 'Inside the script item')).toBe(false);
 		expect(found(raw, 'Empty heading')).toBe(false);
 		expect(f.info.Title).toBe(BASIC_TITLE);
 	}, T);
 
-	it('a web link under a kept bookmark stays when other pages are removed', async () => {
+	it('a web link under a kept bookmark stays under it when other pages are removed', async () => {
 		const src = await openCorpus('outline-basic.pdf');
 		const res = await run([ref(src, 2)], [src]);
 		const f = await pdfjsFacts(res.bytes);

@@ -22,10 +22,9 @@
  * - Bookmarks: the source's outline tree, pruned to the kept pages. A bookmark whose page is not
  *   in the export goes, and its kept children take its place (same order); a bookmark to a kept
  *   page goes to that page's (first) copy with the same view (/XYZ, /Fit, …, coordinates to six
- *   significant digits, see `six`). A web link (/A URI) stays when the whole file is exported,
- *   under a kept bookmark to a page, or when it keeps a child; a heading without destination
- *   stays when it keeps a child (or, whole file, when it never had any): they belong to no page,
- *   so to what was removed as much as to what was kept. The tree keeps the source's order when
+ *   significant digits, see `six`). A web link (/A URI) belongs to no page and stays (lifted when
+ *   its parent goes); a heading without destination stays when it keeps a child (or, whole file,
+ *   when it never had any). The tree keeps the source's order when
  *   pages are reordered (a bookmark stays with its page). /Dest and /A GoTo, explicit or named
  *   (resolved through /Dests and the /Names /Dests name tree), become explicit destinations;
  *   every other action (JavaScript, Launch, GoToR, Named, …) goes with its bookmark (children
@@ -652,26 +651,23 @@ interface OutItem {
 }
 
 /**
- * The kept bookmarks of one source. `anchored`: the items sit under a kept bookmark to a page (or
- * the whole file is exported), so those that belong to no page (web links) stay; elsewhere they
- * go, as a heading without kept children does: they belonged to what was removed as much as to
- * what was kept.
+ * The kept bookmarks of one source. Web links belong to no page and stay (measured: a file whose
+ * outline is all web links would otherwise lose every bookmark when one page is removed); a heading
+ * without destination stays when it keeps a child (or, whole file, when it never had any).
  */
-function prune(items: Item[], part: OutlinePart, anchored = part.whole): OutItem[] {
+function prune(items: Item[], part: OutlinePart): OutItem[] {
 	const res: OutItem[] = [];
 	for (const it of items) {
 		const t = it.target;
-		const o = t && t !== 'bad' && 'page' in t ? part.out.get(t.page) : undefined;
-		const kids = prune(it.kids, part, anchored || o !== undefined);
+		const kids = prune(it.kids, part);
 		const keep = (target: OutItem['target']) => res.push({ title: it.title, target, open: it.open, ...(it.c ? { c: it.c } : {}), ...(it.f ? { f: it.f } : {}), kids });
 		if (t === 'bad') res.push(...kids);
 		else if (t && 'page' in t) {
+			const o = part.out.get(t.page);
 			if (o === undefined) res.push(...kids);
 			else keep({ out: o, view: t.view });
-		} else if (t && 'uri' in t) {
-			if (anchored || kids.length) keep(t);
-			else res.push(...kids);
-		} else if (kids.length || (part.whole && it.kids.length === 0)) keep(null);
+		} else if (t && 'uri' in t) keep(t);
+		else if (kids.length || (part.whole && it.kids.length === 0)) keep(null);
 		else res.push(...kids);
 	}
 	return res;
