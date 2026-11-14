@@ -137,6 +137,9 @@ function report() {
 		md.push(`- Independent check of kept tags (PDF.js getStructTree of every page up to 60, source vs export): same ${kept.filter((s) => s.tree === 'same').length} of ${kept.length}; MuPDF text (30 pages): same ${kept.filter((s) => s.text === 'same').length}; renders (3 pages, 40 dpi): same ${kept.filter((s) => s.pixels === 'same').length}`);
 		md.push(`- Time the tags add (source read + graft + final check), kept files: median ${q(added, 0.5)} ms, p90 ${q(added, 0.9)} ms, worst ${Math.max(0, ...added)} ms`);
 		md.push(`- Size change against the same export without tags: median ${(100 * q(sizeChange, 0.5)).toFixed(2)}%, p90 ${(100 * q(sizeChange, 0.9)).toFixed(2)}%, worst ${(100 * Math.max(0, ...sizeChange)).toFixed(2)}%`);
+		const vsOriginal = withTree.filter((r) => r.t1?.status === 'kept' && r.size && r.t1.bytes).map((r) => (r.t1!.bytes! - r.size!) / r.size!);
+		md.push(`- Size against the file as given (which has its tags): median ${(100 * q(vsOriginal, 0.5)).toFixed(2)}%, p90 ${(100 * q(vsOriginal, 0.9)).toFixed(2)}%, worst ${(100 * Math.max(...vsOriginal, 0)).toFixed(2)}%; exports bigger than the file as given: ${vsOriginal.filter((x) => x > 0).length}`);
+		md.push(`- MuPDF cleanup turned down because of the tags (struct elements it would merge): ${withTree.filter((r) => r.t1?.status === 'kept' && /structure objects/.test(r.t1.cleanup ?? '')).length}; compressed result failed a check and the uncompressed one was used: ${withTree.filter((r) => r.t1?.fellBack).length} (same plan without tags: ${withTree.filter((r) => r.base?.fellBack).length})`);
 		for (const name of ['del1', 'halfKept', 'rev'] as const) {
 			const s = step(withTree, name);
 			const k = s.filter((x) => x.status === 'kept');

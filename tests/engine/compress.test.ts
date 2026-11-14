@@ -351,7 +351,8 @@ async function facts(bytes: Uint8Array) {
 			for (const a of (await p.getAnnotations()) as Record<string, unknown>[]) annots.push([a.subtype, await dest(a.dest), a.url ?? null, a.fieldName ?? null]);
 			pages.push({
 				annots,
-				tree: await p.getStructTree()
+				// Content ids name the page object (p5R_mc0), whose number the writers choose: compared by MCID.
+				tree: JSON.parse(JSON.stringify(await p.getStructTree()).replace(/"p\d+R_mc(\d+)"/g, '"mc$1"').replace(/"pdfjs_internal_id_\d+R"/g, '"annot"'))
 			});
 		}
 		const { PDFFormatVersion: _v, ...info } = md.info as Record<string, unknown>;

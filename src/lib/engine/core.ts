@@ -704,7 +704,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		let checks = await verifyAll(final, warnings);
 		if (!checks.every((c) => c.ok) && alt.bytes) {
 			// The compressed file failed a check: the same plan without compression may not.
-			debug(`compress: packed file failed verification (${checks.filter((c) => !c.ok).map((c) => c.name).join(', ')}); trying the uncompressed result`);
+			debug(`compress: packed file failed verification (${checks.filter((c) => !c.ok).map((c) => `${c.name}: ${c.detail.slice(0, 300)}`).join('; ')}); trying the uncompressed result`);
 			const w = [...warnings.filter((x) => !(alt.dropWarnings ?? []).includes(x)), ...(alt.warnings ?? [])];
 			const again = await verifyAll(alt.bytes, w);
 			if (again.every((c) => c.ok)) {

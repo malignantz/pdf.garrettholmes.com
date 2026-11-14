@@ -57,6 +57,10 @@ export interface StepResult {
 	tagsMs?: { read: number; graft: number; verify: number };
 	elements?: number;
 	leak?: string;
+	/** What the MuPDF cleanup did (debug notes): run, skip, or why its result was turned down. */
+	cleanup?: string;
+	/** The compressed result failed a check and the uncompressed one was used. */
+	fellBack?: string;
 }
 
 export interface TagsResult {
@@ -66,6 +70,9 @@ export interface TagsResult {
 	producer: string;
 	half: TagsJob['half'];
 	pages?: number;
+	/** Size of the file as given, and of the opened copy. */
+	size?: number;
+	opened?: number;
 	open: 'ok' | 'error';
 	openMessage?: string;
 	tagged?: boolean;
@@ -122,6 +129,10 @@ async function run(sources: Source[], pages: PageRef[], eng = engine()): Promise
 				r.tagsMs = { graft: Number(m[2]), read: Number(m[3]), verify: Number(/\((\d+) ms\)\.$/.exec(v?.detail ?? '')?.[1] ?? 0) };
 			}
 		}
+		const cl = debugNotes.find((n) => /^cleanup: (result rejected|\d+ →|not smaller)/.test(n)) ?? debugNotes.find((n) => /^cleanup: estimate/.test(n))?.replace(/.*: (run|skip)$/, '$1');
+		if (cl) r.cleanup = cl.replace(/^cleanup: /, '').slice(0, 120);
+		const fb = debugNotes.find((n) => /packed file failed verification/.test(n));
+		if (fb) r.fellBack = fb.slice(0, 300);
 		const failed = debugNotes.find((n) => /tags failed their check/.test(n));
 		if (failed) r.message = failed.slice(0, 300);
 		return { r, bytes: res.bytes };
@@ -351,6 +362,8 @@ serveJobs<TagsJob, TagsResult>(async (job, io) => {
 		src = await engine().openPdf(bytes, 'survey.pdf');
 		r.open = 'ok';
 		r.pages = src.pages.length;
+		r.size = bytes.length;
+		r.opened = src.bytes.length;
 	} catch (e) {
 		r.openMessage = (e instanceof Error ? e.message : String(e)).slice(0, 200);
 		return done();
