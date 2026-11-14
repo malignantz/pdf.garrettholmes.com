@@ -17,6 +17,7 @@ import {
 	sourceBoundaries,
 	type Rect,
 	tagsLine,
+	outlineLines,
 	plainCheck
 } from '../../src/lib/workspace/logic';
 import type { PageRef } from '../../src/lib/core/types';
@@ -274,5 +275,25 @@ describe('tagsLine', () => {
 	});
 	it('the kept check reads plainly', () => {
 		expect(plainCheck({ name: 'tags', ok: true, detail: '' }, 3)).toBe('Accessibility tags kept.');
+	});
+});
+
+describe('outlineLines', () => {
+	it('says nothing when kept or dropped by design, and one plain line when bookmarks or the title could not be kept', () => {
+		expect(outlineLines({})).toEqual([]);
+		expect(outlineLines({ bookmarks: { kept: true, items: 3 }, docInfo: { kept: true } })).toEqual([]);
+		expect(outlineLines({ docInfo: { kept: false, reason: 'merged' } })).toEqual([]);
+		expect(outlineLines({ docInfo: { kept: false, reason: 'removed' } })).toEqual([]);
+		expect(outlineLines({ docInfo: { kept: false, reason: 'redacted' }, bookmarks: { kept: false, reason: 'redacted' } })).toEqual(['Bookmarks were not kept because something was blacked out.']);
+		expect(outlineLines({ bookmarks: { kept: false, reason: 'damaged' } })).toEqual(['Bookmarks could not be kept: they are damaged in the original file.']);
+		expect(outlineLines({ bookmarks: { kept: false, reason: 'check' }, docInfo: { kept: false, reason: 'check' } })).toEqual(['Bookmarks could not be kept in this file.', 'The document title could not be kept in this file.']);
+		for (const reason of ['large', 'unsupported'] as const) expect(outlineLines({ bookmarks: { kept: false, reason } })[0]).toMatch(/^Bookmarks [^.]+\.$/);
+	});
+	it('the kept check reads plainly', () => {
+		const line = (detail: string) => plainCheck({ name: 'outline', ok: true, detail }, 3);
+		expect(line('Document details kept (Title); 4 bookmarks kept, each going to its page')).toBe('Title and bookmarks kept.');
+		expect(line('1 bookmark kept, each going to its page')).toBe('Bookmarks kept.');
+		expect(line('Document details kept (Author)')).toBe('Title kept.');
+		expect(plainCheck({ name: 'outline', ok: false, detail: 'x' }, 3)).toBe('The title and bookmarks did not read back.');
 	});
 });

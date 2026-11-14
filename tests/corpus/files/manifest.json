@@ -2678,5 +2678,56 @@
 		"tagged": true,
 		"elements": 2,
 		"note": "indirect /S and catalog /Lang, PDFDocEncoding /ActualText, an empty name in an attribute"
+	},
+	"outline-basic.pdf": {
+		"pages": 4,
+		"label": "outline",
+		"title": "Quarterly Report – Übersicht",
+		"note": "Info in UTF-16 and PDFDocEncoding, XMP, /Lang, /ViewerPreferences, /PageMode; 13 bookmarks of every kind"
+	},
+	"outline-named.pdf": {
+		"pages": 3,
+		"label": "outline",
+		"title": "Named destinations",
+		"note": "/Dests and a /Names /Dests tree; bookmarks and links that use them"
+	},
+	"outline-second.pdf": {
+		"pages": 2,
+		"label": "outline",
+		"title": "Second",
+		"note": "a second file to merge; name (alpha) clashes with outline-named.pdf"
+	},
+	"outline-cyclic.pdf": {
+		"pages": 2,
+		"label": "outline",
+		"expect": "bookmarks not kept: damaged (cycle)"
+	},
+	"outline-damaged.pdf": {
+		"pages": 2,
+		"label": "outline",
+		"expect": "bookmarks not kept: damaged (a child is not a dictionary)"
+	},
+	"outline-form.pdf": {
+		"pages": 2,
+		"label": "outline",
+		"fields": [
+			"name"
+		]
+	},
+	"outline-secret.pdf": {
+		"pages": 2,
+		"label": "outline",
+		"secretBox": [
+			72,
+			690,
+			330,
+			720
+		],
+		"secrets": [
+			"SECRET-BOOKMARK-TITLE",
+			"SECRET-DEST-NAME",
+			"SECRET-INFO-TITLE",
+			"SECRET-INFO-SUBJECT"
+		]
 	}
 }
