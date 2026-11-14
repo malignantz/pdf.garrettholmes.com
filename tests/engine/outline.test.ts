@@ -444,7 +444,7 @@ describe('outline: strings', () => {
 		expect(v['/A'].slice(0, 2)).toEqual(['1 0 R', -2]);
 		expect(v['/A'].slice(2, 5).map(Number)).toEqual([0.5, 3, 0.5]);
 		expect(v['/A'].slice(6)).toEqual([null, true]);
-		expect(String(v['/A'][5].valueOf())).toBe('12345678901234567000');
+		expect(String(Number(v['/A'][5]))).toBe('12345678901234567000');
 		expect(v['/B']).toBe('b:612862290a41e9');
 		expect(v['/C']).toBe('b:feff00e9');
 		expect(v['/D']).toBe('/x y/');
