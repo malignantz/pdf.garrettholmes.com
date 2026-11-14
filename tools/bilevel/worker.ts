@@ -189,7 +189,8 @@ function walkPage(m: Mupdf, page: MU.PDFPage): Walk | null {
 		const b = Math.hypot(ctm[2], ctm[3]) / 72;
 		w.pics.push({ cover: (bw * bh) / (W * H), ppi: Math.min(pw / Math.max(1e-6, a), ph / Math.max(1e-6, b)), w: pw, h: ph, bpc: img.getBitsPerComponent(), mask, seq: seq++ });
 	};
-	const dl = page.toDisplayList(false);
+	// Run on the page itself, not a display list: paths a display list hands to the callbacks are
+	// packed inside it, and mupdf.js's wrapper would free them (a heap corruption, seen as a trap).
 	const dev = new m.Device({
 		fillText: () => void w.text.push({ visible: true, seq: seq++ }),
 		strokeText: () => void w.text.push({ visible: true, seq: seq++ }),
@@ -207,7 +208,7 @@ function walkPage(m: Mupdf, page: MU.PDFPage): Walk | null {
 		}
 	});
 	try {
-		dl.run(dev, m.Matrix.identity);
+		page.runPageContents(dev, m.Matrix.identity);
 	} finally {
 		try {
 			dev.close();
@@ -215,7 +216,6 @@ function walkPage(m: Mupdf, page: MU.PDFPage): Walk | null {
 			// Closed.
 		}
 		dev.destroy();
-		dl.destroy();
 	}
 	return w;
 }
