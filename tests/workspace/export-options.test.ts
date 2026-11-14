@@ -193,3 +193,30 @@ describe('keep filled blanks editable', () => {
 		expect(plainCheck({ name: 'blank-fields', ok: true, detail: '' }, 1)).toBe('Every filled blank is a form field with your answer.');
 	});
 });
+
+describe('watermark option', () => {
+	it('quick picks, typed text, problems, and the options it builds', async () => {
+		const { buildWatermark } = await import('../../src/lib/workspace/logic');
+		expect(buildExportOptions(form(), ctx)).toMatchObject({ ok: true });
+		expect((buildExportOptions(form(), ctx) as { options: object }).options).not.toHaveProperty('watermark');
+		expect(buildExportOptions(form({ watermark: true }), ctx)).toMatchObject({
+			ok: true,
+			options: { watermark: { text: 'DRAFT', look: 'diagonal', strength: 'light', color: 'grey' } }
+		});
+		expect(buildWatermark({ ...form(), wmPick: 'other', wmText: '  Copy   for Ana  ' })).toEqual({
+			watermark: { text: 'Copy for Ana', look: 'diagonal', strength: 'light', color: 'grey' }
+		});
+		expect(buildWatermark({ ...form(), wmPick: 'other', wmText: ' ' })).toEqual({ problem: 'Type the watermark text.' });
+		expect(buildWatermark({ ...form(), wmPick: 'other', wmText: 'x'.repeat(41) })).toEqual({ problem: 'The watermark can have at most 40 characters.' });
+		expect(buildExportOptions(form({ watermark: true, wmPick: 'other', wmText: '' }), ctx)).toMatchObject({ ok: false });
+		expect(plainCheck({ name: 'watermark', ok: true, detail: '' }, 3)).toBe('Every page carries the watermark.');
+	});
+
+	it('is kept with the saved session; unknown choices read the default', async () => {
+		const { cleanExportForm } = await import('../../src/lib/session/format');
+		const saved = cleanExportForm({ ...form(), watermark: true, wmPick: 'other', wmText: 'Mine', wmLook: 'straight', wmStrength: 'medium', wmColor: 'red' });
+		expect(saved).toMatchObject({ watermark: true, wmPick: 'other', wmText: 'Mine', wmLook: 'straight', wmStrength: 'medium', wmColor: 'red' });
+		const odd = cleanExportForm({ ...form(), wmLook: 'sideways' as never, wmColor: 'blue' as never });
+		expect(odd).toMatchObject({ wmLook: 'diagonal', wmColor: 'grey' });
+	});
+});

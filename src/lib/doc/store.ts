@@ -20,6 +20,7 @@ import type {
 } from '../core/types';
 import { newId } from './ids';
 import { turnStamp } from './turn';
+import { isFull, isValidCrop, reframeStamp, shownSize } from './crop';
 
 export { newId };
 
@@ -104,6 +105,7 @@ export interface DocStore {
 	readonly isDirty: boolean;
 	markClean(): void;
 	sourceOf(pageId: PageId): Source | undefined;
+	/** Size of the page as shown: after rotation and crop. */
 	displayedSize(ref: PageRef): PageSize | undefined;
 	toExportPlan(options: ExportOptions, ids?: Iterable<PageId>): ExportPlan;
 	assetUsage(id: AssetId): number;
@@ -114,6 +116,13 @@ export interface DocStore {
 	removePages(ids: Iterable<PageId>): boolean;
 	movePages(ids: Iterable<PageId>, toIndex: number): boolean;
 	rotatePages(ids: Iterable<PageId>, delta: number): boolean;
+	/**
+	 * Crop pages (2026-11-14): show only `crop` of each (fractions of the page as displayed,
+	 * before any crop; null or the whole page removes the crop). Every mark moves to the
+	 * new visible part; a page where a mark would fall outside it is left as it was and
+	 * listed in `blocked`. One step "Crop N pages" / "Reset crop" when anything changed.
+	 */
+	cropPages(ids: Iterable<PageId>, crop: StampBox | null): { cropped: PageId[]; blocked: PageId[] };
 	duplicatePages(ids: Iterable<PageId>): PageId[];
 	reversePages(ids?: Iterable<PageId>): boolean;
 	sortBySource(): boolean;
@@ -470,6 +479,7 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 			throw new RangeError(`DocStore: pageIndex ${ref.pageIndex} out of range for ${src.name}`);
 		if (![0, 90, 180, 270].includes(ref.rotation))
 			throw new RangeError(`DocStore: invalid rotation ${ref.rotation}`);
+		if (ref.crop !== undefined && !isValidCrop(ref.crop)) throw new RangeError('DocStore: bad crop');
 		for (const s of ref.stamps) checkStamp(d, s);
 	}
 
@@ -578,18 +588,59 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 		}));
 	}
 
-	/** The page turned by `delta` (a multiple of 90) with every mark turned along. */
+	/** The page turned by `delta` (a multiple of 90) with every mark (and its crop) turned along. */
 	function turnPage(p: PageRef, delta: number): PageRef {
 		const size = registry.get(p.sourceId)?.pages[p.pageIndex];
 		let ref = p;
 		for (let q = (((delta / 90) % 4) + 4) % 4; q > 0; q--) {
-			const odd = ref.rotation === 90 || ref.rotation === 270;
-			const w = size ? (odd ? size.height : size.width) : 1;
-			const h = size ? (odd ? size.width : size.height) : 1;
+			const shown = size ? shownSize(size, ref.rotation, ref.crop) : { width: 1, height: 1 };
+			const w = shown.width;
+			const h = shown.height;
 			const aspect = h > 0 && w > 0 ? w / h : 1;
 			ref = { ...ref, rotation: normRotation(ref.rotation + 90), stamps: ref.stamps.map((s) => turnStamp(s, aspect)) };
+			if (ref.crop) {
+				const c = ref.crop;
+				ref.crop = { x: 1 - (c.y + c.h), y: c.x, w: c.h, h: c.w };
+			}
 		}
 		return ref;
+	}
+
+	function cropPages(ids: Iterable<PageId>, crop: StampBox | null): { cropped: PageId[]; blocked: PageId[] } {
+		const want = crop === null || isFull(crop) ? undefined : { x: crop.x, y: crop.y, w: crop.w, h: crop.h };
+		if (want && !isValidCrop(want)) throw new RangeError('DocStore: bad crop');
+		const set = toSet(ids);
+		const cropped: PageId[] = [];
+		const blocked: PageId[] = [];
+		const targets = doc.pages.filter((p) => set.has(p.id));
+		const label = want ? pagesLabel('Crop', targets.length) : targets.length === 1 ? 'Reset crop' : `Reset crop of ${targets.length} pages`;
+		run(label, (d) => {
+			let changed = false;
+			const pages = d.pages.map((p) => {
+				if (!set.has(p.id)) return p;
+				const same = p.crop && want ? ['x', 'y', 'w', 'h'].every((k) => Math.abs(p.crop![k as keyof StampBox] - want[k as keyof StampBox]) < 1e-9) : !p.crop && !want;
+				if (same) return p;
+				const size = registry.get(p.sourceId)?.pages[p.pageIndex] ?? d.sources.find((s) => s.id === p.sourceId)?.pages[p.pageIndex];
+				const full = size ? shownSize(size, p.rotation) : { width: 1, height: 1 };
+				const aspect = full.height > 0 ? full.width / full.height : 1;
+				const stamps: Stamp[] = [];
+				for (const st of p.stamps) {
+					const moved = reframeStamp(st, p.crop, want, aspect);
+					if (!moved) break;
+					stamps.push(moved);
+				}
+				if (stamps.length !== p.stamps.length) {
+					blocked.push(p.id);
+					return p;
+				}
+				changed = true;
+				cropped.push(p.id);
+				const { crop: _old, ...rest } = p;
+				return want ? { ...rest, crop: want, stamps } : { ...rest, stamps };
+			});
+			return changed ? { ...d, pages } : null;
+		});
+		return { cropped, blocked };
 	}
 
 	function duplicatePages(ids: Iterable<PageId>): PageId[] {
@@ -691,7 +742,7 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 		if (old.kind === 'text' && /[\r\n]/.test(String(next.text))) {
 			const size = registry.get(p.sourceId)?.pages[p.pageIndex] ?? d.sources.find((s) => s.id === p.sourceId)?.pages[p.pageIndex];
 			if (!size) return true;
-			const shownH = p.rotation === 90 || p.rotation === 270 ? size.width : size.height;
+			const shownH = shownSize(size, p.rotation, p.crop).height;
 			return (next.blank as { box: StampBox }).box.h * shownH < TALL_BLANK_PT;
 		}
 		return false;
@@ -1009,9 +1060,7 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 	function displayedSize(ref: PageRef): PageSize | undefined {
 		const size = registry.get(ref.sourceId)?.pages[ref.pageIndex];
 		if (!size) return undefined;
-		return ref.rotation === 90 || ref.rotation === 270
-			? { width: size.height, height: size.width }
-			: { width: size.width, height: size.height };
+		return shownSize(size, ref.rotation, ref.crop);
 	}
 
 	function toExportPlan(opts: ExportOptions, ids?: Iterable<PageId>): ExportPlan {
@@ -1080,6 +1129,7 @@ export function createDocStore(options: DocStoreOptions = {}): DocStore {
 		removePages,
 		movePages,
 		rotatePages,
+		cropPages,
 		duplicatePages,
 		reversePages,
 		sortBySource,

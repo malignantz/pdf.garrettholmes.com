@@ -3,6 +3,7 @@
 	import PageCanvas from '../render/PageCanvas.svelte';
 	import StampLayer from '../editor/StampLayer.svelte';
 	import Icon from '../ui/Icon.svelte';
+	import { shownSize } from '../doc/crop';
 
 	/**
 	 * One page in the grid. Pure presentation: the grid handles every pointer
@@ -50,7 +51,8 @@
 	const size = $derived.by(() => {
 		const s = source?.pages[page.pageIndex];
 		if (!s) return { w: 1, h: 1.3 };
-		return page.rotation % 180 === 0 ? { w: s.width, h: s.height } : { w: s.height, h: s.width };
+		const shown = shownSize(s, page.rotation, page.crop);
+		return { w: shown.width, h: shown.height };
 	});
 	const aspect = $derived(size.w / size.h);
 	const fitWidth = $derived(aspect >= FRAME ? 100 : (aspect / FRAME) * 100);
@@ -63,6 +65,7 @@
 					? `, ${name}${source.pages.length > 1 ? ` page ${page.pageIndex + 1}` : ''}`
 					: '') +
 			(page.rotation ? `, rotated ${page.rotation}°` : '') +
+			(page.crop ? ', cropped' : '') +
 			(page.stamps.length ? `, ${page.stamps.length} ${page.stamps.length === 1 ? 'mark' : 'marks'}` : '') +
 			(hasFields ? ', has form fields' : '')
 	);
@@ -85,7 +88,7 @@
 		<div class="page" style:width="{fitWidth}%" style:aspect-ratio="{size.w} / {size.h}">
 			{#if source}
 				<svelte:boundary>
-					<PageCanvas {source} pageIndex={page.pageIndex} rotation={page.rotation} {renderer} {formValues} />
+					<PageCanvas {source} pageIndex={page.pageIndex} rotation={page.rotation} crop={page.crop} {renderer} {formValues} />
 					{#snippet failed()}
 						<div class="broken">This page could not be shown.</div>
 					{/snippet}

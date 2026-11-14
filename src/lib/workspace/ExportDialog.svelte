@@ -11,6 +11,7 @@
 	import Select from '../ui/Select.svelte';
 	import Toggle from '../ui/Toggle.svelte';
 	import OptionPicker from './OptionPicker.svelte';
+	import WatermarkPreview from './WatermarkPreview.svelte';
 	import { exportForm } from './export-form.svelte';
 	import { OCR_HINT, OCR_LABEL, countScanned, isDesktop, ocrCapNotice, ocrSummary } from './ocr-option';
 	import { PRINT_CAP_LABEL, countOversized, printCapHint, printCapLine } from './print-cap-option';
@@ -40,6 +41,7 @@
 		buildExportOptions,
 		blankFieldsLine,
 		buildNumbering,
+		buildWatermark,
 		defaultFilename,
 		filledBlankCount,
 		formatBytes,
@@ -56,7 +58,12 @@
 		redactionCount,
 		shrinkSummary,
 		tagsLine,
-		targetBytesFor
+		targetBytesFor,
+		WATERMARK_COLORS,
+		WATERMARK_LOOKS,
+		WATERMARK_MAX,
+		WATERMARK_PICKS,
+		WATERMARK_STRENGTHS
 	} from './logic';
 
 	interface Props {
@@ -251,6 +258,33 @@
 	});
 	const numPreview = $derived(numResult && 'numbering' in numResult ? numberingPreview(numResult.numbering, plan.count) : '');
 
+	// Watermark: the text is checked like the Bates prefix (characters the stamp font cannot draw).
+	const wmResult = $derived(f.watermark ? buildWatermark(f) : null);
+	let wmBad = $state('');
+	let wmSeq = 0;
+	$effect(() => {
+		const text = wmResult && 'watermark' in wmResult ? wmResult.watermark.text : '';
+		const seq = ++wmSeq;
+		if (!text) {
+			wmBad = '';
+			return;
+		}
+		engine
+			.unsupportedChars(text)
+			.catch(() => '')
+			.then((bad) => {
+				if (seq === wmSeq) wmBad = bad;
+			});
+	});
+	const wmProblem = $derived.by(() => {
+		if (!wmResult) return null;
+		if ('problem' in wmResult) return wmResult.problem;
+		if (wmBad) return `The watermark has characters that cannot be printed: ${[...wmBad].join(' ')}. Remove them.`;
+		return null;
+	});
+	/** The first exported page, for the preview. */
+	const firstPage = $derived((plan.pages[0] && store.displayedSize(plan.pages[0])) ?? { width: 612, height: 792 });
+
 	// What to save: a PDF (maybe split into several), or the pages as pictures.
 	const pictures = $derived(f.output !== 'pdf');
 	const pictureKind = $derived(f.output === 'png' ? 'png' : 'jpg');
@@ -291,6 +325,7 @@
 	const canExport = $derived(
 		plan.count > 0 &&
 			!numProblem &&
+			!wmProblem &&
 			(pictures
 				? !picturesProblem
 				: fitOk && !splitProblem && (!usePassword || (!passwordProblem(password) && confirm === password)))
@@ -540,7 +575,9 @@
 		'target-size': 'File size',
 		'blank-fields': 'Filled blanks',
 		'text-layer': 'Searchable text',
-		tags: 'Accessibility tags'
+		tags: 'Accessibility tags',
+		watermark: 'Watermark',
+		crop: 'Crop'
 	};
 
 	function headline(checks: VerifyCheck[], pageCount: number): string {
@@ -726,6 +763,31 @@
 					</div>
 				{/if}
 
+				<Toggle checked={f.watermark} onchange={(v) => (f.watermark = v)} label="Add a watermark" hint="Text such as DRAFT across every page." />
+				{#if f.watermark}
+					<div class="section" data-testid="watermark-section">
+						<OptionPicker label="Text" bind:value={f.wmPick} options={WATERMARK_PICKS} />
+						{#if f.wmPick === 'other'}
+							<Field label="Watermark text" bind:value={f.wmText} maxlength={WATERMARK_MAX} autocomplete="off" spellcheck="false" />
+						{/if}
+						<OptionPicker label="Look" bind:value={f.wmLook} options={WATERMARK_LOOKS} />
+						<div class="wm-pair">
+							<OptionPicker label="Strength" bind:value={f.wmStrength} options={WATERMARK_STRENGTHS} />
+							<OptionPicker label="Colour" bind:value={f.wmColor} options={WATERMARK_COLORS} />
+						</div>
+						{#if wmProblem}
+							<p class="problem" role="alert">{wmProblem}</p>
+						{:else if wmResult && 'watermark' in wmResult}
+							<div class="wm-row">
+								<WatermarkPreview watermark={wmResult.watermark} page={firstPage} />
+								<p class="caption preview">
+									A watermark is a visible mark, not protection: anyone with a PDF editor can remove it.
+								</p>
+							</div>
+						{/if}
+					</div>
+				{/if}
+
 				{#if !pictures}
 				{#if plan.hasForm || redacting}
 					{#if plan.hasForm}
@@ -878,7 +940,7 @@
 				icon="download"
 				type="submit"
 				form="export-form"
-				disabled={plan.count === 0 || !!numProblem || (pictures ? !!picturesProblem : !fitOk || !!splitProblem)}>Export</Button
+				disabled={plan.count === 0 || !!numProblem || !!wmProblem || (pictures ? !!picturesProblem : !fitOk || !!splitProblem)}>Export</Button
 			>
 		{:else if phase.kind === 'working'}
 			{#if abort}<Button variant="quiet" onclick={() => abort?.abort()}>Cancel</Button>{/if}
@@ -922,6 +984,18 @@
 	.pair {
 		display: grid;
 		grid-template-columns: 1fr 1fr;
+		gap: var(--s-3);
+	}
+
+	.wm-pair {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--s-3) var(--s-5, 24px);
+	}
+
+	.wm-row {
+		display: flex;
+		align-items: center;
 		gap: var(--s-3);
 	}
 

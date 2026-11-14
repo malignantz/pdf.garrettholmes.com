@@ -4,7 +4,7 @@
  * so everything here is unit-tested in tests/workspace/.
  */
 
-import type { ExportOptions, ExportResult, PageId, PageNumbering, PageRef, Source, TagsDropReason, VerifyCheck } from '../core/types';
+import type { ExportOptions, ExportResult, PageId, PageNumbering, PageRef, Source, TagsDropReason, VerifyCheck, Watermark } from '../core/types';
 import { numberingLabels } from '../engine/numbering';
 import type { OutputKind, PictureQuality } from './pictures-plan';
 import type { SplitRule } from './split-plan';
@@ -355,6 +355,10 @@ export function plainCheck(
 			return c.ok ? 'The searchable text reads back on every page that got it.' : 'The searchable text did not read back.';
 		case 'tags':
 			return c.ok ? 'Accessibility tags kept.' : 'The accessibility tags did not read back.';
+		case 'watermark':
+			return c.ok ? 'Every page carries the watermark.' : 'The watermark is missing from some pages.';
+		case 'crop':
+			return c.ok ? 'Every cropped page shows the part you chose.' : 'Some pages did not come out cropped as you chose.';
 	}
 }
 
@@ -447,13 +451,58 @@ export interface ExportForm {
 	splitEvery: string;
 	/** "At these pages": the pages as typed ("5, 12"). */
 	splitAt: string;
+	// Added 2026-11-14 (watermark). Old saved sessions read the defaults.
+	/** Text across every page (ExportOptions.watermark). */
+	watermark: boolean;
+	/** A quick pick, or 'other' for the typed `wmText`. */
+	wmPick: WatermarkPick;
+	wmText: string;
+	wmLook: Watermark['look'];
+	wmStrength: Watermark['strength'];
+	wmColor: Watermark['color'];
+}
+
+export type WatermarkPick = 'DRAFT' | 'CONFIDENTIAL' | 'COPY' | 'other';
+export const WATERMARK_PICKS: readonly { value: WatermarkPick; label: string }[] = [
+	{ value: 'DRAFT', label: 'Draft' },
+	{ value: 'CONFIDENTIAL', label: 'Confidential' },
+	{ value: 'COPY', label: 'Copy' },
+	{ value: 'other', label: 'Other' }
+];
+export const WATERMARK_LOOKS: readonly { value: Watermark['look']; label: string }[] = [
+	{ value: 'diagonal', label: 'Diagonal' },
+	{ value: 'straight', label: 'Straight' }
+];
+export const WATERMARK_STRENGTHS: readonly { value: Watermark['strength']; label: string }[] = [
+	{ value: 'light', label: 'Light' },
+	{ value: 'medium', label: 'Medium' }
+];
+export const WATERMARK_COLORS: readonly { value: Watermark['color']; label: string }[] = [
+	{ value: 'grey', label: 'Grey' },
+	{ value: 'red', label: 'Red' }
+];
+/** As engine/watermark.ts WATERMARK_MAX_CHARS (not imported here: the dialog's checks stay engine-free). */
+export const WATERMARK_MAX = 40;
+
+/** Settings -> Watermark, or the plain sentence saying what to fix. Font coverage is the engine's check. */
+export function buildWatermark(f: Pick<ExportForm, 'wmPick' | 'wmText' | 'wmLook' | 'wmStrength' | 'wmColor'>): { watermark: Watermark } | { problem: string } {
+	const raw = f.wmPick === 'other' ? f.wmText : f.wmPick;
+	const text = raw.normalize('NFC').replace(/\s+/g, ' ').trim();
+	if (text === '') return { problem: 'Type the watermark text.' };
+	if (/\p{C}/u.test(text)) return { problem: 'The watermark contains invisible characters. Use letters, digits and symbols.' };
+	if ([...text].length > WATERMARK_MAX) return { problem: `The watermark can have at most ${WATERMARK_MAX} characters.` };
+	return { watermark: { text, look: f.wmLook, strength: f.wmStrength, color: f.wmColor } };
 }
 
 /** Allowed values of the form's choice fields, for reading saved sessions. */
 export const FORM_CHOICES: { readonly [K in keyof ExportForm]?: readonly string[] } = {
 	output: ['pdf', 'jpg', 'png'],
 	pictureQuality: ['screen', 'print'],
-	splitRule: ['each', 'every', 'files', 'at']
+	splitRule: ['each', 'every', 'files', 'at'],
+	wmPick: ['DRAFT', 'CONFIDENTIAL', 'COPY', 'other'],
+	wmLook: ['diagonal', 'straight'],
+	wmStrength: ['light', 'medium'],
+	wmColor: ['grey', 'red']
 };
 
 export const DEFAULT_FORM: Omit<ExportForm, 'filename'> = {
@@ -479,7 +528,13 @@ export const DEFAULT_FORM: Omit<ExportForm, 'filename'> = {
 	split: false,
 	splitRule: 'each',
 	splitEvery: '2',
-	splitAt: ''
+	splitAt: '',
+	watermark: false,
+	wmPick: 'DRAFT',
+	wmText: '',
+	wmLook: 'diagonal',
+	wmStrength: 'light',
+	wmColor: 'grey'
 };
 
 /** Filled blanks on the pages of a plan: text and ticks still linked to the blank they were snapped into. */
@@ -609,6 +664,11 @@ export function buildExportOptions(
 		const r = buildNumbering(f, ctx.pageCount);
 		if ('problem' in r) return { ok: false, problem: r.problem };
 		options.numbering = r.numbering;
+	}
+	if (f.watermark) {
+		const r = buildWatermark(f);
+		if ('problem' in r) return { ok: false, problem: r.problem };
+		options.watermark = r.watermark;
 	}
 	if ((ctx.hasForm && f.lockForms) || redacting) options.flattenForms = true;
 	if (f.keepBlanks && (ctx.blanks ?? 0) > 0 && !options.flattenForms) options.blankFields = true;

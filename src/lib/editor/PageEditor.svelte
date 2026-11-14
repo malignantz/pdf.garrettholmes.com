@@ -30,6 +30,8 @@
 	import SignaturePad from './SignaturePad.svelte';
 	import CopyDialog from './CopyDialog.svelte';
 	import FormLayer from './FormLayer.svelte';
+	import CropFrame from './CropFrame.svelte';
+	import { FULL, clampCrop, fullSize, reframeBox } from '../doc/crop';
 	import { formFieldsOf } from './form-fields.svelte';
 	import { panToReveal, redactionEcho } from './form-view';
 	import { ensureStampFont, stampName, cssColor, HIGHLIGHT_COLORS, HIGHLIGHT_CSS, paintOrder } from './stamp-view';
@@ -60,7 +62,8 @@
 		type View
 	} from './geometry';
 
-	let { pageId, onclose }: { pageId: PageId; onclose: () => void } = $props();
+	/** `startCrop`: open with the Crop tool on, applying to the selected pages (the grid's "Crop selected pages"). */
+	let { pageId, onclose, startCrop = false }: { pageId: PageId; onclose: () => void; startCrop?: boolean } = $props();
 
 	const app = getApp();
 	const store = app.store;
@@ -74,7 +77,17 @@
 	const index = $derived(pages.findIndex((p) => p.id === currentId));
 	const page = $derived<PageRef | undefined>(index >= 0 ? pages[index] : undefined);
 	const source = $derived(page ? doc.state.sources.find((s) => s.id === page.sourceId) ?? store.sourceOf(page.id) : undefined);
-	const ptSize = $derived(page ? store.displayedSize(page) : undefined);
+	// ------------------------------------------------------------ crop (state; the tool is below)
+	/** The Crop tool is on: the whole page shows, with the crop frame over it. */
+	let cropMode = $state(false);
+	/** The frame, as fractions of the whole page as displayed. */
+	let cropDraft = $state<StampBox>({ ...FULL });
+	/** Which pages "Crop" applies to. */
+	let cropScope = $state<'page' | 'selected' | 'all'>('page');
+	/** The uncropped page as displayed, in points. */
+	const wholeSize = $derived(page && source?.pages[page.pageIndex] ? fullSize(source.pages[page.pageIndex], page.rotation) : undefined);
+	/** The page in points as the editor shows it: the whole page while cropping, else the visible part. */
+	const ptSize = $derived(page ? (cropMode ? wholeSize : store.displayedSize(page)) : undefined);
 	const aspect = $derived(ptSize && ptSize.height > 0 ? ptSize.width / ptSize.height : 0.7727);
 	const assets = $derived(doc.state.assets);
 
@@ -101,9 +114,12 @@
 	let vpW = $state(0);
 	let vpH = $state(0);
 	const margin = $derived(vpW < 600 ? 12 : 32);
-	const base = $derived(fitSize({ width: vpW, height: vpH }, aspect, margin));
+	/** Height of the crop bar while it shows: the page is fitted above it, so its corners stay in reach. */
+	let cropBarH = $state(0);
+	const portH = $derived(Math.max(0, vpH - (cropMode ? cropBarH + 8 : 0)));
+	const base = $derived(fitSize({ width: vpW, height: portH }, aspect, margin));
 	let view = $state<View>({ zoom: 1, panX: 0, panY: 0 });
-	const port = $derived({ width: vpW, height: vpH });
+	const port = $derived({ width: vpW, height: portH });
 
 	function setView(v: View) {
 		view = clampPan(v, port, base, margin);
@@ -112,7 +128,7 @@
 	// Fit on page change and whenever the viewport or page shape changes at zoom 1.
 	let fittedFor = '';
 	$effect(() => {
-		const key = `${currentId}|${vpW}|${vpH}|${aspect}`;
+		const key = `${currentId}|${vpW}|${portH}|${aspect}`;
 		if (vpW === 0) return;
 		const pageChanged = !fittedFor.startsWith(`${currentId}|`);
 		fittedFor = key;
@@ -244,6 +260,10 @@
 					sel = { anchor: a, end: a, rects: selectionRects(layout!, a, a) };
 				} else if (!layout && insidePage(f0)) pmode = 'hold';
 				else pmode = pstart.view.zoom > 1.0001 ? 'pan' : 'swipe';
+			} else if (cropMode && insidePage(f0)) {
+				// Crop: a drag on the page (outside the frame, which takes its own drags) draws a new frame.
+				pmode = 'draw';
+				draftStart = f0;
 			} else if (isDrawn(armed) && insidePage(f0)) {
 				// With a drawn tool armed, one finger (or the mouse) on the page draws instead of panning.
 				pmode = 'draw';
@@ -252,6 +272,7 @@
 			} else pmode = pstart.view.zoom > 1.0001 ? 'pan' : 'swipe';
 		}
 		if (pmode === 'select') moveSelection(toFraction(e));
+		else if (pmode === 'draw' && cropMode) cropDraft = newFrame(draftStart, toFraction(e));
 		else if (pmode === 'draw' && penArmed) addPenPoints(e);
 		else if (pmode === 'draw') draft = drawnBox(draftStart, toFraction(e));
 		else if (pmode === 'pan') setView({ ...pstart.view, panX: pstart.view.panX + dx, panY: pstart.view.panY + dy });
@@ -318,6 +339,11 @@
 	}
 
 	function finishDraw(end: Point) {
+		if (cropMode) {
+			cropDraft = newFrame(draftStart, end);
+			announce(cropSummary());
+			return;
+		}
 		const t = armed;
 		if (t === 'highlight' && penDraft) {
 			addPenPoints({ clientX: 0, clientY: 0 }, end);
@@ -395,7 +421,7 @@
 	}
 
 	// ------------------------------------------------------------ tools
-	type Tool = 'signature' | 'initials' | 'text' | 'date' | 'check' | 'cross' | 'dot' | 'highlight' | 'redact';
+	type Tool = 'signature' | 'initials' | 'text' | 'date' | 'check' | 'cross' | 'dot' | 'highlight' | 'redact' | 'crop';
 	const TOOLS: { id: Tool; label: string; icon: IconName }[] = [
 		{ id: 'signature', label: 'Signature', icon: 'sign' },
 		{ id: 'initials', label: 'Initials', icon: 'initials' },
@@ -405,7 +431,8 @@
 		{ id: 'check', label: 'Check', icon: 'check' },
 		{ id: 'dot', label: 'Dot', icon: 'dot' },
 		{ id: 'highlight', label: 'Highlight', icon: 'highlight' },
-		{ id: 'redact', label: 'Redact', icon: 'redact' }
+		{ id: 'redact', label: 'Redact', icon: 'redact' },
+		{ id: 'crop', label: 'Crop', icon: 'crop' }
 	];
 	const HL_MODES: { id: 'text' | 'pen' | 'box'; label: string; icon: IconName }[] = [
 		{ id: 'text', label: 'Text', icon: 'hl-text' },
@@ -516,6 +543,12 @@
 	function toolClick(t: Tool, e: MouseEvent) {
 		finishEditing(true);
 		const byKeyboard = e.detail === 0;
+		if (t === 'crop') {
+			if (cropMode) exitCrop();
+			else enterCrop('page');
+			return;
+		}
+		if (cropMode) exitCrop();
 		if (armed === t) {
 			disarm();
 			return;
@@ -664,6 +697,92 @@
 		}
 	}
 
+	// ------------------------------------------------------------ the Crop tool
+	/** Smallest frame: a tenth of the page each way, and at least half an inch. */
+	const cropMinW = $derived(Math.min(1, Math.max(0.1, 36 / (wholeSize?.width ?? 612))));
+	const cropMinH = $derived(Math.min(1, Math.max(0.1, 36 / (wholeSize?.height ?? 792))));
+	/** Selected grid pages, in page order (the editor's "Selected pages"). */
+	const selectedPages = $derived(pages.filter((p) => doc.state.selection.has(p.id)));
+	const CROP_HONEST = 'Crop hides the edges. It does not remove what is there: use Redact to remove something for good.';
+
+	function enterCrop(scope: 'page' | 'selected' | 'all') {
+		if (!page) return;
+		finishEditing(true);
+		endNudge();
+		disarm();
+		selectedId = null;
+		cropScope = scope === 'selected' && selectedPages.length < 2 ? 'page' : scope;
+		cropDraft = page.crop ? { ...page.crop } : { ...FULL };
+		cropMode = true;
+		announce(`Crop. ${cropHint} ${CROP_HONEST}`);
+	}
+
+	function exitCrop() {
+		cropMode = false;
+	}
+
+	/** A new frame from a drag across the page: at least the smallest size, kept on the page; a slip keeps the old one. */
+	function newFrame(a: Point, b: Point): StampBox {
+		const d = drawnBox(a, b);
+		const pw = base.width * view.zoom;
+		const ph = base.height * view.zoom;
+		if (Math.max(d.w * pw, d.h * ph) < SLIP_PX) return cropDraft;
+		const w = Math.max(d.w, cropMinW);
+		const h = Math.max(d.h, cropMinH);
+		return clampCrop({ x: d.w < cropMinW ? d.x + d.w / 2 - w / 2 : d.x, y: d.h < cropMinH ? d.y + d.h / 2 - h / 2 : d.y, w, h }, cropMinW, cropMinH);
+	}
+
+	function cropSummary(): string {
+		const s = wholeSize;
+		if (!s) return '';
+		const inch = (pt: number) => `${Math.round((pt / 72) * 10) / 10}`;
+		return `Crop: ${inch(cropDraft.w * s.width)} by ${inch(cropDraft.h * s.height)} inches of the page show.`;
+	}
+
+	const cropTargets = $derived(cropScope === 'all' ? pages : cropScope === 'selected' ? selectedPages : page ? [page] : []);
+
+	function applyCrop() {
+		const targets = cropTargets;
+		if (!targets.length) return;
+		const number = new Map(pages.map((p, i) => [p.id, i + 1]));
+		const { cropped, blocked } = store.cropPages(
+			targets.map((p) => p.id),
+			cropDraft
+		);
+		exitCrop();
+		const done = cropped.length ? `Cropped ${cropped.length === 1 ? (targets.length === 1 ? 'the page' : '1 page') : `${cropped.length} pages`}.` : '';
+		if (blocked.length) {
+			const list = blocked.map((id) => number.get(id)).join(', ');
+			const msg = `${done ? `${done} ` : ''}Not cropped: page${blocked.length === 1 ? '' : 's'} ${list}, because the crop would hide a mark there. Move the mark or make the crop bigger.`;
+			showNote(msg);
+			announce(msg);
+		} else announce(done || 'Nothing changed.');
+	}
+
+	function resetCrop() {
+		if (!page) return;
+		const had = !!page.crop;
+		store.cropPages([page.id], null);
+		exitCrop();
+		announce(had ? 'Crop removed from this page.' : 'Nothing changed.');
+	}
+
+	const cropHint = $derived.by(() => {
+		const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+		return coarse
+			? 'Drag the frame, its corners or edges, or drag across the page for a new frame.'
+			: 'Drag the frame, its corners or edges, or drag across the page for a new frame. Tab to an edge to move it with the arrow keys.';
+	});
+
+	onMount(() => {
+		if (startCrop) enterCrop('selected');
+	});
+
+	/** Where the whole page sits around the visible part of a cropped page (for overlays drawn in the whole page). */
+	const wholeStyle = (c: StampBox) => `left:${(-c.x / c.w) * 100}%;top:${(-c.y / c.h) * 100}%;width:${100 / c.w}%;height:${100 / c.h}%`;
+	/** Where the visible part sits on the whole page. */
+	const partStyle = (c: StampBox) => `left:${c.x * 100}%;top:${c.y * 100}%;width:${c.w * 100}%;height:${c.h * 100}%`;
+
 	// Snap on tap: read the page's blanks in the engine worker once Text or Check is armed on it.
 	const snapOk = $derived(snapEligible(source, page, formFieldsOf(app.engine, source)));
 	$effect(() => {
@@ -677,7 +796,7 @@
 
 	// ------------------------------------------------------------ the text highlighter
 	const layout = $derived(
-		textState?.status === 'ready' && textState.text.words.length && page ? shownLayout(textState.text, page.rotation, aspect) : null
+		textState?.status === 'ready' && textState.text.words.length && page ? shownLayout(textState.text, page.rotation, aspect, page.crop) : null
 	);
 	/** Typical line height of the page, in page heights. */
 	const lineCross = $derived.by(() => {
@@ -1238,8 +1357,10 @@
 		endNudge();
 		selectedId = null;
 		fieldFocused = true;
-		focusedBox = box;
-		revealField(box);
+		// FormLayer works in the whole page; a cropped page shows its visible part.
+		const shown = page?.crop ? reframeBox(box, undefined, page.crop) : box;
+		focusedBox = shown;
+		revealField(shown);
 	}
 
 	function onFieldBlur() {
@@ -1282,11 +1403,13 @@
 		finishEditing(true);
 		endNudge();
 		selectedId = null;
+		if (cropMode && cropScope === 'page') exitCrop();
 		currentId = next.id;
 		announce(`Page ${index + delta + 1} of ${pages.length}.`);
 	}
 
 	function undo() {
+		if (cropMode) exitCrop();
 		finishEditing(true);
 		endNudge();
 		if (store.undoToken === undoMark) {
@@ -1305,6 +1428,7 @@
 
 	/** Turn this page 90° right, with every mark on it, as the grid's Rotate does. */
 	function rotateHere() {
+		if (cropMode) exitCrop();
 		finishEditing(true);
 		endNudge();
 		disarm();
@@ -1339,7 +1463,11 @@
 			e.preventDefault();
 			duplicateSelected();
 		} else if (e.key === 'Escape') {
-			if (armed) {
+			if (cropMode) {
+				e.preventDefault();
+				exitCrop();
+				announce('Crop put away. Nothing changed.');
+			} else if (armed) {
 				e.preventDefault();
 				disarm();
 				announce('Tool put away.');
@@ -1515,7 +1643,7 @@
 				type="button"
 				class="tool"
 				class:in-more={!PHONE_BAR.has(t.id)}
-				aria-pressed={armed === t.id}
+				aria-pressed={armed === t.id || (t.id === 'crop' && cropMode)}
 				data-tool={t.id}
 				onclick={(e) => toolClick(t.id, e)}
 			>
@@ -1548,7 +1676,7 @@
 							type="button"
 							role="menuitemradio"
 							class="more-item"
-							aria-checked={armed === t.id}
+							aria-checked={armed === t.id || (t.id === 'crop' && cropMode)}
 							tabindex={i === moreIndex ? 0 : -1}
 							data-tool={t.id}
 							onclick={(e) => pickMore(t.id, e)}
@@ -1588,18 +1716,22 @@
 						{source}
 						pageIndex={page.pageIndex}
 						rotation={page.rotation}
+						crop={cropMode ? undefined : page.crop}
 						renderer={app.renderer}
 						alt={`Page ${index + 1}`}
 						formValues={formVals}
 						onrender={(v) => (drawnVals = v)}
 					/>
-					{#if fields.length && source.pages[page.pageIndex]}
+					{#if fields.length && source.pages[page.pageIndex] && !cropMode}
+						<!-- Fields sit on the whole page; on a cropped page only the visible part shows. -->
+						<div class="whole-clip">
+						<div class="whole" style={page.crop ? wholeStyle(page.crop) : ''}>
 						<FormLayer
 							{fields}
 							pageIndex={page.pageIndex}
 							rotation={page.rotation}
 							pagePt={source.pages[page.pageIndex]}
-							pagePx={{ width: base.width * view.zoom, height: base.height * view.zoom }}
+							pagePx={{ width: (base.width * view.zoom) / (page.crop?.w ?? 1), height: (base.height * view.zoom) / (page.crop?.h ?? 1) }}
 							values={formVals}
 							drawn={drawnVals}
 							passthrough={!!armed}
@@ -1611,8 +1743,10 @@
 							onredo={redo}
 							onescape={viewportFocus}
 						/>
+						</div>
+						</div>
 					{/if}
-					<div class="layer" bind:this={layer} class:passthrough={!!armed}>
+					<div class="layer" bind:this={layer} class:passthrough={!!armed || cropMode} style={cropMode && page.crop ? partStyle(page.crop) : undefined}>
 						{#each ordered as s (s.id)}
 							{@const isSel = s.id === selectedId}
 							{@const isEdit = editing?.id === s.id}
@@ -1713,6 +1847,9 @@
 							/>
 						{/if}
 					</div>
+					{#if cropMode}
+						<CropFrame box={cropDraft} minW={cropMinW} minH={cropMinH} onchange={(b) => (cropDraft = b)} ondone={() => announce(cropSummary())} />
+					{/if}
 				</div>
 			{/if}
 		</div>
@@ -1734,6 +1871,25 @@
 		{#if moreOpen}
 			<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions (Escape closes the sheet) -->
 			<div class="more-scrim" aria-hidden="true" onclick={() => closeMore()}></div>
+		{:else if cropMode}
+			<!-- svelte-ignore a11y_no_noninteractive_element_interactions (arrow keys move within the radio group) -->
+			<div class="selbar hlbar cropbar" role="toolbar" aria-label="Crop" tabindex="-1" onkeydown={hlbarKey} data-testid="crop-bar" bind:offsetHeight={cropBarH}>
+				<p class="hl-note crop-note" data-testid="crop-note">{CROP_HONEST}</p>
+				{#if pages.length > 1}
+					<div class="seg" role="radiogroup" aria-label="Crop which pages">
+						<button type="button" role="radio" class="seg-item" aria-checked={cropScope === 'page'} tabindex={cropScope === 'page' ? 0 : -1} onclick={() => (cropScope = 'page')}>This page</button>
+						{#if selectedPages.length > 1}
+							<button type="button" role="radio" class="seg-item" aria-checked={cropScope === 'selected'} tabindex={cropScope === 'selected' ? 0 : -1} onclick={() => (cropScope = 'selected')}>Selected ({selectedPages.length})</button>
+						{/if}
+						<button type="button" role="radio" class="seg-item" aria-checked={cropScope === 'all'} tabindex={cropScope === 'all' ? 0 : -1} onclick={() => (cropScope = 'all')}>All pages ({pages.length})</button>
+					</div>
+				{/if}
+				<div class="crop-actions">
+					{#if page?.crop}<Button variant="quiet" onclick={resetCrop}>Reset crop</Button>{/if}
+					<Button variant="quiet" onclick={() => (exitCrop(), announce('Crop put away. Nothing changed.'))}>Cancel</Button>
+					<Button variant="primary" icon="crop" onclick={applyCrop}>Crop</Button>
+				</div>
+			</div>
 		{:else if armed === 'highlight'}
 			<!-- svelte-ignore a11y_no_noninteractive_element_interactions (arrow keys move within the radio groups) -->
 			<div class="selbar hlbar" role="toolbar" aria-label="Highlighter" tabindex="-1" onkeydown={hlbarKey}>
@@ -1978,6 +2134,28 @@
 
 	.page :global(.sheet) {
 		height: 100%;
+	}
+
+	.whole-clip {
+		position: absolute;
+		inset: 0;
+		overflow: hidden;
+		pointer-events: none;
+	}
+
+	.whole {
+		position: absolute;
+		inset: 0;
+	}
+
+	.cropbar {
+		max-width: min(560px, calc(100% - 2 * var(--s-3)));
+	}
+
+	.crop-actions {
+		display: flex;
+		gap: var(--s-2);
+		align-items: center;
 	}
 
 	.layer {

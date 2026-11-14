@@ -6,6 +6,7 @@
  * with x scaled by the shown page's aspect (width / height) so both axes agree.
  */
 
+import { reframeBox } from '../doc/crop';
 import type { PageText, Rotation, StampBox } from '../core/types';
 import { rotateBox } from './form-view';
 
@@ -43,9 +44,16 @@ function union(a: StampBox, b: StampBox): StampBox {
 	return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }
 
-/** The page's words turned with the page (`rotation` is PageRef.rotation), grouped in lines. */
-export function shownLayout(text: PageText, rotation: Rotation, aspect: number): TextLayout {
-	const words = text.words.map((w) => ({ text: w.text, line: w.line, box: rotateBox(w.box, rotation) }));
+/**
+ * The page's words turned with the page (`rotation` is PageRef.rotation), grouped in lines.
+ * On a cropped page (`crop`, PageRef.crop) the boxes are in the visible part and words
+ * that are not wholly inside it are left out (a highlight must lie on the page).
+ */
+export function shownLayout(text: PageText, rotation: Rotation, aspect: number, crop?: StampBox): TextLayout {
+	const inside = (b: StampBox) => b.x >= 0 && b.y >= 0 && b.x + b.w <= 1 && b.y + b.h <= 1;
+	const words = text.words
+		.map((w) => ({ text: w.text, line: w.line, box: crop ? reframeBox(rotateBox(w.box, rotation), undefined, crop) : rotateBox(w.box, rotation) }))
+		.filter((w) => !crop || inside(w.box));
 	const lines: ShownLine[] = [];
 	words.forEach((w, i) => {
 		const cur = lines[lines.length - 1];

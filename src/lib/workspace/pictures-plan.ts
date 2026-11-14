@@ -65,10 +65,11 @@ export function deviceBudget(): number {
 }
 
 /** Page sizes of the export as they will come out (user rotation applied), in points. */
-function outputSize(p: Pick<PageRef, 'sourceId' | 'pageIndex' | 'rotation'>, byId: Map<string, Source>): { w: number; h: number } {
+function outputSize(p: Pick<PageRef, 'sourceId' | 'pageIndex' | 'rotation' | 'crop'>, byId: Map<string, Source>): { w: number; h: number } {
 	const s = byId.get(p.sourceId)?.pages[p.pageIndex] ?? { width: 612, height: 792 };
 	const swap = (p.rotation as Rotation) % 180 !== 0;
-	return swap ? { w: s.height, h: s.width } : { w: s.width, h: s.height };
+	const c = p.crop ?? { w: 1, h: 1 };
+	return swap ? { w: s.height * c.w, h: s.width * c.h } : { w: s.width * c.w, h: s.height * c.h };
 }
 
 export interface PictureEstimate {
@@ -82,7 +83,7 @@ export interface PictureEstimate {
 }
 
 export function estimatePictures(
-	pages: readonly Pick<PageRef, 'sourceId' | 'pageIndex' | 'rotation'>[],
+	pages: readonly Pick<PageRef, 'sourceId' | 'pageIndex' | 'rotation' | 'crop'>[],
 	sources: readonly Source[],
 	kind: 'jpg' | 'png',
 	dpi: number,
@@ -142,5 +143,6 @@ export function pictureExportOptions(o: ExportOptions): ExportOptions {
 	const out: ExportOptions = { filename: o.filename, compress: false, stripMetadata: o.stripMetadata };
 	if (o.flattenForms) out.flattenForms = true;
 	if (o.numbering) out.numbering = o.numbering;
+	if (o.watermark) out.watermark = o.watermark;
 	return out;
 }

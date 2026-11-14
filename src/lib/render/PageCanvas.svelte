@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
-	import type { FormValue, Renderer, Rotation, Source } from '../core/types';
+	import type { FormValue, Renderer, Rotation, Source, StampBox } from '../core/types';
 	import { bucketWidth, isSwapped } from './sizing';
 
 	interface Props {
@@ -16,9 +16,15 @@
 		formValues?: Readonly<Record<string, FormValue>>;
 		/** Called after a render lands, with the answers it was drawn with. */
 		onrender?: (formValues: Readonly<Record<string, FormValue>> | undefined) => void;
+		/**
+		 * PageRef.crop: show only this part of the page (fractions of the page after
+		 * rotation). The whole page is drawn, sharp enough for the part, and the box shows
+		 * the part.
+		 */
+		crop?: StampBox;
 	}
 
-	let { source, pageIndex, rotation, renderer, alt = '', formValues, onrender }: Props = $props();
+	let { source, pageIndex, rotation, renderer, alt = '', formValues, onrender, crop }: Props = $props();
 
 	let box: HTMLDivElement | undefined = $state();
 	let canvas: HTMLCanvasElement | undefined = $state();
@@ -34,7 +40,10 @@
 
 	const page = $derived(source.pages[pageIndex] ?? { width: 1, height: 1 });
 	const swapped = $derived(isSwapped(rotation));
-	const aspect = $derived(swapped ? page.height / page.width : page.width / page.height);
+	const fullAspect = $derived(swapped ? page.height / page.width : page.width / page.height);
+	const aspect = $derived(crop ? (fullAspect * crop.w) / crop.h : fullAspect);
+	/** Width of the whole page for a part shown `w` wide. */
+	const cw = $derived(crop ? crop.w : 1);
 
 	/** Quarter turns still to show with a CSS transform until the sharp render lands. */
 	const pendingTurn = $derived(drawnRotation === null ? 0 : (rotation - drawnRotation + 360) % 360);
@@ -60,7 +69,7 @@
 			// Render the first size at once, debounce later resizes.
 			const apply = () => {
 				// Width of the *unrotated* page: renderer.render() takes it that way.
-				const displayed = r.width * dpr;
+				const displayed = (r.width * dpr) / cw;
 				const unrotated = swapped ? displayed * (page.width / page.height) : displayed;
 				wantWidth = bucketWidth(unrotated);
 			};
@@ -82,7 +91,7 @@
 	$effect(() => {
 		void turn;
 		if (cssWidth > 0) {
-			const displayed = cssWidth * dpr;
+			const displayed = (cssWidth * dpr) / cw;
 			wantWidth = bucketWidth(swapped ? displayed * (page.width / page.height) : displayed);
 		}
 	});
@@ -167,6 +176,14 @@
 	// width and height swapped and then rotated into place.
 	const canvasStyle = $derived.by(() => {
 		if (drawnRotation === null) return 'visibility: hidden';
+		if (crop) {
+			// The old pixels of a turned, cropped page would show the wrong part: wait for the render.
+			if (pendingTurn !== 0) return 'visibility: hidden';
+			return (
+				`position: absolute; left: ${(-crop.x / crop.w) * 100}%; top: ${(-crop.y / crop.h) * 100}%;` +
+				`width: ${100 / crop.w}%; height: ${100 / crop.h}%; max-width: none; max-height: none`
+			);
+		}
 		if (pendingTurn === 0) return '';
 		const w = turnSwapped ? cssHeight : cssWidth;
 		const h = turnSwapped ? cssWidth : cssHeight;

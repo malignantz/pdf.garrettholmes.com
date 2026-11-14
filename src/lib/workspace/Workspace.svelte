@@ -55,8 +55,10 @@
 	let pwAsk = $state<PasswordAsk | null>(null);
 	let pwResolve: ((pw: string | null) => void) | null = null;
 
-	type EditorComponent = Component<{ pageId: PageId; onclose: () => void }>;
+	type EditorComponent = Component<{ pageId: PageId; onclose: () => void; startCrop?: boolean }>;
 	let Editor = $state<EditorComponent | null>(null);
+	/** The editor opens with the Crop tool on, for the selected pages ("Crop selected pages"). */
+	let editorCrop = $state(false);
 	let editorId = $state<PageId | null>(null);
 
 	let live = $state('');
@@ -383,14 +385,21 @@
 		selectionMode = false;
 	}
 
-	async function openEditor(id: PageId) {
+	async function openEditor(id: PageId, crop = false) {
 		focusedId = id;
 		try {
 			Editor ??= (await import('../editor/PageEditor.svelte')).default as EditorComponent;
+			editorCrop = crop;
 			editorId = id;
 		} catch {
 			toasts.show({ message: 'The page editor could not load. Reload the page and try again.', tone: 'error' });
 		}
+	}
+
+	/** Open the first selected page in the editor with the Crop tool on, for all selected pages. */
+	function cropSelected() {
+		const first = pages.find((p) => doc.state.selection.has(p.id));
+		if (first) void openEditor(first.id, true);
 	}
 
 	async function closeEditor() {
@@ -658,6 +667,7 @@
 	const selectionMenu = $derived.by((): (MenuItem | 'separator')[] => [
 		{ label: 'Rotate left', icon: 'rotate-left', hint: 'Shift+R', onselect: () => rotate(-90) },
 		{ label: 'Export selected pages only', icon: 'extract', onselect: () => extract() },
+		{ label: selCount > 1 ? 'Crop selected pages' : 'Crop page', icon: 'crop', onselect: cropSelected },
 		{ label: 'Insert blank page after', icon: 'blank-page', onselect: insertBlank },
 		'separator',
 		{ label: 'Move to start', onselect: () => moveTo('start') },
@@ -811,7 +821,7 @@
 {#if editorId && Editor}
 	<div class="editor-layer">
 		<svelte:boundary onerror={editorFailed}>
-			<Editor pageId={editorId} onclose={closeEditor} />
+			<Editor pageId={editorId} onclose={closeEditor} startCrop={editorCrop} />
 			{#snippet failed()}{/snippet}
 		</svelte:boundary>
 	</div>

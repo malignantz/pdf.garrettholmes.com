@@ -254,6 +254,15 @@ export interface PageRef {
 	/** Extra clockwise rotation the user applied. */
 	rotation: Rotation;
 	stamps: Stamp[];
+	/**
+	 * Added 2026-11-14 ("Crop"): the part of the page that shows, as fractions of the page
+	 * as displayed after `rotation` and before any crop (origin top-left, like a StampBox).
+	 * Absent: the whole page. When present, "the page as the user sees it" (stamp space,
+	 * PageSize of the output page) is this part: stamps are fractions of it, and the export
+	 * sets the page's /CropBox to it. Content outside stays in the file, hidden; nothing is
+	 * removed. Turns with the page on rotation. Each side at least 0.05 (crop.ts CROP_MIN).
+	 */
+	crop?: StampBox;
 }
 
 export interface ExportOptions {
@@ -293,6 +302,23 @@ export interface ExportOptions {
 	 * of a digitally signed file. Undefined or false: off. See ExportResult.printCap.
 	 */
 	printCap?: boolean;
+	/**
+	 * Added 2026-11-14: text across every page (DRAFT, CONFIDENTIAL, …), drawn as page
+	 * content on top of everything else, see-through, upright as the page is displayed.
+	 * A visible mark only: anyone with an editor can remove it. Checked ('watermark').
+	 */
+	watermark?: Watermark;
+}
+
+/** ExportOptions.watermark (2026-11-14). */
+export interface Watermark {
+	/** One line, 1 to 40 characters, all drawable by the stamp font (Engine.unsupportedChars). */
+	text: string;
+	/** 'diagonal': from the bottom-left towards the top-right corner, as displayed. 'straight': level across the middle. */
+	look: 'diagonal' | 'straight';
+	/** How much of the page shows through: 'light' is fainter than 'medium'. */
+	strength: 'light' | 'medium';
+	color: 'grey' | 'red';
 }
 
 export interface ExportPlan {
@@ -326,7 +352,11 @@ export interface VerifyCheck {
 		 * Added 2026-11-13: the accessibility tags (structure tree) kept from a tagged source
 		 * read back whole and tied to their page content (ExportResult.tags).
 		 */
-		| 'tags';
+		| 'tags'
+		/** Added 2026-11-14: every page carries the watermark text, where and how it was drawn (ExportOptions.watermark). */
+		| 'watermark'
+		/** Added 2026-11-14: every cropped page shows exactly its planned part (PageRef.crop), inside its MediaBox. */
+		| 'crop';
 	ok: boolean;
 	detail: string;
 }

@@ -12,6 +12,7 @@
 import type { FormField, FormValue, PageRef, Rotation, StampBox } from '../core/types';
 import type { Size, View } from './geometry';
 import { scaledSize } from './geometry';
+import { reframeBox } from '../doc/crop';
 
 /** A widget box turned clockwise with its page by `rotation` degrees. */
 export function rotateBox(b: StampBox, rotation: Rotation): StampBox {
@@ -25,6 +26,11 @@ export function rotateBox(b: StampBox, rotation: Rotation): StampBox {
 		case 270:
 			return { x: b.y, y: 1 - (b.x + b.w), w: b.h, h: b.w };
 	}
+}
+
+/** A widget box as shown on a page: turned with it, then in its visible part when cropped (PageRef.crop). */
+export function shownBox(b: StampBox, rotation: Rotation, crop?: StampBox): StampBox {
+	return crop ? reframeBox(rotateBox(b, rotation), undefined, crop) : rotateBox(b, rotation);
 }
 
 /** True when two boxes share some area (touching edges do not count). */
@@ -148,7 +154,7 @@ export function redactionEcho(
 	if (!mine.length) return null;
 	for (const field of fields) {
 		const hidden = field.widgets.some(
-			(w) => w.pageIndex === here.pageIndex && mine.some((r) => overlaps(r, rotateBox(w.box, here.rotation)))
+			(w) => w.pageIndex === here.pageIndex && mine.some((r) => overlaps(r, shownBox(w.box, here.rotation, here.crop)))
 		);
 		if (!hidden) continue;
 		for (let j = 0; j < pages.length; j++) {
@@ -156,7 +162,7 @@ export function redactionEcho(
 			if (j === current || p.sourceId !== here.sourceId) continue;
 			const boxes = redactions(p);
 			const shows = field.widgets.some(
-				(w) => w.pageIndex === p.pageIndex && !boxes.some((r) => overlaps(r, rotateBox(w.box, p.rotation)))
+				(w) => w.pageIndex === p.pageIndex && !boxes.some((r) => overlaps(r, shownBox(w.box, p.rotation, p.crop)))
 			);
 			if (shows) return { field, pageNumber: j + 1 };
 		}
