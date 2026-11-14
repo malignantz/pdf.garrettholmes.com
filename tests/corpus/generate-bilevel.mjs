@@ -14,6 +14,12 @@
  *   p5  the same with a colour photo patch                              → refused (colour)
  *   p6  the typed lines on yellowed paper (236, 222, 190)               → converted
  *
+ * bilevel-mixed.pdf (6 × 4 in pages; the export tests and e2e):
+ *   p1  a typed English letter, black on white, grey JPEG at 300 ppi         → converted (and OCR reads it)
+ *   p2  the letter with a red PAID stamp, RGB JPEG at 200 ppi                 → left (colour)
+ *   p3  the letter with a pencil-grey scribble, grey JPEG at 200 ppi          → left (faint mark)
+ *   p4  born-digital text, no picture                                        → not a scanned page
+ *
  * Called from generate.mjs (one line), or on its own: node tests/corpus/generate-bilevel.mjs
  */
 
@@ -119,7 +125,109 @@ export async function bilevelScans() {
 	return doc.save({ useObjectStreams: false, addDefaultPage: false });
 }
 
+const LETTER = [
+	'Dear Sir, thank you for your letter of the first of May.',
+	'We have looked at the house on the hill and we would like',
+	'to make an offer. The price is fair and the land is good,',
+	'but the old water pump in the yard will need some work.',
+	'Please tell us if the owner will take the offer, and when',
+	'we could come to see the house again with our builder.',
+	'Yours truly, John Smith'
+];
+const MW = 432;
+const MH = 288;
+
+/** The letter on a 6 × 4 in page with `extra` drawn after it, rendered to RGB at `ppi`. */
+async function letter(ppi, extra) {
+	const doc = await PDFDocument.create();
+	const font = await doc.embedFont(StandardFonts.Helvetica);
+	const p = doc.addPage([MW, MH]);
+	LETTER.forEach((t, i) => p.drawText(t, { x: 30, y: MH - 40 - i * 26, size: 12, font }));
+	extra?.(p, font);
+	const md = mupdf.Document.openDocument(await doc.save(), 'application/pdf');
+	const page = md.loadPage(0);
+	const pix = page.toPixmap(mupdf.Matrix.scale(ppi / 72, ppi / 72), mupdf.ColorSpace.DeviceRGB, false, true);
+	const w = pix.getWidth();
+	const h = pix.getHeight();
+	const stride = pix.getStride();
+	const src = pix.getPixels();
+	const px = new Uint8Array(w * h * 3);
+	for (let y = 0; y < h; y++) px.set(src.subarray(y * stride, y * stride + w * 3), y * w * 3);
+	pix.destroy();
+	page.destroy();
+	md.destroy();
+	return { w, h, px };
+}
+
+function toGrey({ w, h, px }) {
+	const g = new Uint8Array(w * h);
+	for (let i = 0; i < w * h; i++) g[i] = Math.round(0.299 * px[i * 3] + 0.587 * px[i * 3 + 1] + 0.114 * px[i * 3 + 2]);
+	return { w, h, px: g, grey: true };
+}
+
+function jpegPage(doc, img, pw, ph, quality) {
+	const cs = img.grey ? mupdf.ColorSpace.DeviceGray : mupdf.ColorSpace.DeviceRGB;
+	const pix = new mupdf.Pixmap(cs, [0, 0, img.w, img.h], false);
+	pix.getPixels().set(img.px);
+	const data = pix.asJPEG(quality).slice();
+	pix.destroy();
+	const page = doc.addPage([pw, ph]);
+	const ref = doc.context.register(
+		doc.context.stream(data, { Type: 'XObject', Subtype: 'Image', Width: img.w, Height: img.h, ColorSpace: img.grey ? 'DeviceGray' : 'DeviceRGB', BitsPerComponent: 8, Filter: 'DCTDecode' })
+	);
+	const name = page.node.newXObject('Scan', ref);
+	page.node.set(PDFName.of('Contents'), doc.context.register(doc.context.flateStream(`q ${pw} 0 0 ${ph} 0 0 cm ${name.asString()} Do Q`)));
+}
+
+export async function bilevelMixed() {
+	const doc = await PDFDocument.create();
+	const font = await doc.embedFont(StandardFonts.Helvetica);
+	jpegPage(doc, toGrey(scan(await letter(300), [244, 244, 242], 20, 3)), MW, MH, 70);
+	jpegPage(
+		doc,
+		scan(
+			await letter(200, (p, f) => {
+				p.drawEllipse({ x: 350, y: 60, xScale: 50, yScale: 28, borderColor: rgb(0.8, 0.15, 0.15), borderWidth: 3 });
+				p.drawText('PAID', { x: 323, y: 52, size: 20, font: f, color: rgb(0.8, 0.15, 0.15) });
+			}),
+			[244, 244, 242],
+			20,
+			4
+		),
+		MW,
+		MH,
+		70
+	);
+	jpegPage(
+		doc,
+		toGrey(
+			scan(
+				await letter(200, (p) =>
+					p.drawSvgPath('M 0 12 C 10 -8 18 28 28 8 S 44 -2 54 12 C 60 20 70 0 80 10 S 98 22 108 4', { x: 260, y: 70, borderColor: rgb(0.6, 0.6, 0.62), borderWidth: 0.7 })
+				),
+				[244, 244, 242],
+				20,
+				5
+			)
+		),
+		MW,
+		MH,
+		70
+	);
+	const p4 = doc.addPage([MW, MH]);
+	LETTER.slice(0, 3).forEach((t, i) => p4.drawText(t, { x: 30, y: MH - 40 - i * 26, size: 12, font }));
+	return doc.save({ useObjectStreams: false, addDefaultPage: false });
+}
+
 export default async function generateBilevelCorpus(write) {
+	write('bilevel-mixed.pdf', await bilevelMixed(), {
+		pages: 4,
+		note: 'Black and white scans, mixed: p1 typed English letter, grey JPEG 300 ppi (converted; OCR reads it); p2 the letter with a red stamp, RGB 200 ppi (left: colour); p3 the letter with a pencil scribble, grey 200 ppi (left: faint mark); p4 born-digital text (not a scanned page)',
+		eligible: [0, 1, 2],
+		converted: [0],
+		left: [1, 2],
+		letter: LETTER
+	});
 	write('bilevel-scans.pdf', await bilevelScans(), {
 		pages: 6,
 		note: 'Black and white scans: 300 ppi RGB JPEG pages: p1 typed lines (converted); p2 + light grey line (refused); p3 + red stamp (refused: colour); p4 + pencil scribble (refused); p5 + colour photo (refused: colour); p6 typed lines on yellowed paper (converted)',

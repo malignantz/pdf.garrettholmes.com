@@ -13,9 +13,10 @@
  * inside a part is passed on separately (`onStep`).
  */
 
-import type { Asset, EngineErrorShape, ExportControl, ExportPlan, ExportProgress, ExportResult, PageId, VerifyCheck, Source } from '../core/types';
+import type { Asset, BilevelReport, EngineErrorShape, ExportControl, ExportPlan, ExportProgress, ExportResult, PageId, VerifyCheck, Source } from '../core/types';
 import { isEngineErrorShape } from '../engine/errors';
 import { outlineLines, plural, tagsLine } from './logic';
+import { bilevelSummary } from './bilevel-option';
 import { JPEG_QUALITY, mimeOf, pictureName, ranOutMessage } from './pictures-plan';
 import { partName, partPages, type Part } from './split-plan';
 import { crc32, ZipWriter } from './zip';
@@ -200,6 +201,17 @@ export function splitNotes(out: Pick<SplitOutput, 'parts'>): string[] {
 	if (capped) notes.push(`${plural(capped, 'oversized picture')} brought down to 300 dpi.`);
 	const ocr = out.parts.reduce((n, p) => n + (p.result.ocr?.searchable.length ?? 0), 0);
 	if (out.parts.some((p) => p.result.ocr)) notes.push(`${plural(ocr, 'scanned page')} made searchable.`);
+	// Black and white scans: the parts' reports added up, worded as for one file.
+	const bl = out.parts.filter((p) => p.result.bilevel);
+	if (bl.length) {
+		const sum: BilevelReport = { eligible: 0, converted: [], left: [] };
+		for (const p of bl) {
+			sum.eligible += p.result.bilevel!.eligible;
+			sum.converted.push(...p.result.bilevel!.converted);
+			sum.left.push(...p.result.bilevel!.left);
+		}
+		notes.push(...bilevelSummary(sum));
+	}
 	// Accessibility tags not kept: one line per reason, naming the files when not all of them.
 	const tagged = out.parts.filter((p) => p.result.tags);
 	const lines = new Map<string, number[]>();

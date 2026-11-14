@@ -239,6 +239,8 @@ export function cleanExportForm(form: Partial<ExportForm>): SavedExportForm {
 	}
 	delete out.password;
 	delete out.filename;
+	// Black and white scans change how pages look: never kept with saved work, never restored on.
+	out.bilevel = false;
 	return out;
 }
 

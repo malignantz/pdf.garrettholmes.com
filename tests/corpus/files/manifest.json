@@ -2786,5 +2786,30 @@
 			3,
 			4
 		]
+	},
+	"bilevel-mixed.pdf": {
+		"pages": 4,
+		"note": "Black and white scans, mixed: p1 typed English letter, grey JPEG 300 ppi (converted; OCR reads it); p2 the letter with a red stamp, RGB 200 ppi (left: colour); p3 the letter with a pencil scribble, grey 200 ppi (left: faint mark); p4 born-digital text (not a scanned page)",
+		"eligible": [
+			0,
+			1,
+			2
+		],
+		"converted": [
+			0
+		],
+		"left": [
+			1,
+			2
+		],
+		"letter": [
+			"Dear Sir, thank you for your letter of the first of May.",
+			"We have looked at the house on the hill and we would like",
+			"to make an offer. The price is fair and the land is good,",
+			"but the old water pump in the yard will need some work.",
+			"Please tell us if the owner will take the offer, and when",
+			"we could come to see the house again with our builder.",
+			"Yours truly, John Smith"
+		]
 	}
 }

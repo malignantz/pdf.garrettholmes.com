@@ -4,6 +4,7 @@
  */
 
 import type { ExportProgress } from '../core/types';
+import { bilevelProgressText } from './bilevel-option';
 import { ocrProgressText } from './ocr-option';
 import { printCapProgressText } from './print-cap-option';
 import type { StepSample } from './time-left';
@@ -16,7 +17,7 @@ export function progressFraction(p: ExportProgress | null): number | undefined {
 
 /** The step's words, or null for the dialog's general line. */
 export function progressText(p: ExportProgress | null): string | null {
-	const special = ocrProgressText(p) ?? printCapProgressText(p);
+	const special = ocrProgressText(p) ?? printCapProgressText(p) ?? bilevelProgressText(p);
 	if (special || !p || !('done' in p) || p.done >= p.total) return special;
 	switch (p.stage) {
 		case 'pack':

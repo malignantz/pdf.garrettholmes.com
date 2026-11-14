@@ -308,6 +308,26 @@ export interface ExportOptions {
 	 * A visible mark only: anyone with an editor can remove it. Checked ('watermark').
 	 */
 	watermark?: Watermark;
+	/**
+	 * Added 2026-11-14: "Make scanned pages black and white". A scanned page whose picture is
+	 * already essentially black print on white paper gets a 1-bit black and white picture of
+	 * the same pixel size (exact CCITT G4); every other page stays exactly as it was. Checked
+	 * ('bilevel'). See BilevelReport.
+	 */
+	bilevel?: boolean;
+}
+
+/**
+ * ExportResult.bilevel (2026-11-14). `eligible`: scanned pages of the export the option
+ * looked at (Engine.bilevelPages: one picture filling the page, at least 200 ppi, nothing
+ * drawn on top). `converted`: 1-based output pages made black and white. `left`: 1-based
+ * output pages left exactly as they were (colour, photos, grey areas, faint marks, a
+ * redaction box, a signed file, or a check that failed).
+ */
+export interface BilevelReport {
+	eligible: number;
+	converted: number[];
+	left: number[];
 }
 
 /** ExportOptions.watermark (2026-11-14). */
@@ -362,7 +382,12 @@ export interface VerifyCheck {
 		 * and links to them kept from the sources read back as written (ExportResult.bookmarks,
 		 * ExportResult.docInfo).
 		 */
-		| 'outline';
+		| 'outline'
+		/**
+		 * Added 2026-11-14: every page made black and white (ExportOptions.bilevel) decodes, in two
+		 * independent decoders, to exactly the bitmap that passed the "nothing vanished" check.
+		 */
+		| 'bilevel';
 	ok: boolean;
 	detail: string;
 }
@@ -416,6 +441,8 @@ export interface ExportResult {
 	 * checked; otherwise `reason` says why not.
 	 */
 	docInfo?: { kept: true } | { kept: false; reason: DocInfoDropReason };
+	/** Added 2026-11-14. Present when ExportOptions.bilevel was on. */
+	bilevel?: BilevelReport;
 }
 
 /**
@@ -495,7 +522,9 @@ export type ExportProgress =
 	/** Saving pages as pictures: `done` of `total` pages rendered and encoded ("Saving picture 3 of 20"). */
 	| { stage: 'picture'; done: number; total: number }
 	/** Split into several files: `done` of `total` parts built and verified ("Making file 2 of 9"). */
-	| { stage: 'part'; done: number; total: number };
+	| { stage: 'part'; done: number; total: number }
+	/** Added 2026-11-14. Black and white scans: `done` of `total` pictures judged and converted ("Making page 3 of 12 black and white"). */
+	| { stage: 'bilevel'; done: number; total: number };
 
 /** Optional extras for Engine.exportPlan. */
 export interface ExportControl {
@@ -557,6 +586,18 @@ export interface Engine {
 	 * picture the app placed itself, a JPEG filling an image source's page, not at all).
 	 */
 	oversizedPictures(source: Source): Promise<number[][]>;
+	/**
+	 * Added 2026-11-14. 0-based pages "Make scanned pages black and white" would try (a
+	 * picture filling the page at 200 ppi or more, nothing drawn on top): [] for image and
+	 * blank sources and files without such pages. A hint for the export dialog; whether a
+	 * page converts is decided at export. Loads MuPDF only when a big enough picture exists.
+	 */
+	bilevelPages(source: Source): Promise<number[]>;
+	/**
+	 * Added 2026-11-14. A 100% crop of a text area of one page, before and after (PNG), or
+	 * null when that page would be left as it is.
+	 */
+	bilevelPreview(source: Source, pageIndex: number): Promise<{ width: number; height: number; before: Uint8Array; after: Uint8Array } | null>;
 }
 
 /**

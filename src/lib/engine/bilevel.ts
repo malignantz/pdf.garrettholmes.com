@@ -735,3 +735,142 @@ export function flateRows(bits: Uint8Array, w: number, h: number): Uint8Array {
 	}
 	return out;
 }
+
+// --- reading G4 back (the export check's own decoder) ------------------------------------------
+
+/** Lookup of a code table: (length << 16 | code) → value. */
+function lookup(table: readonly Code[], value: (i: number) => number): Map<number, number> {
+	const m = new Map<number, number>();
+	table.forEach(([code, len], i) => m.set((len << 16) | code, value(i)));
+	return m;
+}
+const WHITE_CODES = new Map([...lookup(WHITE_TERM, (i) => i), ...lookup(WHITE_MAKEUP, (i) => (i + 1) * 64), ...lookup(EXT_MAKEUP, (i) => (i + 28) * 64)]);
+const BLACK_CODES = new Map([...lookup(BLACK_TERM, (i) => i), ...lookup(BLACK_MAKEUP, (i) => (i + 1) * 64), ...lookup(EXT_MAKEUP, (i) => (i + 28) * 64)]);
+const MODE_PASS = -100;
+const MODE_HORIZ = -101;
+const MODE_EOL = -102;
+const MODES = new Map<number, number>([
+	[(PASS[1] << 16) | PASS[0], MODE_PASS],
+	[(HORIZ[1] << 16) | HORIZ[0], MODE_HORIZ],
+	[(EOL[1] << 16) | EOL[0], MODE_EOL],
+	...VERT.map(([code, len], i): [number, number] => [(len << 16) | code, i - 3])
+]);
+
+class BitReader {
+	pos = 0;
+	constructor(private readonly d: Uint8Array) {}
+	bit(): number {
+		const i = this.pos >> 3;
+		if (i >= this.d.length) throw new Error('G4 data ends early');
+		const b = (this.d[i] >> (7 - (this.pos & 7))) & 1;
+		this.pos++;
+		return b;
+	}
+	/** The next code of `table` (up to 13 bits), or throws. */
+	code(table: Map<number, number>): number {
+		let code = 0;
+		for (let len = 1; len <= 13; len++) {
+			code = (code << 1) | this.bit();
+			const v = table.get((len << 16) | code);
+			if (v !== undefined) return v;
+		}
+		throw new Error('G4: unknown code');
+	}
+}
+
+function readRun(r: BitReader, black: boolean): number {
+	const table = black ? BLACK_CODES : WHITE_CODES;
+	let run = 0;
+	for (;;) {
+		const v = r.code(table);
+		run += v;
+		if (v < 64) return run;
+	}
+}
+
+/**
+ * Decodes CCITT Group 4 (as encodeG4 writes it: /K -1, BlackIs1 false, no byte alignment)
+ * to packed 1-bit rows (1 = white, padding bits 0). Written independently of MuPDF's
+ * decoder so the export check can read every converted picture twice. Throws on any data
+ * that does not decode to exactly `h` rows of `w` pixels.
+ */
+export function decodeG4(data: Uint8Array, w: number, h: number): Uint8Array {
+	const rb = rowBytesOf(w);
+	const out = new Uint8Array(rb * h);
+	const r = new BitReader(data);
+	let ref = new Int32Array(w + 2);
+	let cur = new Int32Array(w + 2);
+	ref[0] = w;
+	ref[1] = w;
+	let nref = 0;
+	for (let y = 0; y < h; y++) {
+		let ncur = 0;
+		let a0 = -1;
+		let black = false;
+		let ib = 0;
+		const change = (x: number) => {
+			// Two changes at one place cancel (a zero-length run).
+			if (ncur > 0 && cur[ncur - 1] === x) ncur--;
+			else cur[ncur++] = x;
+		};
+		while (a0 < w) {
+			while (ib > 0 && ref[ib - 1] > a0) ib--;
+			while (ib < nref && (ref[ib] <= a0 || ((ib & 1) === 0) === black)) ib++;
+			const b1 = ref[ib];
+			const b2 = ref[ib + 1];
+			const mode = r.code(MODES);
+			if (mode === MODE_PASS) {
+				if (b2 >= w) throw new Error('G4: pass beyond the line');
+				a0 = b2;
+			} else if (mode === MODE_HORIZ) {
+				const start = Math.max(0, a0);
+				const a1 = start + readRun(r, black);
+				const a2 = a1 + readRun(r, !black);
+				if (a1 > w || a2 > w) throw new Error('G4: run beyond the line');
+				if (a1 < w) change(a1);
+				if (a2 < w) change(a2);
+				a0 = a2;
+			} else if (mode === MODE_EOL) {
+				throw new Error('G4: end of block before the last row');
+			} else {
+				const a1 = b1 + mode;
+				if (a1 < Math.max(0, a0) || a1 > w) throw new Error('G4: vertical change out of place');
+				if (a1 < w) change(a1);
+				a0 = a1;
+				black = !black;
+			}
+		}
+		// Paint the row: white up to the first change, then alternating.
+		const o = y * rb;
+		let white = true;
+		let x = 0;
+		for (let k = 0; k <= ncur; k++) {
+			const end = k < ncur ? cur[k] : w;
+			if (white) for (; x < end; x++) out[o + (x >> 3)] |= 0x80 >> (x & 7);
+			x = end;
+			white = !white;
+		}
+		cur[ncur] = w;
+		cur[ncur + 1] = w;
+		[ref, cur] = [cur, ref];
+		nref = ncur;
+	}
+	return out;
+}
+
+/** The bits with each row's padding cleared (so two decoders' outputs compare by digest). */
+export function cleanPadding(bits: Uint8Array, w: number, h: number): Uint8Array<ArrayBuffer> {
+	const rb = rowBytesOf(w);
+	const out = bits.slice(0, rb * h);
+	if (w & 7) {
+		const mask = (0xff << (8 - (w & 7))) & 0xff;
+		for (let y = 0; y < h; y++) out[y * rb + rb - 1] &= mask;
+	}
+	return out;
+}
+
+/** SHA-256 (hex) of a 1-bit picture, padding bits ignored. */
+export async function bitsDigest(bits: Uint8Array, w: number, h: number): Promise<string> {
+	const d = new Uint8Array(await crypto.subtle.digest('SHA-256', cleanPadding(bits, w, h) as Uint8Array<ArrayBuffer>));
+	return Array.from(d, (b) => b.toString(16).padStart(2, '0')).join('');
+}
