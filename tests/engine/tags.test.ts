@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import type { Asset, ExportOptions, ExportResult, PageRef, Source, Stamp } from '../../src/lib/core/types';
 import { createCoreEngine } from '../../src/lib/engine/core';
 import { Qpdf } from '../../src/lib/engine/qpdf';
-import { canonicalTree, graftTags, planTags, verifyTags } from '../../src/lib/engine/tags';
+import { MAX_ELEMENTS, canonicalTree, graftTags, planTags, verifyTags } from '../../src/lib/engine/tags';
 import { markedContent } from '../../src/lib/engine/marked';
 import { corpus, defaultOptions, engine, loadPdfjs, manifest, nodeAssets, openCorpus, pageTexts, ref } from './helpers';
 
@@ -414,6 +414,31 @@ describe('tags: not kept, with a reason (the export is as before)', () => {
 		const src = await openCorpus('tags-form.pdf');
 		const res = await run(all(src), [src], { flattenForms: true });
 		expect(res.tags).toEqual({ kept: false, reason: 'flattened' });
+	}, T);
+
+	it('a tree over the element budget', async () => {
+		// One page, a Document with MAX_ELEMENTS empty paragraphs (MAX_ELEMENTS + 1 elements).
+		const n = MAX_ELEMENTS;
+		const parts: string[] = ['%PDF-1.7\n'];
+		const off: number[] = [];
+		let len = parts[0].length;
+		const obj = (body: string) => {
+			off.push(len);
+			const s = `${off.length} 0 obj\n${body}\nendobj\n`;
+			parts.push(s);
+			len += s.length;
+		};
+		obj('<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 4 0 R /MarkInfo << /Marked true >> >>');
+		obj('<< /Type /Pages /Kids [3 0 R] /Count 1 >>');
+		obj('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /StructParents 0 >>');
+		obj('<< /Type /StructTreeRoot /K 5 0 R /ParentTree << /Nums [] >> >>');
+		obj(`<< /Type /StructElem /S /Document /P 4 0 R /K [${Array.from({ length: n }, (_, i) => `${i + 6} 0 R`).join(' ')}] >>`);
+		for (let i = 0; i < n; i++) obj('<< /Type /StructElem /S /P /P 5 0 R >>');
+		const xref = len;
+		parts.push(`xref\n0 ${off.length + 1}\n0000000000 65535 f \n${off.map((o) => `${String(o).padStart(10, '0')} 00000 n \n`).join('')}trailer\n<< /Size ${off.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
+		const src = await engine().openPdf(new Uint8Array(Buffer.from(parts.join(''), 'latin1')), 'big.pdf');
+		const res = await run(all(src), [src]);
+		expect(res.tags).toEqual({ kept: false, reason: 'large' });
 	}, T);
 
 	it('a file whose ParentTree names the wrong elements exports without tags, not an error', async () => {

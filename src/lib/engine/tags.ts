@@ -10,18 +10,22 @@
  *
  * What happens now (`planTags` decides, `graftTags` writes, `verifyTags` proves):
  *
- * - Kept: the export's pages come from one tagged source, each source page at most once,
- *   in any order and rotation, with or without blank pages added (they have no content).
- *   All pages kept: the whole tree. Some pages removed: the tree pruned to the kept pages
- *   (below). The source's tree is copied as new objects into the assembled file, with every
+ * - Kept: the export's pages come from tagged sources, each source page at most once, in
+ *   any order and rotation, with or without blank pages added (they have no content).
+ *   One source, all its pages: the whole tree. Some pages removed: the tree pruned to the
+ *   kept pages (below). Several tagged sources: each tree pruned to its pages, all under one
+ *   new root in the order the files first appear; the second file's ParentTree keys move past
+ *   the first's (its pages', annotations' and XObjects' /StructParent(s) change with them),
+ *   RoleMaps and ClassMaps are joined, IDTrees joined and sorted, /Namespaces appended;
+ *   /MarkInfo comes from the first file that has one, /Lang and /ViewerPreferences from the
+ *   first file, and a later file whose /Lang differs puts its /Lang on its top elements.
+ *   Each source's tree is copied as new objects into the assembled file, with every
  *   reference to a page, annotation or form XObject turned into the reference to its copy
  *   (found by walking each source page next to its output page: /Annots by position,
- *   /Resources /XObject by name, recursively). /StructParents numbers stay as they are, so
- *   pages, annotations and XObjects need no change; the ParentTree is rebuilt as one flat
- *   number tree keeping the entries whose owner (page, annotation, XObject) is in the
- *   export. RoleMap, ClassMap, the IDTree (kept elements only), /MarkInfo, /Lang and
- *   /ViewerPreferences come along. Reordered pages keep the tree's order: it is the logical
- *   reading order of the document, which page order does not change.
+ *   /Resources /XObject by name, recursively). /StructParents numbers of the first source
+ *   stay as they are; the ParentTree is rebuilt as one flat number tree keeping the entries
+ *   whose owner (page, annotation, XObject) is in the export. Reordered pages keep the tree's
+ *   order: it is the logical reading order of the document, which page order does not change.
  * - Pruned (pages removed): a struct element whose content (marked content, annotations)
  *   all lies on removed pages is dropped, with its descendants; one with no content at all
  *   stays where its parent stays. An element whose content lies partly on removed pages
@@ -32,13 +36,16 @@
  *   anything blacked out (`redacted`: the tree and property lists can spell out what was
  *   removed; see redact.ts for marked-content properties); locked (flattened) forms of a
  *   tagged file (`flattened`: widgets become page content, the tree's form entries would
- *   point at nothing); pages from another file, tagged or not, other than blank pages
- *   (`merged`); a page used twice (`repeated`: two pages cannot share one set of MCIDs);
- *   a source whose tree is inconsistent (`damaged`); a tree this code does not carry
- *   (`unsupported`: more than MAX_ELEMENTS elements, an annotation or XObject on a kept
- *   page without its copy, streams in the tree over MAX_STREAM_CHARS; embedded files of /AF
- *   entries and other streams are copied with their stored data); and an export whose own check of the tags
- *   fails (`check`; the export is then built again without them).
+ *   point at nothing); pages from a file without tags other than blank pages, or trees that
+ *   map a role or class two ways or share an ID (`merged`: pages outside the tree would be
+ *   skipped by readers that follow it); a page used twice (`repeated`: two pages cannot
+ *   share one set of MCIDs); a source whose tree is inconsistent (`damaged`: every problem
+ *   kind in FATAL); more than MAX_ELEMENTS elements or MAX_OBJECTS objects (`large`); a tree
+ *   this code does not copy exactly (`unsupported`: an annotation or XObject on a kept page
+ *   without its copy, a value qpdf's JSON cannot write back such as an empty name, streams in
+ *   the tree over MAX_STREAM_CHARS; embedded files of /AF entries and other streams are
+ *   copied with their stored data); and an export whose own check of the tags fails
+ *   (`check`; the export is then built again without them).
  *
  * Added content (stamps, page numbers, the OCR text layer) is drawn as `/Artifact` marked
  * content, after closing any marked-content sequence the page leaves open, so it never
@@ -72,10 +79,15 @@ type Objects = Record<string, Obj>;
 
 export type { TagsDropReason };
 
-/** Most struct elements carried (memory: the JSON of the tree is held a few times over). */
-export const MAX_ELEMENTS = 400_000;
+/**
+ * Most struct elements carried: a time budget. Measured in Node on the box (survey 2026-11-13),
+ * keeping the tags adds about 0.6 to 2.4 ms per element to an export (the tree is read, copied
+ * and checked as JSON, and every lossless pass dumps it again), so 25,000 elements cost up to
+ * about a minute there, and more on a phone. Above it: no tags ('large').
+ */
+export const MAX_ELEMENTS = 25_000;
 /** Most objects in a tagged source whose tree is read (every object is dumped as JSON once). */
-export const MAX_OBJECTS = 2_000_000;
+export const MAX_OBJECTS = 500_000;
 /** Most stream data in the tree carried (base64 characters: about 24 MB of data). */
 const MAX_STREAM_CHARS = 32 * 1024 * 1024;
 /** Text keys dropped from an element whose content lies partly on removed pages. */
@@ -355,10 +367,6 @@ function readModel(dump: Dump): TagModel | null {
 	pushKids(arrAt(objects, top) ?? top, -1, null);
 	while (stack.length) {
 		const { v, parent, page } = stack.pop()!;
-		if (model.elems.length > MAX_ELEMENTS) {
-			problems.push({ kind: 'too-many', detail: `more than ${MAX_ELEMENTS} elements` });
-			return model;
-		}
 		const at = (kid: Kid) => {
 			if (parent < 0) problems.push({ kind: 'bad-kid', detail: 'content directly under the root' });
 			else model.elems[parent].kids.push(kid);
@@ -402,6 +410,10 @@ function readModel(dump: Dump): TagModel | null {
 		const kv = d['/K'];
 		const k = arrAt(objects, kv) ?? kv;
 		model.elems.push({ ref: v, dict: d, parent, kids: [], kArray: Array.isArray(k) });
+		if (model.elems.length > MAX_ELEMENTS) {
+			problems.push({ kind: 'too-many', detail: `more than ${MAX_ELEMENTS} elements` });
+			return model;
+		}
 		model.elemOf.set(v, index);
 		if (parent >= 0) model.elems[parent].kids.push({ k: 'e', i: index });
 		pushKids(k, index, pg);
@@ -806,7 +818,7 @@ export async function planTags(
 		parts.push({ source: s, tags: t });
 	}
 	const fatal = parts.flatMap((p) => p.tags.fatal);
-	if (fatal.length) return { kind: 'drop', reason: fatal.every((p) => p.kind === 'too-many') ? 'unsupported' : 'damaged' };
+	if (fatal.length) return { kind: 'drop', reason: fatal.every((p) => p.kind === 'too-many') ? 'large' : 'damaged' };
 	if (parts.length > 1 && mergeProblem(parts.map((p) => p.tags.model))) return { kind: 'drop', reason: 'merged' };
 	return { kind: 'keep', parts, from, whole: parts.length === 1 && seen[0].size === parts[0].source.pages.length };
 }

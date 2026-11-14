@@ -525,6 +525,7 @@ const TAGS_WHY: Record<TagsDropReason, string> = {
 	repeated: 'a page is used more than once',
 	damaged: 'the original file’s tags do not match its pages',
 	unsupported: 'they could not be copied exactly',
+	large: 'the file has too many of them to copy on this device',
 	check: 'they did not pass their check'
 };
 

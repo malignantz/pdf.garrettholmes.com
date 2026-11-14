@@ -375,9 +375,10 @@ export interface ExportResult {
  * blacked out; 'flattened': a tagged form is locked (flattened); 'merged': pages from
  * another file, other than blank pages; 'repeated': a page is used more than once;
  * 'damaged': the source's tags do not match its pages; 'unsupported': a tree the engine
- * cannot copy exactly; 'check': the export's own check of the tags failed.
+ * cannot copy exactly; 'large': more structure elements than an export copies (tags.ts
+ * MAX_ELEMENTS, a time budget); 'check': the export's own check of the tags failed.
  */
-export type TagsDropReason = 'redacted' | 'flattened' | 'merged' | 'repeated' | 'damaged' | 'unsupported' | 'check';
+export type TagsDropReason = 'redacted' | 'flattened' | 'merged' | 'repeated' | 'damaged' | 'unsupported' | 'large' | 'check';
 
 /**
  * "Make scanned pages searchable" (ExportOptions.ocr): OCR adds an invisible text

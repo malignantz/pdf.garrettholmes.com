@@ -270,7 +270,7 @@ describe('tagsLine', () => {
 		expect(tagsLine({ tags: { kept: true } })).toBeNull();
 		expect(tagsLine({ tags: { kept: false, reason: 'redacted' } })).toBe('Accessibility tags (used by screen readers) were not kept because something was blacked out.');
 		expect(tagsLine({ tags: { kept: false, reason: 'merged' } })).toBe('Accessibility tags (used by screen readers) were not kept because pages from another file were added.');
-		for (const reason of ['flattened', 'repeated', 'damaged', 'unsupported', 'check'] as const) expect(tagsLine({ tags: { kept: false, reason } })).toMatch(/^Accessibility tags \(used by screen readers\) were not kept because [^.]+\.$/);
+		for (const reason of ['flattened', 'repeated', 'damaged', 'unsupported', 'large', 'check'] as const) expect(tagsLine({ tags: { kept: false, reason } })).toMatch(/^Accessibility tags \(used by screen readers\) were not kept because [^.]+\.$/);
 	});
 	it('the kept check reads plainly', () => {
 		expect(plainCheck({ name: 'tags', ok: true, detail: '' }, 3)).toBe('Accessibility tags kept.');
