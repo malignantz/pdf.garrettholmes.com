@@ -36,7 +36,9 @@
 		"cropmark:measure": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/crop-watermark/measure.ts",
 		"outline:measure": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/outline/measure.ts",
 		"fastcheck:measure": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/fast-check/measure.ts",
-		"fastcheck:browser": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/fast-check/browser.ts"
+		"fastcheck:browser": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/fast-check/browser.ts",
+		"bilevel:measure": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/bilevel/measure.ts",
+		"bilevel:engine": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/bilevel/engine-run.ts"
 	},
 	"devDependencies": {
 		"@playwright/test": "^1.65.0",

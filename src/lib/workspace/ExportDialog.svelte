@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { EngineErrorShape, ExportProgress, ExportResult, PageId, VerifyCheck } from '../core/types';
+	import type { EngineErrorShape, ExportProgress, ExportResult, PageId, PageRef, VerifyCheck } from '../core/types';
 	import type { DocStore } from '../doc/store';
 	import type { EngineClient } from '../engine/client';
 	import { isEngineErrorShape } from '../engine/errors';
@@ -14,6 +14,7 @@
 	import WatermarkPreview from './WatermarkPreview.svelte';
 	import { exportForm } from './export-form.svelte';
 	import { OCR_HINT, OCR_LABEL, countScanned, isDesktop, ocrCapNotice, ocrSummary } from './ocr-option';
+	import { BILEVEL_HINT, BILEVEL_LABEL, bilevelCandidates, bilevelSummary, firstPreview, type PreviewImages } from './bilevel-option';
 	import { PRINT_CAP_LABEL, countOversized, printCapHint, printCapLine } from './print-cap-option';
 	import { progressFraction, progressSample, progressText } from './export-progress';
 	import { TimeLeft } from './time-left';
@@ -160,6 +161,35 @@
 			if (seq === scanSeq) scanned = n;
 		});
 	});
+	// "Make scanned pages black and white": only when a page could qualify (phones too).
+	let bilevelCount = $state(0);
+	let bilevelRefs = $state.raw<PageRef[]>([]);
+	let bilevelSeq = 0;
+	$effect(() => {
+		const pages = plan.pages;
+		const sources = store.state.sources;
+		const seq = ++bilevelSeq;
+		if (!open) return;
+		bilevelCandidates(engine, pages, sources).then((refs) => {
+			if (seq !== bilevelSeq) return;
+			bilevelRefs = refs;
+			bilevelCount = refs.length;
+		});
+	});
+	// Its preview: a before/after crop of the first page that will convert, made only when the switch is on.
+	let bilevelPreview = $state<PreviewImages | null | 'none'>(null);
+	let previewSeq = 0;
+	$effect(() => {
+		const on = open && f.bilevel && bilevelCount > 0 && f.output === 'pdf';
+		const refs = bilevelRefs;
+		const sources = store.state.sources;
+		const seq = ++previewSeq;
+		if (!on) return;
+		untrack(() => (bilevelPreview = null));
+		firstPreview(engine, refs, sources).then((r) => {
+			if (seq === previewSeq) bilevelPreview = r ?? 'none';
+		});
+	});
 	// "Reduce oversized pictures": only when a page shows a picture with more pixels than a print needs.
 	let oversized = $state(0);
 	let capSeq = 0;
@@ -199,6 +229,8 @@
 			cancelled = false;
 			scanned = 0;
 			oversized = 0;
+			bilevelCount = 0;
+			bilevelRefs = [];
 			filename = defaultFilename(plan.names, mode);
 			phase = { kind: 'form' };
 			password = '';
@@ -350,7 +382,7 @@
 	// remembered on this device.
 	const MORE_KEY = 'pdf-workspace.export-more';
 	let moreOpen = $state(false);
-	const moreOn = $derived(moreOptionsOn(f, { pictures, canSplit, redacting, scanned }));
+	const moreOn = $derived(moreOptionsOn(f, { pictures, canSplit, redacting, scanned, bilevel: bilevelCount }));
 	const moreProblem = $derived(!!(numProblem || wmProblem || fitError || splitProblem));
 
 	function readMore(): boolean {
@@ -394,7 +426,7 @@
 		filename = name;
 		const built = buildExportOptions(
 			{ ...f, filename: name, password: usePassword && !mkPictures ? password : undefined },
-			{ pageCount: plan.count, redactions: plan.redactions, hasForm: plan.hasForm, blanks: plan.blanks, scanned }
+			{ pageCount: plan.count, redactions: plan.redactions, hasForm: plan.hasForm, blanks: plan.blanks, scanned, bilevel: bilevelCount }
 		);
 		if (!built.ok) return;
 		const options = mkPictures ? pictureExportOptions(built.options) : built.options;
@@ -411,7 +443,7 @@
 		timeLeft = new TimeLeft(performance.now());
 		clock = performance.now();
 		cancelled = false;
-		const control = mkPictures || mkSplit || options.ocr || options.printCap ? new AbortController() : null;
+		const control = mkPictures || mkSplit || options.ocr || options.printCap || options.bilevel ? new AbortController() : null;
 		abort = control;
 		const report = (p: ExportProgress) => {
 			clock = performance.now();
@@ -515,7 +547,7 @@
 					result,
 					headline: headline(result.checks, result.pageCount),
 					line: null,
-					notes: [...(tagsLine(result) ? [tagsLine(result)!] : []), ...outlineLines(result), ...(limitsLine ? [limitsLine] : [])],
+					notes: [...bilevelSummary(result.bilevel), ...(tagsLine(result) ? [tagsLine(result)!] : []), ...outlineLines(result), ...(limitsLine ? [limitsLine] : [])],
 					files: []
 				};
 			}
@@ -627,7 +659,8 @@
 		tags: 'Accessibility tags',
 		watermark: 'Watermark',
 		crop: 'Crop',
-		outline: 'Title and bookmarks'
+		outline: 'Title and bookmarks',
+		bilevel: 'Black and white pages'
 	};
 
 	function headline(checks: VerifyCheck[], pageCount: number): string {
@@ -925,6 +958,27 @@
 								<Toggle bind:checked={f.ocr} label={OCR_LABEL} hint={OCR_HINT} />
 								{#if f.ocr && ocrCapNotice(scanned)}<p class="caption ocr-note">{ocrCapNotice(scanned)}</p>{/if}
 							{/if}
+							{#if bilevelCount > 0}
+								<Toggle bind:checked={f.bilevel} label={BILEVEL_LABEL} hint={BILEVEL_HINT} />
+								{#if f.bilevel}
+									<div class="bw-preview" data-testid="bilevel-preview" aria-live="polite">
+										{#if bilevelPreview === null}
+											<p class="caption">Making a preview…</p>
+										{:else if bilevelPreview === 'none'}
+											<p class="caption">The first scanned pages have colour, photos or faint marks, so they would be left as they are. Other pages are checked when you export.</p>
+										{:else}
+											<figure>
+												<img src={bilevelPreview.before} width={bilevelPreview.width} height={bilevelPreview.height} alt="Part of a scanned page as it is now" />
+												<figcaption class="caption">Before</figcaption>
+											</figure>
+											<figure>
+												<img src={bilevelPreview.after} width={bilevelPreview.width} height={bilevelPreview.height} alt="The same part in black and white, like a photocopy" />
+												<figcaption class="caption">After (like a photocopy)</figcaption>
+											</figure>
+										{/if}
+									</div>
+								{/if}
+							{/if}
 						{/if}
 					</div>
 				{/if}
@@ -1206,6 +1260,29 @@
 	.ocr-note {
 		color: var(--ink-soft);
 		padding-left: var(--s-2);
+	}
+
+	.bw-preview {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--s-3);
+		padding-left: var(--s-2);
+		color: var(--ink-soft);
+	}
+
+	.bw-preview figure {
+		margin: 0;
+		display: grid;
+		gap: var(--s-1);
+		max-width: 100%;
+	}
+
+	.bw-preview img {
+		display: block;
+		max-width: 100%;
+		height: auto;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-control);
 	}
 
 	.working {

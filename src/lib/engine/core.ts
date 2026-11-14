@@ -110,6 +110,8 @@ export interface EngineOptions {
 	keepOutline?: boolean;
 	/** true: the export's final structure check always runs as a plain `qpdf --check` (final-check.ts), never the fast way. */
 	fullCheck?: boolean;
+	/** Tests only: black and white pages (0-based output pages) whose first build is made to fail its 'bilevel' check. */
+	bilevelSpoil?: (page: number) => boolean;
 }
 
 export interface LosslessPasses {
@@ -440,6 +442,18 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			guard(async () => {
 				if (!source || !(source.bytes instanceof Uint8Array) || !Array.isArray(source.pages)) return [];
 				return oversizedPictures(qpdf, deps.mupdf, source);
+			}),
+
+		bilevelPages: (source) =>
+			guard(async () => {
+				if (!source || source.kind !== 'pdf' || !(source.bytes instanceof Uint8Array) || !Array.isArray(source.pages)) return [];
+				return (await import('./bilevel-stage')).bilevelPagesOf(qpdf, deps.mupdf, source);
+			}),
+
+		bilevelPreview: (source, pageIndex) =>
+			guard(async () => {
+				if (!source || source.kind !== 'pdf' || !(source.bytes instanceof Uint8Array) || !Array.isArray(source.pages)) return null;
+				return (await import('./bilevel-stage')).bilevelPreview(deps.mupdf, source, pageIndex);
 			})
 	};
 
@@ -449,7 +463,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		assetList: Asset[],
 		control?: ExportControl,
 		/** A second build of the same plan without tags (or bookmarks, or details), after the first one's check of them failed. */
-		again?: { noTags?: TagsDropReason; noBookmarks?: boolean; noInfo?: boolean; reading: ScanReading | null; started: number }
+		again?: { noTags?: TagsDropReason; noBookmarks?: boolean; noInfo?: boolean; noBilevel?: ReadonlySet<number>; reading: ScanReading | null; started: number }
 	): Promise<ExportResult> {
 		const started = again?.started ?? now();
 		const { pages } = plan;
@@ -564,6 +578,8 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		let outlined: OutlineGraft | null = null;
 		/** What the last 'outline' check found wrong (set by verifyAll). */
 		const outlineFailed: { last: OutlineFailure | null } = { last: null };
+		/** Output pages whose black and white picture failed the last 'bilevel' check (set by verifyAll). */
+		const bilevelFailed: { last: number[] } = { last: [] };
 		let bookmarksInfo: ExportResult['bookmarks'] = !outlinePlan || outlinePlan.bookmarks === 'none' ? undefined : outlinePlan.bookmarks === 'keep' ? { kept: true, items: 0 } : { kept: false, reason: outlinePlan.bookmarks.drop };
 		let docInfo = outlinePlan?.infoResult;
 		if (outlinePlan && outlineWork(outlinePlan)) {
@@ -586,6 +602,17 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			bytes = r.bytes;
 			layered = r.written;
 			ocrReport = r.report;
+		}
+		throwIfCancelled(control);
+
+		// (a2b) Black and white scans (bilevel-stage.ts): after the text layers, which were read
+		// from the original pictures and lie over them unchanged (same pixel size, same place).
+		let bilevel: import('./bilevel-stage').BilevelBuild | null = null;
+		if (options.bilevel === true) {
+			const stage = await import('./bilevel-stage');
+			bilevel = await stage.convertScans(deps, bytes, pages, { exclude: again?.noBilevel, control, report, debug });
+			bytes = bilevel.bytes;
+			if (options_.bilevelSpoil && !again) for (const [i, e] of bilevel.expected) if (options_.bilevelSpoil(i)) e.digest = 'spoiled';
 		}
 		throwIfCancelled(control);
 
@@ -726,7 +753,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 
 		// (f) Verify.
 		// Whether the structure check is the last slow part (the checks below it are not quick).
-		const last = !formsRan && redactJobs.length === 0 && !numbering && !wmJob && !anyCrop && made.length === 0 && layered.size === 0;
+		const last = !formsRan && redactJobs.length === 0 && !numbering && !wmJob && !anyCrop && made.length === 0 && layered.size === 0 && !bilevel?.expected.size;
 		const checkProgress = report && ((done: number, total: number) => report({ stage: 'check', done, total, last }));
 		const verifyAll = async (file: Uint8Array, w: string[]) => {
 			const checks = await verify(file, expected, password, options.stripMetadata, used, w, checkProgress);
@@ -738,6 +765,12 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			if (tagged) checks.push(await verifyTags(qpdf, file, tagged.expected, password));
 			if (wmJob) checks.push(await verifyWatermark(deps, file, wmJob.watermark, pages.length, password));
 			if (anyCrop) checks.push(await verifyCrops(deps, file, crops.rects, password));
+			if (bilevel?.expected.size) {
+				const { verifyBilevel } = await import('./bilevel-stage');
+				const v = await verifyBilevel(await deps.mupdf(), file, bilevel.expected, password, bilevel.worstRegion);
+				bilevelFailed.last = v.failed;
+				checks.push(v.check);
+			}
 			if (outlined) {
 				const v = await verifyOutline(qpdf, file, outlined.expected, password);
 				outlineFailed.last = v.check.ok ? null : v.failed;
@@ -759,16 +792,22 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 				warnings.push(...w);
 			}
 		}
-		if (!checks.every((c) => c.ok) && (tagged || outlined) && checks.every((c) => c.ok || c.name === 'tags' || c.name === 'outline')) {
-			// Only the tags, or the bookmarks and details, failed their check: the same plan again,
-			// without what failed ("avoid, don't fail").
-			for (const c of checks) if (!c.ok) debug(`${c.name}: the export's ${c.name === 'tags' ? 'tags' : 'title and bookmarks'} failed their check (${c.detail}); exporting without them`);
+		if (
+			!checks.every((c) => c.ok) &&
+			(tagged || outlined || bilevel?.expected.size) &&
+			checks.every((c) => c.ok || c.name === 'tags' || c.name === 'outline' || (c.name === 'bilevel' && bilevelFailed.last.length > 0))
+		) {
+			// Only the tags, the bookmarks and details, or black and white pages failed their check:
+			// the same plan again, without what failed ("avoid, don't fail"; failed black and white
+			// pages are left as they were).
+			for (const c of checks) if (!c.ok) debug(`${c.name}: failed its check (${c.detail}); exporting without it`);
 			throwIfCancelled(control);
 			const tagsBad = checks.some((c) => !c.ok && c.name === 'tags');
 			return exportPlan(plan, sources, assetList, control, {
 				noTags: again?.noTags ?? (tagsBad ? 'check' : undefined),
 				noBookmarks: again?.noBookmarks || outlineFailed.last?.bookmarks,
 				noInfo: again?.noInfo || outlineFailed.last?.info,
+				noBilevel: bilevelFailed.last.length ? new Set([...(again?.noBilevel ?? []), ...bilevelFailed.last]) : again?.noBilevel,
 				reading,
 				started
 			});
@@ -790,6 +829,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		if (tagsInfo) result.tags = tagsInfo;
 		if (bookmarksInfo) result.bookmarks = bookmarksInfo;
 		if (docInfo) result.docInfo = docInfo;
+		if (bilevel) result.bilevel = bilevel.report;
 		return result;
 	}
 

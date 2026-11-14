@@ -189,6 +189,8 @@ export function createEngine(options: { createWorker?: () => WorkerLike } = {}):
 		pageBlanks: (source, pageIndex) => call('pageBlanks', [source, pageIndex]),
 		scannedPages: (source) => call('scannedPages', [source]),
 		oversizedPictures: (source) => call('oversizedPictures', [source]),
+		bilevelPages: (source) => call('bilevelPages', [source]),
+		bilevelPreview: (source, pageIndex) => call('bilevelPreview', [source, pageIndex]),
 		pageText: async (source, pageIndex) => {
 			if (textSent.has(source.id)) {
 				try {

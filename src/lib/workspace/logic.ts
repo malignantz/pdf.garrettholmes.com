@@ -365,6 +365,8 @@ export function plainCheck(
 			const marks = /bookmarks? kept/.test(c.detail);
 			return title && marks ? 'Title and bookmarks kept.' : marks ? 'Bookmarks kept.' : title ? 'Title kept.' : 'Document settings kept.';
 		}
+		case 'bilevel':
+			return c.ok ? 'Black and white pages: passed.' : 'Some black and white pages did not read back exactly.';
 	}
 }
 
@@ -466,6 +468,9 @@ export interface ExportForm {
 	wmLook: Watermark['look'];
 	wmStrength: Watermark['strength'];
 	wmColor: Watermark['color'];
+	// Added 2026-11-14 (black and white scans). Never saved with the work (session/format.ts).
+	/** Make scanned pages black and white (ExportOptions.bilevel; offered when a page could qualify). */
+	bilevel: boolean;
 }
 
 export type WatermarkPick = 'DRAFT' | 'CONFIDENTIAL' | 'COPY' | 'other';
@@ -540,7 +545,8 @@ export const DEFAULT_FORM: Omit<ExportForm, 'filename'> = {
 	wmText: '',
 	wmLook: 'diagonal',
 	wmStrength: 'light',
-	wmColor: 'grey'
+	wmColor: 'grey',
+	bilevel: false
 };
 
 /** Filled blanks on the pages of a plan: text and ticks still linked to the blank they were snapped into. */
@@ -561,8 +567,8 @@ export function filledBlankCount(pages: readonly Pick<PageRef, 'stamps'>[]): num
  * the dialog opens the section when this is not empty, and names them on the collapsed button.
  */
 export function moreOptionsOn(
-	f: Pick<ExportForm, 'split' | 'fit' | 'number' | 'watermark' | 'stripMetadata' | 'ocr'>,
-	ctx: { pictures: boolean; canSplit: boolean; redacting: boolean; scanned: number }
+	f: Pick<ExportForm, 'split' | 'fit' | 'number' | 'watermark' | 'stripMetadata' | 'ocr'> & { bilevel?: boolean },
+	ctx: { pictures: boolean; canSplit: boolean; redacting: boolean; scanned: number; bilevel?: number }
 ): string[] {
 	const on: string[] = [];
 	if (ctx.canSplit && f.split) on.push('Split');
@@ -571,6 +577,7 @@ export function moreOptionsOn(
 	if (f.watermark) on.push('Watermark');
 	if (!ctx.pictures && (f.stripMetadata || ctx.redacting)) on.push('Remove metadata');
 	if (!ctx.pictures && ctx.scanned > 0 && f.ocr) on.push('Searchable text');
+	if (!ctx.pictures && (ctx.bilevel ?? 0) > 0 && f.bilevel) on.push('Black and white');
 	return on;
 }
 
@@ -690,7 +697,7 @@ export type OptionsResult = { ok: true; options: ExportOptions } | { ok: false; 
  */
 export function buildExportOptions(
 	f: ExportForm,
-	ctx: { pageCount: number; redactions: number; hasForm: boolean; blanks?: number; scanned?: number }
+	ctx: { pageCount: number; redactions: number; hasForm: boolean; blanks?: number; scanned?: number; bilevel?: number }
 ): OptionsResult {
 	const redacting = ctx.redactions > 0;
 	const options: ExportOptions = {
@@ -717,6 +724,7 @@ export function buildExportOptions(
 	if ((ctx.hasForm && f.lockForms) || redacting) options.flattenForms = true;
 	if (f.keepBlanks && (ctx.blanks ?? 0) > 0 && !options.flattenForms) options.blankFields = true;
 	if (f.ocr && (ctx.scanned ?? 0) > 0) options.ocr = true;
+	if (f.bilevel && (ctx.bilevel ?? 0) > 0) options.bilevel = true;
 	// Sent whether or not the dialog has counted oversized pictures yet: the engine decides.
 	if (options.compress && f.printCap) options.printCap = true;
 	return { ok: true, options };
