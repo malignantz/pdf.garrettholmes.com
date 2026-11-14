@@ -19,14 +19,31 @@
 	let { onfiles, accept = 'application/pdf,.pdf,image/png,image/jpeg,image/webp,image/gif,image/heic,image/*', top }: Props =
 		$props();
 
+	// Ordered by how often people need each one (the demand table in the plan). The first
+	// ones are always shown; the rest fold under "More it can do", open where there is room.
 	const features: { icon: IconName; title: string; line: string }[] = [
-		{ icon: 'duplicate', title: 'Combine and rearrange', line: 'Merge files, then reorder, rotate, crop or delete pages.' },
-		{ icon: 'sign', title: 'Sign and fill in', line: 'Add your signature, type on the page, fill in form fields.' },
-		{ icon: 'highlight', title: 'Mark up', line: 'Highlight, add check marks, dates, page numbers or a watermark such as DRAFT.' },
-		{ icon: 'redact', title: 'Black out private details', line: 'Redaction that truly removes what is under the box.' },
+		{ icon: 'duplicate', title: 'Combine files', line: 'Merge several PDFs into one, in the order you want.' },
+		{ icon: 'file', title: 'Pictures to PDF', line: 'Turn photos and scans into one PDF.' },
+		{ icon: 'image', title: 'PDF to pictures', line: 'Save pages as JPG or PNG.' },
 		{ icon: 'shrink', title: 'Make it smaller', line: 'Shrink a file to fit an email limit.' },
-		{ icon: 'lock', title: 'Lock, unlock, convert', line: 'Add or remove a password. Unlock files that block printing or copying. Turn photos into a PDF.' }
+		{ icon: 'sign', title: 'Fill in and sign', line: 'Add your signature, type on the page, fill in form fields.' },
+		{ icon: 'extract', title: 'Split', line: 'Save some pages as a new file, or split one into several.' },
+		{ icon: 'trash', title: 'Delete and reorder pages', line: 'Drag pages into place and remove the ones you do not need.' },
+		{ icon: 'lock', title: 'Unlock', line: 'Remove a password you know, or limits on printing and copying.' },
+		{ icon: 'rotate-right', title: 'Rotate', line: 'Turn pages that came out sideways.' },
+		{ icon: 'crop', title: 'Crop', line: 'Trim the margins of a page.' },
+		{ icon: 'lock', title: 'Add a password', line: 'The file needs it to open. AES-256.' },
+		{ icon: 'redact', title: 'Black out private details', line: 'Redaction that truly removes what is under the box.' },
+		{ icon: 'text', title: 'Page numbers', line: 'Number the pages, or add Bates numbers.' },
+		{ icon: 'text', title: 'Watermark', line: 'Text such as DRAFT across every page.' },
+		{ icon: 'highlight', title: 'Mark up', line: 'Highlight, add check marks and dates.' },
+		{ icon: 'zoom-in', title: 'Searchable scans', line: 'On a computer, make typed text on scanned pages searchable.' }
 	];
+	/** How many are always shown. */
+	const FIRST = 8;
+	// Open where the whole list fits beside the rest of the page (a desktop window).
+	let more = $state(typeof matchMedia === 'function' && matchMedia('(min-width: 760px) and (min-height: 760px)').matches);
+	const shown = $derived(more ? features : features.slice(0, FIRST));
 
 	let input: HTMLInputElement | undefined = $state();
 	let dragging = $state(false);
@@ -110,14 +127,17 @@
 		</div>
 
 		<h2 class="what">What you can do</h2>
-		<ul class="features">
-			{#each features as f (f.title)}
+		<ul class="features" id="features">
+			{#each shown as f (f.title)}
 				<li>
 					<Icon name={f.icon} size={22} />
 					<span class="ftext"><strong>{f.title}</strong><span>{f.line}</span></span>
 				</li>
 			{/each}
 		</ul>
+		<button type="button" class="more" class:open={more} aria-expanded={more} aria-controls="features" onclick={() => (more = !more)}>
+			<Icon name="chevron-right" size={18} />More it can do
+		</button>
 
 		<p class="once">Add a file to start. Everything is in one place, and you download once at the end.</p>
 
@@ -351,8 +371,30 @@
 		color: var(--ink);
 	}
 
+	.more {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--s-1);
+		min-height: 44px;
+		margin-top: var(--s-2);
+		padding: 0 var(--s-2);
+		border-radius: 4px;
+		font-size: var(--text-control);
+		font-weight: 550;
+		color: var(--ink);
+	}
+
+	.more > :global(.icon) {
+		color: var(--ink-soft);
+		transition: transform var(--dur) var(--ease);
+	}
+
+	.more.open > :global(.icon) {
+		transform: rotate(90deg);
+	}
+
 	.once {
-		margin-top: var(--s-4);
+		margin-top: var(--s-2);
 		font-size: var(--text-caption);
 		color: var(--ink-soft);
 	}

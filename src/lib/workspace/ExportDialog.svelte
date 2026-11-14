@@ -49,6 +49,7 @@
 		keepBlanksBlocked,
 		nameBase,
 		keepBlanksHint,
+		moreOptionsOn,
 		normalizeFilename,
 		numberingPreview,
 		parseMegabytes,
@@ -209,6 +210,25 @@
 		if (!open && wasOpen) revoke();
 		wasOpen = open;
 	});
+	// Open the section when an option inside it is (or comes into view) switched on.
+	let lastOn: string[] | null = null;
+	$effect(() => {
+		const on = moreOn;
+		if (!open) {
+			lastOn = null;
+			return;
+		}
+		const before = lastOn;
+		lastOn = on;
+		untrack(() => {
+			if (before === null) moreOpen = readMore() || on.length > 0;
+			else if (!moreOpen && on.some((n) => !before.includes(n))) moreOpen = true;
+		});
+	});
+	// A problem to fix inside the section opens it.
+	$effect(() => {
+		if (open && moreProblem) untrack(() => (moreOpen = true));
+	});
 	// The file name's extension follows what will be saved (.pdf, .zip, .jpg, .png).
 	let shownExt = '';
 	$effect(() => {
@@ -322,6 +342,33 @@
 		return null;
 	});
 
+	// "More options": the less used options, folded away. Nothing switched on is hidden: the
+	// section opens when the dialog opens with any of them on, and again when one comes into
+	// view switched on (scanned pages found, Save as back to PDF) or one needs fixing. Folded
+	// by the person while something is on, the button names what is on. Open or folded is
+	// remembered on this device.
+	const MORE_KEY = 'pdf-workspace.export-more';
+	let moreOpen = $state(false);
+	const moreOn = $derived(moreOptionsOn(f, { pictures, canSplit, redacting, scanned }));
+	const moreProblem = $derived(!!(numProblem || wmProblem || fitError || splitProblem));
+
+	function readMore(): boolean {
+		try {
+			return localStorage.getItem(MORE_KEY) === '1';
+		} catch {
+			return false;
+		}
+	}
+
+	function toggleMore() {
+		moreOpen = !moreOpen;
+		try {
+			localStorage.setItem(MORE_KEY, moreOpen ? '1' : '0');
+		} catch {
+			// Not remembered; storage is probably blocked.
+		}
+	}
+
 	const canExport = $derived(
 		plan.count > 0 &&
 			!numProblem &&
@@ -338,6 +385,7 @@
 	async function run(e?: Event) {
 		e?.preventDefault();
 		touched = true;
+		if (moreProblem) moreOpen = true;
 		if (!canExport || phase.kind === 'working') return;
 		const mkPictures = pictures;
 		const mkSplit = !mkPictures && split?.ok ? split.parts : null;
@@ -662,134 +710,22 @@
 				</p>
 			{/if}
 
-			{#if canSplit}
-				<div class="split">
+			{#if !pictures}
+				<div class="toggles">
 					<Toggle
-						bind:checked={f.split}
-						label="Split into several files"
-						hint={usePassword ? 'Each file is checked like any export and gets the password. You get one zip.' : 'Each file is checked like any export. You get one zip.'}
+						checked={f.compress || f.fit}
+						onchange={(v) => (f.compress = v)}
+						disabled={f.fit}
+						label="Optimize"
+						hint={f.fit
+							? 'On while Fit under a size is on.'
+							: f.printCap
+								? 'Makes the file smaller. Text and drawings stay exactly as they are.'
+								: 'Makes the file smaller. Nothing changes in how it looks.'}
 					/>
-					{#if f.split}
-						<div class="section">
-							<Select label="How to split" bind:value={f.splitRule} options={splitRules} />
-							{#if splitRule === 'every'}
-								<Field label="Pages per file" bind:value={f.splitEvery} inputmode="numeric" autocomplete="off" />
-							{:else if splitRule === 'at'}
-								<Field
-									label="New file starts at pages"
-									bind:value={f.splitAt}
-									inputmode="numeric"
-									autocomplete="off"
-									placeholder="5, 12"
-								/>
-							{:else if splitRule === 'files'}
-								<p class="caption preview">Pages go with the file they came from, in their current order. Added blank pages go with the page before them.</p>
-							{/if}
-							{#if splitProblem}
-								<p class="problem" role="alert">{splitProblem}</p>
-							{:else if splitLine}
-								<p class="preview caption">{splitLine}</p>
-							{/if}
-						</div>
+					{#if oversized > 0 && (f.compress || f.fit)}
+						<Toggle bind:checked={f.printCap} label={PRINT_CAP_LABEL} hint={printCapHint(oversized)} />
 					{/if}
-				</div>
-			{/if}
-
-			<div class="toggles">
-				{#if !pictures}
-				<Toggle
-					checked={f.compress || f.fit}
-					onchange={(v) => (f.compress = v)}
-					disabled={f.fit}
-					label="Optimize"
-					hint={f.printCap ? 'Makes the file smaller. Text and drawings stay exactly as they are.' : 'Makes the file smaller. Nothing changes in how it looks.'}
-				/>
-				{#if oversized > 0 && (f.compress || f.fit)}
-					<Toggle bind:checked={f.printCap} label={PRINT_CAP_LABEL} hint={printCapHint(oversized)} />
-				{/if}
-
-				<Toggle
-					bind:checked={f.fit}
-					label="Fit under a size"
-					hint={splitting ? 'Lowers the quality of photos and scans until each file fits. Text stays sharp.' : 'Lowers the quality of photos and scans until the file fits. Text stays sharp.'}
-				/>
-				{#if f.fit}
-					<div class="section">
-						<OptionPicker
-							label="Largest size"
-							bind:value={f.fitChoice}
-							options={FIT_CHOICES.map((c) => ({ value: c, label: c === 'other' ? 'Other' : `${c} MB` }))}
-						/>
-						{#if f.fitChoice === 'other'}
-							<Field
-								label="Size in MB"
-								bind:value={f.fitOther}
-								inputmode="decimal"
-								autocomplete="off"
-								placeholder="0.1 to 500"
-								error={fitError}
-							/>
-						{/if}
-					</div>
-				{/if}
-				{/if}
-
-				<Toggle
-					checked={f.number}
-					onchange={(v) => (f.number = v)}
-					label="Number the pages"
-				/>
-				{#if f.number}
-					<div class="section">
-						<Select label="Style" bind:value={f.style} options={NUMBER_STYLES} />
-						<OptionPicker label="Position" layout="corners" bind:value={f.position} options={NUMBER_POSITIONS} />
-						{#if f.style === 'bates'}
-							<div class="pair">
-								<Field label="Prefix" bind:value={f.prefix} maxlength={20} autocomplete="off" spellcheck="false" />
-								<Field label="Digits" bind:value={f.digits} inputmode="numeric" autocomplete="off" />
-							</div>
-						{/if}
-						<div class="pair">
-							<Field label="Start at" bind:value={f.start} inputmode="numeric" autocomplete="off" />
-							<Field label="Skip first pages" bind:value={f.skip} inputmode="numeric" autocomplete="off" />
-						</div>
-						<OptionPicker label="Size" bind:value={f.size} options={NUMBER_SIZES} />
-						{#if numProblem}
-							<p class="problem" role="alert">{numProblem}</p>
-						{:else if numPreview}
-							<p class="preview num caption">{numPreview}</p>
-						{/if}
-						{#if splitting}<p class="preview caption">Numbers continue from one file to the next.</p>{/if}
-					</div>
-				{/if}
-
-				<Toggle checked={f.watermark} onchange={(v) => (f.watermark = v)} label="Add a watermark" hint="Text such as DRAFT across every page." />
-				{#if f.watermark}
-					<div class="section" data-testid="watermark-section">
-						<OptionPicker label="Text" bind:value={f.wmPick} options={WATERMARK_PICKS} />
-						{#if f.wmPick === 'other'}
-							<Field label="Watermark text" bind:value={f.wmText} maxlength={WATERMARK_MAX} autocomplete="off" spellcheck="false" />
-						{/if}
-						<OptionPicker label="Look" bind:value={f.wmLook} options={WATERMARK_LOOKS} />
-						<div class="wm-pair">
-							<OptionPicker label="Strength" bind:value={f.wmStrength} options={WATERMARK_STRENGTHS} />
-							<OptionPicker label="Colour" bind:value={f.wmColor} options={WATERMARK_COLORS} />
-						</div>
-						{#if wmProblem}
-							<p class="problem" role="alert">{wmProblem}</p>
-						{:else if wmResult && 'watermark' in wmResult}
-							<div class="wm-row">
-								<WatermarkPreview watermark={wmResult.watermark} page={firstPage} />
-								<p class="caption preview">
-									A watermark is a visible mark, not protection: anyone with a PDF editor can remove it.
-								</p>
-							</div>
-						{/if}
-					</div>
-				{/if}
-
-				{#if !pictures}
-				{#if plan.hasForm || redacting}
 					{#if plan.hasForm}
 						<Toggle
 							checked={f.lockForms || redacting}
@@ -799,65 +735,198 @@
 							hint={redacting ? 'Always on when redacting.' : 'Turns the form into plain page content so answers cannot be changed.'}
 						/>
 					{/if}
+					{#if plan.blanks > 0}
+						<Toggle
+							checked={f.keepBlanks && !blanksBlocked}
+							onchange={(v) => (f.keepBlanks = v)}
+							disabled={!!blanksBlocked}
+							label="Keep filled blanks editable"
+							hint={blanksBlocked ?? keepBlanksHint(plan.blanks)}
+						/>
+					{/if}
+					<Toggle bind:checked={usePassword} label="Add a password" hint="Needed to open the file. AES-256." />
+					{#if usePassword}
+						<div class="password">
+							<Field
+								label="Password"
+								type={showPassword ? 'text' : 'password'}
+								bind:value={password}
+								autocomplete="new-password"
+								error={pwError ?? undefined}
+								oninput={() => (touched = touched || password.length > 0)}
+								onblur={() => (touched = true)}
+							/>
+							<Field
+								label="Confirm password"
+								type={showPassword ? 'text' : 'password'}
+								bind:value={confirm}
+								autocomplete="new-password"
+								error={confirmError ?? undefined}
+								onblur={() => (touched = true)}
+							/>
+							<label class="show">
+								<input type="checkbox" bind:checked={showPassword} />
+								Show passwords
+							</label>
+							<p class="caption">There is no way to recover a forgotten password. Keep it somewhere safe.</p>
+						</div>
+					{/if}
+				</div>
+
+				<!-- Password, metadata and file options belong to a PDF; pictures carry none of them. -->
+				{#if usePassword}
+					<!-- The password fields say it all. -->
+				{:else if plan.passwordInput}
+					<p class="note"><Icon name="lock" size={18} />A file you opened had a password. This export will have none unless you add one.</p>
+				{:else if plan.limits.length}
+					<p class="note" data-testid="limits-note"><Icon name="lock" size={18} />A file you opened limited {limitWords(plan.limits)}. This export will not.</p>
+				{:else if plan.encryptedInput}
+					<p class="note"><Icon name="lock" size={18} />A file you opened was locked. This export will not be, unless you add a password.</p>
 				{/if}
-				{#if plan.blanks > 0}
-					<Toggle
-						checked={f.keepBlanks && !blanksBlocked}
-						onchange={(v) => (f.keepBlanks = v)}
-						disabled={!!blanksBlocked}
-						label="Keep filled blanks editable"
-						hint={blanksBlocked ?? keepBlanksHint(plan.blanks)}
-					/>
-				{/if}
-				<Toggle
-					checked={f.stripMetadata || redacting}
-					onchange={(v) => (f.stripMetadata = v)}
-					disabled={redacting}
-					label="Remove metadata"
-					hint={redacting ? 'Always on when redacting.' : 'Author, title, dates and editing software.'}
-				/>
-				<Toggle bind:checked={usePassword} label="Add a password" hint="Needed to open the file. AES-256." />
-				{#if scanned > 0}
-					<Toggle bind:checked={f.ocr} label={OCR_LABEL} hint={OCR_HINT} />
-					{#if f.ocr && ocrCapNotice(scanned)}<p class="caption ocr-note">{ocrCapNotice(scanned)}</p>{/if}
-				{/if}
+			{/if}
+
+			<!-- Less used options. Nothing switched on is ever hidden: see moreOptionsOn. -->
+			<div class="more" class:open={moreOpen}>
+				<button
+					type="button"
+					class="more-button"
+					aria-expanded={moreOpen}
+					aria-controls="export-more"
+					onclick={toggleMore}
+				>
+					<Icon name="chevron-right" size={18} class="chev" />
+					<span class="more-text">
+						<span class="more-label">More options</span>
+						{#if !moreOpen && moreOn.length}<span class="more-on"> · {moreOn.join(', ')} on</span>{/if}
+						{#if !moreOpen && moreProblem}<span class="more-fix"> · Needs a fix</span>{/if}
+					</span>
+				</button>
+				{#if moreOpen}
+					<div id="export-more" class="more-body">
+						{#if canSplit}
+							<Toggle
+								bind:checked={f.split}
+								label="Split into several files"
+								hint={usePassword ? 'Each file is checked like any export and gets the password. You get one zip.' : 'Each file is checked like any export. You get one zip.'}
+							/>
+							{#if f.split}
+								<div class="section">
+									<Select label="How to split" bind:value={f.splitRule} options={splitRules} />
+									{#if splitRule === 'every'}
+										<Field label="Pages per file" bind:value={f.splitEvery} inputmode="numeric" autocomplete="off" />
+									{:else if splitRule === 'at'}
+										<Field
+											label="New file starts at pages"
+											bind:value={f.splitAt}
+											inputmode="numeric"
+											autocomplete="off"
+											placeholder="5, 12"
+										/>
+									{:else if splitRule === 'files'}
+										<p class="caption preview">Pages go with the file they came from, in their current order. Added blank pages go with the page before them.</p>
+									{/if}
+									{#if splitProblem}
+										<p class="problem" role="alert">{splitProblem}</p>
+									{:else if splitLine}
+										<p class="preview caption">{splitLine}</p>
+									{/if}
+								</div>
+							{/if}
+						{/if}
+
+						{#if !pictures}
+							<Toggle
+								bind:checked={f.fit}
+								label="Fit under a size"
+								hint={splitting ? 'Lowers the quality of photos and scans until each file fits. Text stays sharp.' : 'Lowers the quality of photos and scans until the file fits. Text stays sharp.'}
+							/>
+							{#if f.fit}
+								<div class="section">
+									<OptionPicker
+										label="Largest size"
+										bind:value={f.fitChoice}
+										options={FIT_CHOICES.map((c) => ({ value: c, label: c === 'other' ? 'Other' : `${c} MB` }))}
+									/>
+									{#if f.fitChoice === 'other'}
+										<Field
+											label="Size in MB"
+											bind:value={f.fitOther}
+											inputmode="decimal"
+											autocomplete="off"
+											placeholder="0.1 to 500"
+											error={fitError}
+										/>
+									{/if}
+								</div>
+							{/if}
+						{/if}
+
+						<Toggle checked={f.number} onchange={(v) => (f.number = v)} label="Number the pages" />
+						{#if f.number}
+							<div class="section">
+								<Select label="Style" bind:value={f.style} options={NUMBER_STYLES} />
+								<OptionPicker label="Position" layout="corners" bind:value={f.position} options={NUMBER_POSITIONS} />
+								{#if f.style === 'bates'}
+									<div class="pair">
+										<Field label="Prefix" bind:value={f.prefix} maxlength={20} autocomplete="off" spellcheck="false" />
+										<Field label="Digits" bind:value={f.digits} inputmode="numeric" autocomplete="off" />
+									</div>
+								{/if}
+								<div class="pair">
+									<Field label="Start at" bind:value={f.start} inputmode="numeric" autocomplete="off" />
+									<Field label="Skip first pages" bind:value={f.skip} inputmode="numeric" autocomplete="off" />
+								</div>
+								<OptionPicker label="Size" bind:value={f.size} options={NUMBER_SIZES} />
+								{#if numProblem}
+									<p class="problem" role="alert">{numProblem}</p>
+								{:else if numPreview}
+									<p class="preview num caption">{numPreview}</p>
+								{/if}
+								{#if splitting}<p class="preview caption">Numbers continue from one file to the next.</p>{/if}
+							</div>
+						{/if}
+
+						<Toggle checked={f.watermark} onchange={(v) => (f.watermark = v)} label="Add a watermark" hint="Text such as DRAFT across every page." />
+						{#if f.watermark}
+							<div class="section" data-testid="watermark-section">
+								<OptionPicker label="Text" bind:value={f.wmPick} options={WATERMARK_PICKS} />
+								{#if f.wmPick === 'other'}
+									<Field label="Watermark text" bind:value={f.wmText} maxlength={WATERMARK_MAX} autocomplete="off" spellcheck="false" />
+								{/if}
+								<OptionPicker label="Look" bind:value={f.wmLook} options={WATERMARK_LOOKS} />
+								<div class="wm-pair">
+									<OptionPicker label="Strength" bind:value={f.wmStrength} options={WATERMARK_STRENGTHS} />
+									<OptionPicker label="Colour" bind:value={f.wmColor} options={WATERMARK_COLORS} />
+								</div>
+								{#if wmProblem}
+									<p class="problem" role="alert">{wmProblem}</p>
+								{:else if wmResult && 'watermark' in wmResult}
+									<div class="wm-row">
+										<WatermarkPreview watermark={wmResult.watermark} page={firstPage} />
+										<p class="caption preview">
+											A watermark is a visible mark, not protection: anyone with a PDF editor can remove it.
+										</p>
+									</div>
+								{/if}
+							</div>
+						{/if}
+
+						{#if !pictures}
+							<Toggle
+								checked={f.stripMetadata || redacting}
+								onchange={(v) => (f.stripMetadata = v)}
+								disabled={redacting}
+								label="Remove metadata"
+								hint={redacting ? 'Always on when redacting.' : 'Author, title, dates and editing software.'}
+							/>
+							{#if scanned > 0}
+								<Toggle bind:checked={f.ocr} label={OCR_LABEL} hint={OCR_HINT} />
+								{#if f.ocr && ocrCapNotice(scanned)}<p class="caption ocr-note">{ocrCapNotice(scanned)}</p>{/if}
+							{/if}
+						{/if}
+					</div>
 				{/if}
 			</div>
-
-			{#if pictures}
-				<!-- Password, metadata and file options belong to a PDF; pictures carry none of them. -->
-			{:else if usePassword}
-				<div class="password">
-					<Field
-						label="Password"
-						type={showPassword ? 'text' : 'password'}
-						bind:value={password}
-						autocomplete="new-password"
-						error={pwError ?? undefined}
-						oninput={() => (touched = touched || password.length > 0)}
-						onblur={() => (touched = true)}
-					/>
-					<Field
-						label="Confirm password"
-						type={showPassword ? 'text' : 'password'}
-						bind:value={confirm}
-						autocomplete="new-password"
-						error={confirmError ?? undefined}
-						onblur={() => (touched = true)}
-					/>
-					<label class="show">
-						<input type="checkbox" bind:checked={showPassword} />
-						Show passwords
-					</label>
-					<p class="caption">There is no way to recover a forgotten password. Keep it somewhere safe.</p>
-				</div>
-			{:else if plan.passwordInput}
-				<p class="note"><Icon name="lock" size={18} />A file you opened had a password. This export will have none unless you add one.</p>
-			{:else if plan.limits.length}
-				<p class="note" data-testid="limits-note"><Icon name="lock" size={18} />A file you opened limited {limitWords(plan.limits)}. This export will not.</p>
-			{:else if plan.encryptedInput}
-				<p class="note"><Icon name="lock" size={18} />A file you opened was locked. This export will not be, unless you add a password.</p>
-			{/if}
 
 			<p class="summary num">
 				{`${plural(plan.count, 'page')}, ${formatBytes(plan.inputBytes)} in`}
@@ -1047,9 +1116,52 @@
 		overflow-wrap: anywhere;
 	}
 
-	.split {
+	.more {
+		display: grid;
+		border-bottom: 1px solid var(--line);
+	}
+
+	.more-button {
+		display: flex;
+		align-items: flex-start;
+		gap: var(--s-2);
+		width: 100%;
+		min-height: 44px;
+		padding: var(--s-2) 0;
+		text-align: left;
+		font-size: var(--text-control);
+		color: var(--ink);
+		border-radius: 4px;
+	}
+
+	.more-button :global(.chev) {
+		flex: none;
+		margin-top: 2px;
+		color: var(--ink-soft);
+		transition: transform var(--dur) var(--ease);
+	}
+
+	.open .more-button :global(.chev) {
+		transform: rotate(90deg);
+	}
+
+	.more-label {
+		font-weight: 550;
+	}
+
+	.more-on {
+		color: var(--ink-soft);
+	}
+
+	.more-fix {
+		color: var(--danger);
+		font-weight: 550;
+	}
+
+	.more-body {
 		display: grid;
 		gap: var(--s-3);
+		padding: var(--s-2) 0 var(--s-4);
 	}
 
 	.password {

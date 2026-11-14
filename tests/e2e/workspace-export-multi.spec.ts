@@ -12,6 +12,7 @@ import { PDFDocument, StandardFonts, rgb } from '@cantoo/pdf-lib';
 import type { Locator, Page, TestInfo } from '@playwright/test';
 import { test, expect } from './fixtures';
 import { chooseTool, pageBox } from './editor-helpers';
+import { openMore } from './export-helpers';
 
 const isPhone = (info: TestInfo) => info.project.name === 'phone';
 
@@ -101,6 +102,7 @@ test('3 pages as JPG pictures: one zip of 3 JPEGs at 150 dpi, in page order', as
 	await expect(dialog.getByRole('switch', { name: 'Optimize' })).toHaveCount(0);
 	await expect(dialog.getByRole('switch', { name: 'Add a password' })).toHaveCount(0);
 	await expect(dialog.getByRole('switch', { name: 'Split into several files' })).toHaveCount(0);
+	await openMore(dialog);
 	await expect(dialog.getByRole('switch', { name: 'Number the pages' })).toBeVisible();
 	await expect(dialog.getByLabel('File name')).toHaveValue('three-edited.zip');
 	await expect(dialog.getByText('A zip of three-edited-001.jpg to three-edited-003.jpg, in page order.')).toBeVisible();
@@ -191,6 +193,7 @@ test('split every 2 pages of 5: one zip of 3 PDFs with 2, 2 and 1 pages', async 
 	await openFile(page, 'five.pdf', await makePdf(5), 5);
 	const dialog = await exportDialog(page);
 	await expect(dialog.getByRole('radio', { name: 'PDF' })).toBeChecked();
+	await openMore(dialog);
 	await dialog.getByRole('switch', { name: 'Split into several files' }).click();
 	await dialog.getByLabel('How to split').selectOption({ label: 'Every N pages' });
 	await dialog.getByLabel('Pages per file').fill('5');
@@ -223,6 +226,7 @@ test('split with a password and page numbers: every file needs the password, num
 	test.setTimeout(120_000);
 	await openFile(page, 'five.pdf', await makePdf(5), 5);
 	const dialog = await exportDialog(page);
+	await openMore(dialog);
 	await dialog.getByRole('switch', { name: 'Split into several files' }).click();
 	await dialog.getByLabel('How to split').selectOption({ label: 'At these pages' });
 	await dialog.getByLabel('New file starts at pages').fill('3');

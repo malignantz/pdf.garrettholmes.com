@@ -2,6 +2,7 @@
 import { fileURLToPath } from 'node:url';
 import type { Page } from '@playwright/test';
 import { test, expect } from '@playwright/test';
+import { openMore } from './export-helpers';
 
 const dir = process.env.EXPORT_SHOTS;
 const corpus = (name: string) => fileURLToPath(new URL(`../corpus/files/${name}`, import.meta.url));
@@ -26,6 +27,7 @@ for (const [name, viewport] of [
 		const ctx = await browser.newContext({ baseURL, viewport, deviceScaleFactor: 1, hasTouch: name === 'phone' });
 		const page = await ctx.newPage();
 		let dialog = await openDialog(page, 'multi.pdf', 6);
+		await openMore(dialog);
 		await dialog.getByRole('switch', { name: 'Number the pages' }).click();
 		await expect(dialog.getByText(/^First: /)).toBeVisible();
 		await page.waitForTimeout(400);
@@ -33,6 +35,7 @@ for (const [name, viewport] of [
 
 		await page.reload();
 		dialog = await openDialog(page, 'shrink-photos.pdf', 12);
+		await openMore(dialog);
 		await dialog.getByRole('switch', { name: 'Fit under a size' }).click();
 		await dialog.getByRole('radio', { name: 'Other' }).click();
 		await dialog.getByLabel('Size in MB').fill('0.3');
@@ -45,6 +48,7 @@ for (const [name, viewport] of [
 		await page.screenshot({ path: `${dir}/result-reached-${name}.png` });
 
 		dialog = await openDialog(page, 'shrink-skips.pdf', 6);
+		await openMore(dialog);
 		await dialog.getByRole('switch', { name: 'Fit under a size' }).click();
 		await dialog.getByRole('radio', { name: 'Other' }).click();
 		await dialog.getByLabel('Size in MB').fill('0.1');

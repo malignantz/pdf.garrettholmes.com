@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import * as mupdf from 'mupdf';
 import type { Locator, Page } from '@playwright/test';
 import { test, expect } from './fixtures';
+import { openMore } from './export-helpers';
 
 const corpus = (name: string) => fileURLToPath(new URL(`../corpus/files/${name}`, import.meta.url));
 const OPTION = 'Make scanned pages searchable';
@@ -67,6 +68,7 @@ test('desktop: scanned pages become searchable; unreadable ones stay exactly as 
 		if (/tesseract-core|traineddata|\/worker\.min-/.test(r.url())) ocrFiles.push(new URL(r.url()).pathname);
 	});
 	const dialog = await openExport(page);
+	await openMore(dialog);
 	const option = dialog.getByRole('switch', { name: OPTION });
 	await expect(option).toBeVisible({ timeout: 30_000 });
 	await expect(option).not.toBeChecked();
@@ -121,6 +123,7 @@ test('desktop: cancel while reading leaves nothing made, and the next export wor
 	test.skip(info.project.name !== 'desktop-chrome', 'desktop only');
 	test.setTimeout(180_000);
 	const dialog = await openExport(page);
+	await openMore(dialog);
 	await dialog.getByRole('switch', { name: OPTION }).click();
 	await exportButton(dialog).click();
 	await expect(page.getByText(/^Reading page \d+ of 4$/)).toBeVisible({ timeout: 60_000 });
@@ -146,6 +149,7 @@ test('desktop: after one use the OCR engine works offline', async ({ page, conte
 		return !!reg.active && !!navigator.serviceWorker.controller;
 	});
 	let dialog = await openExport(page);
+	await openMore(dialog);
 	await dialog.getByRole('switch', { name: OPTION }).click();
 	await exportButton(dialog).click();
 	let done = page.getByRole('dialog', { name: 'Your file is ready' });
@@ -156,6 +160,7 @@ test('desktop: after one use the OCR engine works offline', async ({ page, conte
 	await expect(page.getByRole('option')).toHaveCount(8, { timeout: 30_000 });
 	await page.getByRole('button', { name: 'Export', exact: true }).click();
 	dialog = page.getByRole('dialog', { name: 'Export PDF' });
+	await openMore(dialog);
 	const option = dialog.getByRole('switch', { name: OPTION });
 	await expect(option).toBeVisible({ timeout: 30_000 });
 	if (!(await option.isChecked())) await option.click();

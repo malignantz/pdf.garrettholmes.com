@@ -549,6 +549,25 @@ export function filledBlankCount(pages: readonly Pick<PageRef, 'stamps'>[]): num
 	return n;
 }
 
+/**
+ * The options under the export dialog's "More options" that are switched on and shown for
+ * this export, as short names in the order they appear. Nothing switched on may be hidden:
+ * the dialog opens the section when this is not empty, and names them on the collapsed button.
+ */
+export function moreOptionsOn(
+	f: Pick<ExportForm, 'split' | 'fit' | 'number' | 'watermark' | 'stripMetadata' | 'ocr'>,
+	ctx: { pictures: boolean; canSplit: boolean; redacting: boolean; scanned: number }
+): string[] {
+	const on: string[] = [];
+	if (ctx.canSplit && f.split) on.push('Split');
+	if (!ctx.pictures && f.fit) on.push('Size limit');
+	if (f.number) on.push('Page numbers');
+	if (f.watermark) on.push('Watermark');
+	if (!ctx.pictures && (f.stripMetadata || ctx.redacting)) on.push('Remove metadata');
+	if (!ctx.pictures && ctx.scanned > 0 && f.ocr) on.push('Searchable text');
+	return on;
+}
+
 /** Why "Keep filled blanks editable" cannot be used with the other options, or null. */
 export function keepBlanksBlocked(f: Pick<ExportForm, 'lockForms'>, ctx: { redactions: number; hasForm: boolean }): string | null {
 	if (ctx.redactions > 0) return 'Not available when redacting: the form is turned into page content.';

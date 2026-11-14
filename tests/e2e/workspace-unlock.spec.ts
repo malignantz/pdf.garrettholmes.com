@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { Locator, Page } from '@playwright/test';
 import { test, expect } from './fixtures';
+import { openMore } from './export-helpers';
 
 const corpus = (name: string) => fileURLToPath(new URL(`../corpus/files/${name}`, import.meta.url));
 const FILE = 'unlock-aes-256-all.pdf';
@@ -49,6 +50,7 @@ test('split export says the limits were removed too', async ({ page }) => {
 	test.setTimeout(120_000);
 	await open(page);
 	const dialog = await exportDialog(page);
+	await openMore(dialog);
 	await dialog.getByRole('switch', { name: 'Split into several files' }).click();
 	await dialog.getByRole('button', { name: 'Export', exact: true }).click();
 	const done = page.getByRole('dialog', { name: 'Your files are ready' });
