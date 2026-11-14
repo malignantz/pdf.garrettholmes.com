@@ -111,7 +111,7 @@ describe('tags: one tagged file, all its pages (tier 1)', () => {
 		const src = await openCorpus('tags-basic.pdf');
 		const res = await run(all(src), [src]);
 		const c = keptCheck(res);
-		expect(c.detail).toContain(`${basicMeta.elements} structure elements, ${basicMeta.alt} picture descriptions (/Alt), ${basicMeta.actualText} replacement texts`);
+		expect(c.detail).toContain(`${basicMeta.elements} structure elements, ${basicMeta.alt} picture descriptions (/Alt), ${basicMeta.actualText} replacement text (/ActualText)`);
 		await sameTrees(src, res, [0, 1, 2]);
 		expect(await canonicalTree(qpdf, res.bytes)).toEqual(await canonicalTree(qpdf, src.bytes));
 		const cat = await catalogOf(res.bytes);
@@ -285,7 +285,7 @@ describe('tags: subsets, order, blank pages (tier 2)', () => {
 		const src = await openCorpus('tags-basic.pdf');
 		const res = await run([ref(src, 1), ref(src, 2)], [src]);
 		const c = keptCheck(res);
-		expect(c.detail).toContain('15 structure elements, 2 picture descriptions (/Alt), 1 replacement texts');
+		expect(c.detail).toContain('15 structure elements, 2 picture descriptions (/Alt), 1 replacement text (/ActualText)');
 		await sameTrees(src, res, [1, 2]);
 		const raw = (await expanded(res.bytes)).toString('latin1');
 		expect(raw).not.toContain('Introduction');
@@ -296,7 +296,7 @@ describe('tags: subsets, order, blank pages (tier 2)', () => {
 		const src = await openCorpus('tags-basic.pdf');
 		const res = await run([ref(src, 0), ref(src, 2)], [src]);
 		const c = keptCheck(res);
-		expect(c.detail).toContain('14 structure elements, 1 picture descriptions (/Alt), 0 replacement texts');
+		expect(c.detail).toContain('14 structure elements, 1 picture description (/Alt), 0 replacement texts');
 		const raw = (await expanded(res.bytes)).toString('latin1');
 		for (const s of ['A grey test picture', 'H two O', 'water']) expect(found(Buffer.from(raw, 'latin1'), s), s).toBe(false);
 		const [p1] = await trees(res.bytes);

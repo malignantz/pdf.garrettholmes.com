@@ -1523,9 +1523,11 @@ export async function verifyTags(qpdf: Qpdf, bytes: Uint8Array, expected: Expect
 	return {
 		name: 'tags',
 		ok: true,
-		detail: `Accessibility tags kept: ${c.elements} structure elements, ${c.alt} picture descriptions (/Alt), ${c.actualText} replacement texts (/ActualText), all tied to their page content (${Math.round(now() - t0)} ms).`
+		detail: `Accessibility tags kept: ${n(c.elements, 'structure element')}, ${n(c.alt, 'picture description')} (/Alt), ${n(c.actualText, 'replacement text')} (/ActualText), all tied to their page content (${Math.round(now() - t0)} ms).`
 	};
 }
+
+const n = (k: number, word: string) => `${k} ${word}${k === 1 ? '' : 's'}`;
 
 function describe(problems: Problem[]): string {
 	const by = new Map<string, number>();
