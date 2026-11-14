@@ -28,6 +28,8 @@
  *                     elements for page 1 (and none for page 2): must export without tags.
  *   tags-xobject.pdf  1 page whose tagged paragraph sits inside a Form XObject (MCR with
  *                     /Stm, the form has /StructParents).
+ *   tags-odd.pdf      1 page: an indirect /S and catalog /Lang, /ActualText in PDFDocEncoding,
+ *                     an empty name (/Scope /) in an attribute (survey finds).
  *   tags-scan.pdf     page 1 of ocr-scans.pdf (a typed letter scanned at 300 ppi), its whole
  *                     content one Figure with /Alt: for OCR with tags kept.
  *   tags-photo.pdf    page 1 of print-cap.pdf (a 500 ppi photo JPEG and a label), its whole
@@ -408,6 +410,29 @@ async function qpdfOut(args, inputs) {
 	return q.FS.readFile(out);
 }
 
+/** Unusual but valid spellings seen on the survey: an indirect /S and /Lang, PDFDocEncoding text, an empty name. */
+function odd() {
+	const pdf = new Pdf();
+	const font = pdf.add(helv);
+	const pages = pdf.alloc();
+	const p1 = pdf.alloc();
+	const root = pdf.alloc();
+	const doc = pdf.alloc();
+	const para = pdf.alloc();
+	const role = pdf.add('/P');
+	const lang = pdf.add('(de-DE)');
+	const c = pdf.stream('<< >>', `/P << /MCID 0 >> BDC ${text(12, 72, 720, 'Seltsame Schreibweisen')} EMC`);
+	pdf.set(pages, `<< /Type /Pages /Kids [${R(p1)}] /Count 1 >>`);
+	pdf.set(p1, `<< /Type /Page /Parent ${R(pages)} /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${R(font)} >> >> /Contents ${R(c)} /StructParents 0 >>`);
+	pdf.set(doc, `<< /Type /StructElem /S /Document /P ${R(root)} /K [${R(para)}] >>`);
+	// ActualText in PDFDocEncoding: \x8d and \x8e are curly double quotes there.
+	pdf.set(para, `<< /Type /StructElem /S ${R(role)} /P ${R(doc)} /Pg ${R(p1)} /K 0 /ActualText (\x8dQuoted\x8e) /A << /O /Table /Scope / >> >>`);
+	const pt = pdf.add(`<< /Nums [0 [${R(para)}]] >>`);
+	pdf.set(root, `<< /Type /StructTreeRoot /K ${R(doc)} /ParentTree ${R(pt)} /ParentTreeNextKey 1 >>`);
+	const cat = pdf.add(`<< /Type /Catalog /Pages ${R(pages)} /StructTreeRoot ${R(root)} /MarkInfo << /Marked true >> /Lang ${R(lang)} >>`);
+	return pdf.bytes(cat);
+}
+
 export default async function generateTagsCorpus(write, outDir = path.join(here, 'files')) {
 	const basicBytes = basic();
 	const counts = { elements: 16, alt: 2, actualText: 1 };
@@ -429,6 +454,7 @@ export default async function generateTagsCorpus(write, outDir = path.join(here,
 	write('tags-second.pdf', second(), { pages: 2, label: 'tags', tagged: true, elements: 4, alt: 0, actualText: 1 });
 	write('tags-broken.pdf', basic({ broken: true }), { pages: 3, label: 'tags', tagged: true, expect: 'tags dropped: ParentTree names the wrong elements' });
 	write('tags-xobject.pdf', xobject(), { pages: 1, label: 'tags', tagged: true, elements: 3 });
+	write('tags-odd.pdf', odd(), { pages: 1, label: 'tags', tagged: true, elements: 2, note: 'indirect /S and catalog /Lang, PDFDocEncoding /ActualText, an empty name in an attribute' });
 	// Pages made by the other generators (they run first), tagged here as one Figure each.
 	const one = async (file) => qpdf(['--empty', '--pages', '/in.pdf', '1', '--', '/out.pdf'], { '/in.pdf': fs.readFileSync(path.join(outDir, file)) });
 	write('tags-scan.pdf', await tagWholePage(await one('ocr-scans.pdf'), 'A scanned typed letter'), {

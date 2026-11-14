@@ -382,6 +382,20 @@ describe('tags: several tagged files merged (tier 2)', () => {
 		expect(await catalogOf(res.bytes)).toMatch(/\/Lang \(en-US\)/);
 	}, T);
 
+	it('unusual spellings: indirect /S and /Lang, PDFDocEncoding text, an empty name', async () => {
+		const a = await openCorpus('tags-basic.pdf');
+		const o = await openCorpus('tags-odd.pdf');
+		const whole = await run(all(o), [o], { compress: true });
+		keptCheck(whole);
+		const [t] = await trees(whole.bytes);
+		expect(altsOf(t)).toEqual(['\u201cQuoted\u201d']);
+		const res = await run([...all(a), ...all(o)], [a, o], { compress: true });
+		keptCheck(res);
+		// The second file's language (an indirect string in its catalog) goes on its top element.
+		const out = await trees(res.bytes);
+		expect((out[3]!.children![0] as Node).lang).toBe('de-DE');
+	}, T);
+
 	it('declines trees that map one role two ways or share an ID', async () => {
 		const a = await openCorpus('tags-basic.pdf');
 		const b = await openCorpus('tags-locked.pdf');

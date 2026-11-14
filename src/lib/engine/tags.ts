@@ -92,6 +92,12 @@ export const MAX_OBJECTS = 500_000;
 const MAX_STREAM_CHARS = 32 * 1024 * 1024;
 /** Text keys dropped from an element whose content lies partly on removed pages. */
 const PRUNED_TEXT = ['/Alt', '/ActualText', '/E', '/T'];
+/**
+ * The empty name (`/`), which qpdf's JSON prints but cannot read back: a key with it as its
+ * value is left out of the copy (and of the expected tree), an array entry becomes null. It
+ * names nothing (seen as /Role and /Scope values of form and table attributes).
+ */
+const EMPTY_NAME = '/';
 const TEXT_KEYS = ['/Alt', '/ActualText', '/E', '/T'];
 
 // ------------------------------------------------------------------------------ dumps
@@ -1089,16 +1095,18 @@ export async function graftTags(qpdf: Qpdf, assembled: Uint8Array, plan: Extract
 					updates[objKey(nr)] = { value: T(d, depth + 1) };
 					return nr;
 				}
-				if (Array.isArray(v)) return v.map((x) => T(x, depth + 1));
+				if (Array.isArray(v)) return v.map((x) => (x === EMPTY_NAME ? null : T(x, depth + 1)));
 				if (isDict(v)) {
 					const d: Dict = {};
-					for (const [k, x] of Object.entries(v)) d[k] = T(x, depth + 1);
+					for (const [k, x] of Object.entries(v)) if (x !== EMPTY_NAME) d[k] = T(x, depth + 1);
 					return d;
 				}
 				return v;
 			};
-			const langP = src.catalog['/Lang'];
-			const lang = pi > 0 && langP !== undefined && textOf(String(langP)) !== textOf(String(lang0 ?? '')) ? langP : undefined;
+			// The catalog /Lang may be an indirect string: compared and copied by value.
+			const langP = val(so, src.catalog['/Lang']);
+			const lang0v = val(plan.parts[0].tags.model.objects, lang0);
+			const lang = pi > 0 && typeof langP === 'string' && textOf(langP) !== (typeof lang0v === 'string' ? textOf(lang0v) : '') ? langP : undefined;
 			graft.push({ model: src, map, keep, newElem, off, lang, pageOut, T });
 			off += nextKey(src);
 		}
@@ -1140,7 +1148,7 @@ export async function graftTags(qpdf: Qpdf, assembled: Uint8Array, plan: Extract
 						d[k] = stripSummary(v);
 						continue;
 					}
-					d[k] = T(v, 1);
+					if (v !== EMPTY_NAME) d[k] = T(v, 1);
 				}
 				if (e.parent < 0 && g.lang !== undefined && d['/Lang'] === undefined) d['/Lang'] = g.lang;
 				d['/P'] = parent ?? 'ROOT';
@@ -1338,10 +1346,10 @@ function canonCtx(model: TagModel, pageNo: (i: number) => number | undefined, ke
 			if (isDict(d) && (d['/Type'] === '/Page' || d['/Type'] === '/Pages' || d['/Type'] === '/Catalog' || isAnnotDict(d))) return null;
 			return cv(d, depth + 1, new Set([...seen, v]));
 		}
-		if (Array.isArray(v)) return v.map((x) => cv(x, depth + 1, seen));
+		if (Array.isArray(v)) return v.map((x) => (x === EMPTY_NAME ? null : cv(x, depth + 1, seen)));
 		if (isDict(v)) {
 			const out: Record<string, Json> = {};
-			for (const k of Object.keys(v).sort()) out[k] = cv(v[k], depth + 1, seen);
+			for (const k of Object.keys(v).sort()) if (v[k] !== EMPTY_NAME) out[k] = cv(v[k], depth + 1, seen);
 			return out;
 		}
 		return typeof v === 'string' ? textOf(v) : v;
@@ -1372,7 +1380,7 @@ function canonCtx(model: TagModel, pageNo: (i: number) => number | undefined, ke
 					const arr = arrAt(objects, v);
 					v = arr ? arr.map(strip) : strip(v);
 				}
-				keys[k] = cv(v, 0, new Set());
+				if (v !== EMPTY_NAME) keys[k] = cv(v, 0, new Set());
 			}
 			const kids: string[] = [];
 			e.kids.forEach((kid, k) => {
@@ -1383,7 +1391,7 @@ function canonCtx(model: TagModel, pageNo: (i: number) => number | undefined, ke
 					kids.push(`m${kid.stm ? '' : 'P'}${p}:${kid.mcid}`);
 				} else kids.push(`o${objId(kid.obj)}`);
 			});
-			lines.push(JSON.stringify([e.dict['/S'], e.parent < 0 ? -1 : number.get(model.elems[e.parent].ref), keys, kids]));
+			lines.push(JSON.stringify([cv(e.dict['/S'], 0, new Set()), e.parent < 0 ? -1 : number.get(model.elems[e.parent].ref), keys, kids]));
 		}
 		return lines;
 	};
@@ -1469,9 +1477,18 @@ export function textOf(v: string): string {
 	if (bytes[0] === 0xfe && bytes[1] === 0xff) return `u:${new TextDecoder('utf-16be').decode(bytes.subarray(2))}`;
 	if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) return `u:${new TextDecoder('utf-8').decode(bytes.subarray(3))}`;
 	let t = '';
-	for (const b of bytes) t += String.fromCharCode(b);
+	for (const b of bytes) t += PDF_DOC[b] ?? String.fromCharCode(b);
 	return `u:${t}`;
 }
+
+/** PDFDocEncoding where it differs from Latin-1 (PDF 32000-1 annex D.2). */
+const PDF_DOC: Record<number, string> = {
+	0x18: '\u02d8', 0x19: '\u02c7', 0x1a: '\u02c6', 0x1b: '\u02d9', 0x1c: '\u02dd', 0x1d: '\u02db', 0x1e: '\u02da', 0x1f: '\u02dc',
+	0x80: '\u2022', 0x81: '\u2020', 0x82: '\u2021', 0x83: '\u2026', 0x84: '\u2014', 0x85: '\u2013', 0x86: '\u0192', 0x87: '\u2044',
+	0x88: '\u2039', 0x89: '\u203a', 0x8a: '\u2212', 0x8b: '\u2030', 0x8c: '\u201e', 0x8d: '\u201c', 0x8e: '\u201d', 0x8f: '\u2018',
+	0x90: '\u2019', 0x91: '\u201a', 0x92: '\u2122', 0x93: '\ufb01', 0x94: '\ufb02', 0x95: '\u0141', 0x96: '\u0152', 0x97: '\u0160',
+	0x98: '\u0178', 0x99: '\u017d', 0x9a: '\u0131', 0x9b: '\u0142', 0x9c: '\u0153', 0x9d: '\u0161', 0x9e: '\u017e', 0xa0: '\u20ac'
+};
 
 function counts(lines: string[]): { elements: number; alt: number; actualText: number } {
 	let alt = 0;
