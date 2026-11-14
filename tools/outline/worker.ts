@@ -299,6 +299,9 @@ async function leakOf(out: Uint8Array, word: string): Promise<string> {
 			const before = enc === 'latin1' ? buf[at - 1] : enc === 'utf16be' ? buf[at - 1] : buf[at - 2];
 			const after = enc === 'latin1' ? buf[at + b.length] : enc === 'utf16be' ? buf[at + b.length + 1] : buf[at + b.length];
 			if (letter(before) || letter(after) || buf[at - 1] === 0x2f) continue;
+			// qpdf's own comments in the --qdf copy ("%% Contents for page 1") are not the file's.
+			const line = buf.lastIndexOf(0x0a, at);
+			if (buf[line + 1] === 0x25 && buf[line + 2] === 0x25) continue;
 			const head = buf.lastIndexOf('\n%% Original object ID', at);
 			const dict = buf.subarray(head < 0 ? 0 : head, Math.min(at, (head < 0 ? 0 : head) + 4000)).toString('latin1');
 			if (/\/Length[123] |\/Subtype \/(Type1C|CIDFontType0C|OpenType)|\/Type \/EmbeddedFile|\/Type \/Metadata/.test(dict.split('stream\n')[0])) continue;
