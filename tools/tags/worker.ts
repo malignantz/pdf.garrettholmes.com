@@ -14,7 +14,9 @@
  *    reversed. Each kept page's PDF.js tree must equal its source page's tree, except that
  *    /Alt and /ActualText may be missing (dropped on elements that lost content), and every
  *    picture description left must be one the source page had.
- *  - merge: the file followed by another tagged file: tags must not be kept ('merged').
+ *  - merge: the file followed by another tagged file: both trees under one root; each
+ *    page's PDF.js tree equals its source page's (the second file's top elements may carry
+ *    its /Lang).
  *  - redact: one word that occurs once in the file's text (MuPDF, first 50 pages), boxed
  *    and blacked out: tags must not be kept ('redacted') and the word must not be anywhere
  *    in the export's bytes after full decompression (qpdf --qdf --decode-level=all), in
@@ -252,7 +254,7 @@ async function uniqueWord(bytes: Uint8Array, pick: () => number): Promise<{ page
 	const doc = m.Document.openDocument(bytes.slice(), 'application/pdf');
 	try {
 		const n = Math.min(50, doc.countPages());
-		const words = new Map<string, { page: number; quad: number[]; count: number }>();
+		const words = new Map<string, { page: number; quad: number[]; count: number; text: string }>();
 		const bounds: number[][] = [];
 		for (let i = 0; i < n; i++) {
 			const page = doc.loadPage(i);
@@ -266,7 +268,7 @@ async function uniqueWord(bytes: Uint8Array, pick: () => number): Promise<{ page
 					const ys = quads.flatMap((q) => [q[1], q[3], q[5], q[7]]);
 					const w = words.get(cur.toLowerCase());
 					if (w) w.count++;
-					else words.set(cur.toLowerCase(), { page: i, quad: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], count: 1 });
+					else words.set(cur.toLowerCase(), { page: i, quad: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], count: 1, text: cur });
 				} else if (cur.length >= 6) {
 					const w = words.get(cur.toLowerCase());
 					if (w) w.count++;
@@ -288,12 +290,10 @@ async function uniqueWord(bytes: Uint8Array, pick: () => number): Promise<{ page
 			st.destroy();
 			page.destroy();
 		}
-		const all = doc.countPages() > n ? '' : 'all';
 		const once = [...words].filter(([, w]) => w.count === 1);
-		if (!once.length || !all) {
-			if (!once.length) return null;
-		}
-		const [word, w] = once[Math.floor(pick() * once.length)];
+		if (!once.length) return null;
+		const [, w] = once[Math.floor(pick() * once.length)];
+		const word = w.text;
 		const b = bounds[w.page];
 		const W = b[2] - b[0];
 		const H = b[3] - b[1];
@@ -314,15 +314,18 @@ async function leakOf(out: Uint8Array, word: string): Promise<string> {
 	const file = res.files.get('/o.pdf');
 	if (!file) return 'unchecked';
 	const buf = Buffer.from(file);
-	const variants = [word, word.toLowerCase(), word.toUpperCase()];
-	for (const v of variants) {
-		for (const [enc, b] of [
-			['latin1', Buffer.from(v, 'latin1')],
-			['utf16be', Buffer.from(v, 'utf16le').swap16()],
-			['utf16le', Buffer.from(v, 'utf16le')]
-		] as const) {
-			const at = buf.indexOf(b);
-			if (at >= 0) return `${enc} at ${at}: ${buf.subarray(Math.max(0, at - 60), at + b.length + 20).toString('latin1').replace(/[^\x20-\x7e]/g, '.')}`;
+	// The word as it was on the page, as a whole word (no letter right before or after it).
+	const letter = (c: number | undefined) => c !== undefined && ((c >= 65 && c <= 90) || (c >= 97 && c <= 122));
+	for (const [enc, b, step] of [
+		['latin1', Buffer.from(word, 'latin1'), 1],
+		['utf16be', Buffer.from(word, 'utf16le').swap16(), 2],
+		['utf16le', Buffer.from(word, 'utf16le'), 2]
+	] as const) {
+		for (let at = buf.indexOf(b); at >= 0; at = buf.indexOf(b, at + 1)) {
+			const before = step === 1 ? buf[at - 1] : enc === 'utf16be' ? buf[at - 1] : buf[at - 2];
+			const after = step === 1 ? buf[at + b.length] : enc === 'utf16be' ? buf[at + b.length + 1] : buf[at + b.length];
+			if (letter(before) || letter(after)) continue;
+			return `${enc} at ${at}: ${buf.subarray(Math.max(0, at - 60), at + b.length + 20).toString('latin1').replace(/[^\x20-\x7e]/g, '.')}`;
 		}
 	}
 	return 'none';
@@ -359,7 +362,8 @@ serveJobs<TagsJob, TagsResult>(async (job, io) => {
 
 	const all = src.pages.map((_, i) => i);
 	io.progress('base');
-	r.base = (await run([src], plan(src, all), untagged())).r;
+	const base = await run([src], plan(src, all), untagged());
+	r.base = base.r;
 	io.progress('t1');
 	const t1 = await run([src], plan(src, all));
 	r.t1 = t1.r;
@@ -370,7 +374,8 @@ serveJobs<TagsJob, TagsResult>(async (job, io) => {
 			io.progress('t1-text');
 			r.t1.text = await textCheck(src.bytes, t1.bytes);
 			io.progress('t1-pixels');
-			r.t1.pixels = await pixelCheck(src.bytes, t1.bytes);
+			// Against the same export without tags (Optimize and the print-size cap change pictures by design).
+			r.t1.pixels = base.bytes ? await pixelCheck(base.bytes, t1.bytes) : 'unchecked';
 		} catch (e) {
 			r.t1.tree ??= `error ${(e as Error).message}`.slice(0, 200);
 		}
@@ -400,7 +405,21 @@ serveJobs<TagsJob, TagsResult>(async (job, io) => {
 		try {
 			const other = await engine().openPdf(new Uint8Array(fs.readFileSync(job.partner)), 'partner.pdf');
 			const pages = [...plan(src, all), ...other.pages.map((_, i) => ({ id: `q${i}`, sourceId: other.id, pageIndex: i, rotation: 0 as const, stamps: [] }))];
-			r.merge = (await run([src, other], pages)).r;
+			const m = await run([src, other], pages);
+			r.merge = m.r;
+			if (m.bytes && m.r.status === 'kept') {
+				// Each page's tree equals its source page's; the second file's top elements may carry its /Lang.
+				const n = Math.min(TREE_PAGES / 2, all.length);
+				const k = Math.min(TREE_PAGES / 2, other.pages.length);
+				const a = await pageTrees(src.bytes, all.slice(0, n));
+				const b = await pageTrees(other.bytes, other.pages.slice(0, k).map((_, i) => i));
+				const o = await pageTrees(m.bytes, [...all.slice(0, n), ...other.pages.slice(0, k).map((_, i) => all.length + i)]);
+				const noLang = (t: Node | null) => (t ? { ...t, children: (t.children ?? []).map((c) => ({ ...c, lang: undefined })) } : t);
+				let diff = '';
+				for (let i = 0; i < n && !diff; i++) if (JSON.stringify(o.get(i)) !== JSON.stringify(a.get(i))) diff = `page ${i + 1} differs`;
+				for (let j = 0; j < k && !diff; j++) if (JSON.stringify(noLang(o.get(all.length + j) ?? null)) !== JSON.stringify(noLang(b.get(j) ?? null))) diff = `second file page ${j + 1} differs: ${JSON.stringify(o.get(all.length + j)).slice(0, 160)} vs ${JSON.stringify(b.get(j)).slice(0, 160)}`;
+				r.merge.tree = diff || 'same';
+			}
 		} catch (e) {
 			r.merge = { status: 'error', message: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
 		}

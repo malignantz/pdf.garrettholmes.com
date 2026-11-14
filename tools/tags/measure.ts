@@ -143,7 +143,7 @@ function report() {
 			md.push(`- ${name === 'del1' ? 'One page removed' : name === 'halfKept' ? 'Random half kept' : 'Pages reversed'}: kept ${k.length} of ${s.length} (independent check same ${k.filter((x) => x.tree === 'same').length}), not kept ${s.filter((x) => x.status === 'dropped').length}, failed ${s.filter((x) => x.status === 'error').length}`);
 		}
 		const mg = step(withTree, 'merge');
-		md.push(`- Merged with another tagged file: not kept ${mg.filter((x) => x.status === 'dropped' && x.reason === 'merged').length} of ${mg.length}; kept ${mg.filter((x) => x.status === 'kept').length}; failed ${mg.filter((x) => x.status === 'error').length}`);
+		md.push(`- Merged with another tagged file: kept ${mg.filter((x) => x.status === 'kept').length} of ${mg.length} (independent check same ${mg.filter((x) => x.status === 'kept' && x.tree === 'same').length}); not kept ${mg.filter((x) => x.status === 'dropped').length} (${count(mg.filter((x) => x.status === 'dropped'), (x) => x.reason ?? '?').map(([k, v]) => `${k} ${v}`).join(', ')}); failed ${mg.filter((x) => x.status === 'error').length}`);
 		const rd = step(withTree, 'redact').filter((x) => x.status !== 'skipped');
 		md.push(`- One word blacked out: exported ${rd.filter((x) => x.status !== 'error').length} of ${rd.length} (refused ${rd.filter((x) => x.status === 'error').length}); tags not kept ${rd.filter((x) => x.status === 'dropped' && x.reason === 'redacted').length}; the word found in the decompressed bytes: ${rd.filter((x) => x.leak && x.leak !== 'none' && x.leak !== 'unchecked').length}`);
 		md.push('');
@@ -152,10 +152,10 @@ function report() {
 		md.push(...table('tags kept, by source', count(withTree.filter((r) => r.t1?.status === 'kept'), (r) => r.source)));
 		md.push(...table('tags not kept, by source', count(withTree.filter((r) => r.t1?.status === 'dropped'), (r) => r.source)));
 		md.push(...table('tags not kept, by producer family', count(withTree.filter((r) => r.t1?.status === 'dropped'), (r) => r.producer)));
-		const odd = withTree.filter((r) => (r.t1?.status === 'kept' && (r.t1.tree !== 'same' || r.t1.text !== 'same' || r.t1.pixels !== 'same')) || ['del1', 'halfKept', 'rev'].some((n) => (r[n as 'del1'] as StepResult | undefined)?.status === 'kept' && (r[n as 'del1'] as StepResult).tree !== 'same'));
+		const odd = withTree.filter((r) => (r.t1?.status === 'kept' && (r.t1.tree !== 'same' || r.t1.text !== 'same' || r.t1.pixels !== 'same')) || ['del1', 'halfKept', 'rev', 'merge'].some((n) => (r[n as 'del1'] as StepResult | undefined)?.status === 'kept' && (r[n as 'del1'] as StepResult).tree !== 'same'));
 		if (odd.length) {
 			md.push('Independent check differences:', '');
-			for (const r of odd) md.push(`- ${r.sha256.slice(0, 12)} (${r.source}): t1 tree ${r.t1?.tree}; text ${r.t1?.text}; pixels ${r.t1?.pixels}; del1 ${r.del1?.tree ?? '-'}; half ${r.halfKept?.tree ?? '-'}; rev ${r.rev?.tree ?? '-'}`.slice(0, 600));
+			for (const r of odd) md.push(`- ${r.sha256.slice(0, 12)} (${r.source}): t1 tree ${r.t1?.tree}; text ${r.t1?.text}; pixels ${r.t1?.pixels}; del1 ${r.del1?.tree ?? '-'}; half ${r.halfKept?.tree ?? '-'}; rev ${r.rev?.tree ?? '-'}; merge ${r.merge?.tree ?? '-'}`.slice(0, 600));
 			md.push('');
 		}
 		const errs = withTree.flatMap((r) => (['t1', 'del1', 'halfKept', 'rev', 'merge'] as const).filter((n) => r[n]?.status === 'error').map((n) => `${n}: ${r[n]!.code}: ${r[n]!.message}`));
