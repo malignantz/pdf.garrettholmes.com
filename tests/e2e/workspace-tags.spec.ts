@@ -1,7 +1,8 @@
 /**
  * Accessibility tags kept in exports (engine/tags.ts): a tagged file exported whole, and with
  * a page removed, still has its structure tree and the dialog says nothing about it; merged
- * with another file, the export has none and the dialog says why in one plain line.
+ * with another tagged file, one tree; with a file without tags, the export has none and the
+ * dialog says why in one plain line.
  * Screenshots of that line at 360 px and desktop with TAGS_SHOTS=<dir>.
  */
 import { readFileSync } from 'node:fs';
@@ -41,14 +42,14 @@ async function exportAndDownload(page: Page) {
 test.describe('desktop', () => {
 	test.beforeEach(({}, info) => test.skip(info.project.name !== 'desktop-chrome', 'desktop flow'));
 
-	test('a tagged file keeps its tags, whole and with a page removed; merged, the dialog says why not', async ({ page }) => {
+	test('a tagged file keeps its tags, whole and with a page removed, and the dialog says nothing about it', async ({ page }) => {
 		test.setTimeout(180_000);
 		await open(page, 'tags-basic.pdf');
 		await expect(page.getByRole('option')).toHaveCount(3, { timeout: 30_000 });
 		let { done, raw } = await exportAndDownload(page);
 		expect(raw).toMatch(/\/StructTreeRoot \d+ 0 R/);
 		expect(raw).toContain('(A grey test picture)');
-		await expect(done.getByText(/Accessibility tags/)).toHaveCount(0);
+		await expect(done.getByText(/Accessibility tags \(used/)).toHaveCount(0);
 		// Under Details, one calm line.
 		await done.getByText('Details').click();
 		await expect(done.getByText(/Accessibility tags: passed\. Accessibility tags kept: 16 structure elements/)).toBeVisible();
@@ -63,14 +64,22 @@ test.describe('desktop', () => {
 		expect(raw).toMatch(/\/StructTreeRoot \d+ 0 R/);
 		expect(raw).toContain('(A grey test picture)');
 		expect(raw).not.toContain('Introduction');
-		await expect(done.getByText(/Accessibility tags/)).toHaveCount(0);
+		await expect(done.getByText(/Accessibility tags \(used/)).toHaveCount(0);
 	});
 
-	test('merged with another file: no tags, and one plain line says why', async ({ page }) => {
+	test('merged with another tagged file: one tree; with a file without tags: none, and one plain line says why', async ({ page }) => {
 		test.setTimeout(180_000);
 		await open(page, 'tags-basic.pdf', 'tags-second.pdf');
 		await expect(page.getByRole('option')).toHaveCount(5, { timeout: 30_000 });
-		const { done, raw } = await exportAndDownload(page);
+		let { done, raw } = await exportAndDownload(page);
+		expect(raw).toMatch(/\/StructTreeRoot \d+ 0 R/);
+		expect(raw).toContain('(Second file, second page)');
+		await expect(done.getByText(/Accessibility tags \(used/)).toHaveCount(0);
+		await page.keyboard.press('Escape');
+		await expect(done).toBeHidden();
+		await page.locator('input[type=file]').first().setInputFiles([corpus('multi.pdf')]);
+		await expect(page.getByRole('option')).toHaveCount(11, { timeout: 30_000 });
+		({ done, raw } = await exportAndDownload(page));
 		await expect(done.getByText(MERGED)).toBeVisible();
 		expect(raw).not.toMatch(/\/StructTreeRoot/);
 	});
@@ -85,8 +94,8 @@ for (const [name, viewport] of [
 		test.setTimeout(120_000);
 		const ctx = await browser.newContext({ baseURL, viewport, deviceScaleFactor: 1, hasTouch: name === 'phone' });
 		const page = await ctx.newPage();
-		await open(page, 'tags-basic.pdf', 'tags-second.pdf');
-		await expect(page.getByRole('option')).toHaveCount(5, { timeout: 30_000 });
+		await open(page, 'tags-basic.pdf', 'multi.pdf');
+		await expect(page.getByRole('option')).toHaveCount(9, { timeout: 30_000 });
 		await page.getByRole('button', { name: 'Export', exact: true }).click();
 		await page.getByRole('dialog', { name: 'Export PDF' }).getByRole('button', { name: 'Export', exact: true }).click();
 		const line = page.getByText(MERGED);
