@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>LibreOffice WASM trial</title>
+<p id="s">loading</p>
+<script type="module">
+	import { WorkerBrowserConverter } from '/v/x/matbee-libreoffice-converter-2.7.2/package/dist/browser.js';
+	const P = '/v/x/matbee-libreoffice-converter-2.7.2/package/wasm/';
+	const s = document.getElementById('s');
+	const t0 = performance.now();
+	window.trial = { ready: false, error: null, progress: [] };
+	const conv = new WorkerBrowserConverter({
+		sofficeJs: P + 'soffice.js', sofficeWasm: P + 'soffice.wasm', sofficeData: P + 'soffice.data',
+		sofficeWorkerJs: P + 'soffice.worker.js',
+		browserWorkerJs: '/web/lo-worker.js',
+		onProgress: (p) => { window.trial.progress.push([Math.round(performance.now() - t0), p.percent, p.message]); s.textContent = p.message; },
+	});
+	window.trial.crossOriginIsolated = self.crossOriginIsolated;
+	conv.initialize().then(() => {
+		window.trial.ready = true;
+		window.trial.readyMs = performance.now() - t0;
+		s.textContent = 'ready';
+	}, (e) => { window.trial.error = String(e && e.message || e); s.textContent = 'error ' + window.trial.error; });
+	// Convert a document served under /docs/; returns {ms, pdfBase64} or {error}.
+	window.convertUrl = async (url) => {
+		const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+		const t = performance.now();
+		try {
+			const r = await conv.convert(bytes, { outputFormat: 'pdf' }, url.split('/').pop());
+			const ms = performance.now() - t;
+			let bin = '';
+			const d = r.data;
+			for (let i = 0; i < d.length; i += 0x8000) bin += String.fromCharCode.apply(null, d.subarray(i, i + 0x8000));
+			return { ms, pdf: btoa(bin) };
+		} catch (e) {
+			return { ms: performance.now() - t, error: String(e && e.message || e) };
+		}
+	};
+</script>

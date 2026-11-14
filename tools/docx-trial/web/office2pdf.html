@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>office2pdf trial</title>
+<p id="s">loading</p>
+<script type="module">
+	// office2pdf (Rust: OOXML parser -> Typst layout -> PDF), built to wasm with wasm-bindgen
+	// (vendor/office2pdf, see README). Metric-compatible fonts are registered from our origin.
+	import init, { Office2PdfConverter } from '/v/office2pdf/pkg/office2pdf.js';
+	const F = '/v/lo-desktop/squashfs-root/opt/libreoffice26.8/share/fonts/truetype/';
+	const fonts = ['Carlito-Regular', 'Carlito-Bold', 'Carlito-Italic', 'Carlito-BoldItalic',
+		'Caladea-Regular', 'Caladea-Bold', 'Caladea-Italic', 'Caladea-BoldItalic',
+		'LiberationSans-Regular', 'LiberationSans-Bold', 'LiberationSans-Italic', 'LiberationSans-BoldItalic',
+		'LiberationSerif-Regular', 'LiberationSerif-Bold', 'LiberationSerif-Italic', 'LiberationSerif-BoldItalic',
+		'LiberationMono-Regular', 'LiberationMono-Bold', 'DejaVuSans', 'DejaVuSans-Bold', 'NotoSans-Regular', 'NotoSans-Bold'];
+	const t0 = performance.now();
+	window.trial = { ready: false, error: null };
+	let conv;
+	(async () => {
+		await init({ module_or_path: '/v/office2pdf/pkg/office2pdf_bg.wasm' });
+		conv = new Office2PdfConverter();
+		for (const f of fonts) conv.registerFont(new Uint8Array(await (await fetch(F + f + '.ttf')).arrayBuffer()));
+		window.trial.ready = true;
+		window.trial.readyMs = performance.now() - t0;
+	})().catch((e) => { window.trial.error = String(e); });
+	window.convertUrl = async (url) => {
+		const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+		const t = performance.now();
+		try {
+			const r = conv.convertDocxToPdf(bytes);
+			const d = r.pdf;
+			const ms = performance.now() - t;
+			let bin = '';
+			for (let i = 0; i < d.length; i += 0x8000) bin += String.fromCharCode.apply(null, d.subarray(i, i + 0x8000));
+			return { ms, pdf: btoa(bin), warnings: r.warningCount };
+		} catch (e) { return { ms: performance.now() - t, error: String(e && e.message || e) }; }
+	};
+</script>

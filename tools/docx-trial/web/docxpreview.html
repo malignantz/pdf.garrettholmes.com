@@ -1,0 +1,41 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>docx-preview trial</title>
+<link rel="stylesheet" href="/web/fonts.css">
+<style id="pagestyle"></style>
+<style>
+	body { margin: 0; }
+	.docx-wrapper { background: none !important; padding: 0 !important; display: block !important; }
+	.docx-wrapper > section.docx { box-shadow: none !important; margin: 0 !important; break-after: page; overflow: hidden; }
+</style>
+<div id="out"></div>
+<script src="/v/x/jszip/package/dist/jszip.min.js"></script>
+<script src="/v/x/docx-preview-0.4.1/package/dist/docx-preview.min.js"></script>
+<script>
+	// HTML route with page geometry: docx-preview lays the document out as page-sized <section>s
+	// (it breaks pages only at explicit breaks and section ends, plus its own experimental splitting),
+	// then the browser's print engine writes one PDF page per section (page.pdf() as the best case).
+	window.trial = { ready: true, readyMs: 0 };
+	window.convertUrl = async (url) => {
+		const buf = await (await fetch(url)).arrayBuffer();
+		const t = performance.now();
+		try {
+			const out = document.getElementById('out');
+			out.innerHTML = '';
+			await docx.renderAsync(buf, out, null, {
+				inWrapper: true, ignoreWidth: false, ignoreHeight: false, breakPages: true,
+				renderHeaders: true, renderFooters: true, renderFootnotes: true, renderEndnotes: true,
+				renderComments: false, experimental: true, useBase64URL: true,
+			});
+			const first = out.querySelector('section.docx');
+			if (first) {
+				document.getElementById('pagestyle').textContent =
+					`@page { size: ${first.style.width} ${first.style.minHeight}; margin: 0; }`;
+				for (const s of out.querySelectorAll('section.docx')) s.style.height = s.style.minHeight;
+			}
+			await document.fonts.ready;
+			await Promise.all([...document.images].map((i) => i.decode().catch(() => {})));
+			return { ms: performance.now() - t, print: true };
+		} catch (e) { return { ms: performance.now() - t, error: String(e) }; }
+	};
+</script>
