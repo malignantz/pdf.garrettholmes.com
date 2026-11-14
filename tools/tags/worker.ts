@@ -160,10 +160,17 @@ function norm(n: Node): Node {
 	return o;
 }
 
+/**
+ * Without /Alt texts and without elements that hold no content on the page: PDF.js lists an
+ * element on every page its /Pg names, also when all its content lies on another page, and
+ * a pruned tree drops such elements when that other page was removed.
+ */
 function stripAlt(n: Node | null): Node | null {
 	if (!n) return n;
 	const { alt: _a, ...rest } = n;
-	return { ...rest, ...(n.children ? { children: n.children.map((c) => stripAlt(c)!) } : {}) };
+	if (!n.children) return rest;
+	const kids = n.children.map((c) => (c.type ? c : stripAlt(c))).filter((c): c is Node => c !== null && (c.type !== undefined || (c.children?.length ?? 0) > 0));
+	return { ...rest, children: kids };
 }
 function alts(n: Node | null, out: string[] = []): string[] {
 	if (!n) return out;

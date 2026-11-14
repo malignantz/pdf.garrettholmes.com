@@ -4,7 +4,7 @@
  * so everything here is unit-tested in tests/workspace/.
  */
 
-import type { ExportOptions, ExportResult, PageId, PageNumbering, PageRef, Source, VerifyCheck } from '../core/types';
+import type { ExportOptions, ExportResult, PageId, PageNumbering, PageRef, Source, TagsDropReason, VerifyCheck } from '../core/types';
 import { numberingLabels } from '../engine/numbering';
 import type { OutputKind, PictureQuality } from './pictures-plan';
 import type { SplitRule } from './split-plan';
@@ -516,6 +516,25 @@ export function blankFieldsLine(r: ExportResult): string | null {
 	const plain = b.plain === 1 ? '1 stayed as plain text.' : `${b.plain} stayed as plain text.`;
 	if (b.fields === 0) return b.plain === 1 ? 'The filled blank stayed as plain text.' : `The ${b.plain} filled blanks stayed as plain text.`;
 	return b.plain ? `${made} ${plain}` : made;
+}
+
+const TAGS_WHY: Record<TagsDropReason, string> = {
+	redacted: 'something was blacked out',
+	flattened: 'the form answers were locked',
+	merged: 'pages from another file were added',
+	repeated: 'a page is used more than once',
+	damaged: 'the original file’s tags do not match its pages',
+	unsupported: 'they could not be copied exactly',
+	check: 'they did not pass their check'
+};
+
+/**
+ * The result line when a tagged file's export has no accessibility tags, or null (no tagged
+ * file, or the tags were kept: that shows only under Details, as the 'tags' check).
+ */
+export function tagsLine(r: Pick<ExportResult, 'tags'>): string | null {
+	if (!r.tags || r.tags.kept) return null;
+	return `Accessibility tags (used by screen readers) were not kept because ${TAGS_WHY[r.tags.reason]}.`;
 }
 
 /** Number of redaction boxes on the pages of a plan. */
