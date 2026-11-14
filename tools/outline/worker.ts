@@ -84,6 +84,8 @@ export interface OutlineResult {
 	unresolved?: number;
 	actions?: Record<string, number>;
 	viewsFixed?: number;
+	/** Bookmarks with both /Dest and /A (PDF.js reads /A, the engine /Dest). */
+	both?: number;
 	depth?: number;
 	namesCount?: number;
 	namesProblem?: string;
@@ -377,6 +379,7 @@ serveJobs<OutlineJob, OutlineResult>(async (job, io) => {
 		r.unresolved = ins.stats.unresolved;
 		r.actions = ins.stats.actions;
 		r.viewsFixed = ins.stats.viewsFixed;
+		r.both = ins.stats.both;
 		r.depth = ins.stats.depth;
 		r.namesCount = ins.names;
 		r.namesProblem = ins.namesProblem;

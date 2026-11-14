@@ -21,12 +21,15 @@
  *   (a merged file is a new document; whose title would it be?).
  * - Bookmarks: the source's outline tree, pruned to the kept pages. A bookmark whose page is not
  *   in the export goes, and its kept children take its place (same order); a bookmark to a kept
- *   page goes to that page's (first) copy with the same view (/XYZ, /Fit, …); the tree keeps the
- *   source's order when pages are reordered (a bookmark stays with its page). /Dest and /A GoTo,
- *   explicit or named (resolved through /Dests and the /Names /Dests name tree), become explicit
- *   destinations; /A URI is kept; every other action (JavaScript, Launch, GoToR, Named, …) goes
- *   with its bookmark (children lifted). A bookmark without a destination is a heading: it stays
- *   when it keeps a child (or, when the whole file is exported, when it never had any). Colour
+ *   page goes to that page's (first) copy with the same view (/XYZ, /Fit, …, coordinates to six
+ *   significant digits, see `six`). A web link (/A URI) stays when the whole file is exported,
+ *   under a kept bookmark to a page, or when it keeps a child; a heading without destination
+ *   stays when it keeps a child (or, whole file, when it never had any): they belong to no page,
+ *   so to what was removed as much as to what was kept. The tree keeps the source's order when
+ *   pages are reordered (a bookmark stays with its page). /Dest and /A GoTo, explicit or named
+ *   (resolved through /Dests and the /Names /Dests name tree), become explicit destinations;
+ *   every other action (JavaScript, Launch, GoToR, Named, …) goes with its bookmark (children
+ *   lifted), as does a destination that resolves to no page of the file. Colour
  *   (/C) and style (/F) are kept; /SE (a structure element) is not. Several files: each file's
  *   pruned outline, one after the other, in the order the files first appear, with no extra
  *   level above them.
@@ -264,6 +267,11 @@ export interface SourceStats {
 	viewsFixed: number;
 	/** Bookmarks that go to a named destination. */
 	named: number;
+	/**
+	 * Bookmarks with both /Dest and /A (not allowed): /Dest is used, as MuPDF, PDFium and qpdf
+	 * read it (PDF.js reads /A first).
+	 */
+	both: number;
 	/** Named destinations in the source (both forms). */
 	names: number;
 	depth: number;
@@ -337,7 +345,7 @@ function normView(rest: Json[], stats: SourceStats): View {
 
 async function readSourceDoc(qpdf: Qpdf, bytes: Uint8Array, pageCount: number): Promise<SourceDoc | null> {
 	const t0 = now();
-	const stats: SourceStats = { items: 0, unresolved: 0, actions: {}, viewsFixed: 0, named: 0, names: 0, depth: 0 };
+	const stats: SourceStats = { items: 0, unresolved: 0, actions: {}, viewsFixed: 0, named: 0, both: 0, names: 0, depth: 0 };
 	const small = await catalogDump(qpdf, bytes, false);
 	if (!small) return null;
 	const { catalog, trailer } = small;
@@ -510,7 +518,10 @@ async function readSourceDoc(qpdf: Qpdf, bytes: Uint8Array, pageCount: number): 
 				if (c && c.length === 3 && c.every((x) => typeof x === 'number' && x >= 0 && x <= 1)) item.c = (c as number[]).map(six);
 				const f = val(o, d['/F']);
 				if (typeof f === 'number' && Number.isInteger(f) && (f & 3) !== 0) item.f = f & 3;
-				if (d['/Dest'] !== undefined) item.target = dest(d['/Dest']);
+				if (d['/Dest'] !== undefined) {
+					if (d['/A'] !== undefined) stats.both++;
+					item.target = dest(d['/Dest']);
+				}
 				else if (d['/A'] !== undefined) {
 					const a = dictAt(o, d['/A']);
 					const s = a ? val(o, a['/S']) : null;
@@ -640,19 +651,27 @@ interface OutItem {
 	kids: OutItem[];
 }
 
-function prune(items: Item[], part: OutlinePart): OutItem[] {
+/**
+ * The kept bookmarks of one source. `anchored`: the items sit under a kept bookmark to a page (or
+ * the whole file is exported), so those that belong to no page (web links) stay; elsewhere they
+ * go, as a heading without kept children does: they belonged to what was removed as much as to
+ * what was kept.
+ */
+function prune(items: Item[], part: OutlinePart, anchored = part.whole): OutItem[] {
 	const res: OutItem[] = [];
 	for (const it of items) {
-		const kids = prune(it.kids, part);
 		const t = it.target;
+		const o = t && t !== 'bad' && 'page' in t ? part.out.get(t.page) : undefined;
+		const kids = prune(it.kids, part, anchored || o !== undefined);
 		const keep = (target: OutItem['target']) => res.push({ title: it.title, target, open: it.open, ...(it.c ? { c: it.c } : {}), ...(it.f ? { f: it.f } : {}), kids });
 		if (t === 'bad') res.push(...kids);
 		else if (t && 'page' in t) {
-			const o = part.out.get(t.page);
 			if (o === undefined) res.push(...kids);
 			else keep({ out: o, view: t.view });
-		} else if (t && 'uri' in t) keep(t);
-		else if (kids.length || (part.whole && it.kids.length === 0)) keep(null);
+		} else if (t && 'uri' in t) {
+			if (anchored || kids.length) keep(t);
+			else res.push(...kids);
+		} else if (kids.length || (part.whole && it.kids.length === 0)) keep(null);
 		else res.push(...kids);
 	}
 	return res;
@@ -667,6 +686,7 @@ export interface OutlineExpected {
 	names: string[] | null;
 	/** Rewritten links: output page index → their lines. */
 	links: Map<number, string[]>;
+	/** The catalog /Lang written here (as text); one tags.ts wrote is its check's. */
 	lang?: string;
 }
 
@@ -853,10 +873,11 @@ export async function graftOutline(qpdf: Qpdf, assembled: Uint8Array, plan: Outl
 	}
 
 	// Catalog keys tags.ts may have set already.
-	if (plan.lang !== undefined && cat['/Lang'] === undefined) cat['/Lang'] = plan.lang;
+	if (plan.lang !== undefined && cat['/Lang'] === undefined) {
+		cat['/Lang'] = plan.lang;
+		expected.lang = textOf(plan.lang as string);
+	}
 	if (plan.viewer && cat['/ViewerPreferences'] === undefined) cat['/ViewerPreferences'] = plan.viewer;
-	const langV = val(oo, cat['/Lang']);
-	if (isStr(langV)) expected.lang = textOf(langV);
 	updates[objKey(out.catalogRef)] = { value: cat };
 
 	// Document details: a new Info dictionary, no XMP packet in the catalog.

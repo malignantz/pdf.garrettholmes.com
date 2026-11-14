@@ -58,12 +58,12 @@ test.describe('desktop', () => {
 		await page.keyboard.press('Escape');
 		await expect(done).toBeHidden();
 
-		// Page 3 removed: its bookmarks go, a kept child takes its place.
+		// Page 3 removed: its bookmarks go, and the web link under them.
 		await page.getByRole('option').nth(2).hover();
 		await page.getByRole('option').nth(2).locator('[data-action="delete"]').click();
 		await expect(page.getByRole('option')).toHaveCount(3);
 		({ done, file } = await exportAndDownload(page));
-		expect(file.titles).toEqual(['Chapter 1', 'Section 1.1', 'Section 1.2', 'Web page', 'Appendix', 'Last page', '“Quoted” — PDFDoc', 'Short view']);
+		expect(file.titles).toEqual(['Chapter 1', 'Section 1.1', 'Section 1.2', 'Appendix', 'Last page', '“Quoted” — PDFDoc', 'Short view']);
 		await expect(done.getByText(/^Bookmarks /)).toHaveCount(0);
 	});
 

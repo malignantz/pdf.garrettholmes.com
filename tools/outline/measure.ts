@@ -145,6 +145,7 @@ function report() {
 		md.push(`## ${label}: ${list.length} files`, '');
 		md.push(`- Opened: ${opened.length}; with an outline that has items after opening: ${marked.length}; with a title: ${opened.filter((r) => r.title).length}; with named destinations: ${opened.filter((r) => (r.namesCount ?? 0) > 0).length}`);
 		md.push(`- Default export, all pages (Optimize and print-size cap on): bookmarks kept and verified ${kept.length} (${pct(kept.length, t1.length)}), of which kept fully (every bookmark, nothing dropped) ${fully.length}; not kept ${t1.filter((s) => s.status === 'dropped').length}; export failed ${t1.filter((s) => s.status === 'error').length} (the same export without this code failed ${step(marked, 'base').filter((s) => s.status === 'error').length})`);
+		md.push(`- Files with bookmarks that have both /Dest and /A (not allowed; the engine uses /Dest like MuPDF, PDFium and qpdf, PDF.js reads /A): ${marked.filter((r) => r.both).length}`);
 		md.push(`- Kept with some bookmarks dropped by rule: ${marked.filter((r) => r.t1?.status === 'kept' && (r.unresolved || Object.keys(r.actions ?? {}).length)).length} (a destination that resolves to no page ${marked.filter((r) => r.t1?.status === 'kept' && r.unresolved).length}; another action ${marked.filter((r) => r.t1?.status === 'kept' && Object.keys(r.actions ?? {}).length).length})`);
 		md.push(`- Independent check of kept bookmarks (PDF.js: preorder list of title, page, view kind of bookmarks to a page or web address): same ${kept.filter((s) => s.marks === 'same').length} of ${kept.length}; named destinations same ${kept.filter((s) => s.names === 'same').length}; title same ${kept.filter((s) => s.title === 'same').length}`);
 		md.push(`- Title (details) on the default export: kept ${t1.filter((s) => s.info === 'kept').length}, not kept ${t1.filter((s) => s.info && s.info !== 'kept').length} (${count(t1.filter((s) => s.info && s.info !== 'kept'), (s) => s.info!).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'})`);
@@ -184,7 +185,7 @@ function report() {
 					const s = r[n];
 					return s?.status === 'kept' && ((s.marks && s.marks !== 'same') || (s.names && s.names !== 'same') || (s.title && s.title !== 'same')) ? [`${n}: marks ${s.marks}; names ${s.names ?? '-'}; title ${s.title ?? '-'}`] : [];
 				});
-				md.push(`- ${r.sha256.slice(0, 12)} (${r.source}): ${parts.join(' | ')}`.slice(0, 700));
+				md.push(`- ${r.sha256.slice(0, 12)} (${r.source})${r.both ? ` [${r.both} bookmarks with both /Dest and /A: PDF.js reads /A, the engine /Dest]` : ''}: ${parts.join(' | ')}`.slice(0, 700));
 			}
 			md.push('');
 		}
