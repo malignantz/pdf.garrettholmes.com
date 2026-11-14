@@ -3,6 +3,7 @@
  * the fast check against the full `qpdf --check`, and whether they ever disagree.
  *
  *   npm run fastcheck:measure [-- --size 100 --raw 300 --workers 2 --out DIR --only corpus,generated,survey,raw --report-only]
+ *   npm run fastcheck:measure -- --only timing   (the survey sample's own check again, one worker, for times)
  *
  * Files:
  *  - corpus: tests/corpus/files/*.pdf (password files with the manifest's password);
@@ -16,7 +17,7 @@
  * sha256 (even: tuning). Survey files are untrusted data: read only, in child processes
  * with memory and time caps (survey/lib/pool.ts), nothing written next to them or into the repo.
  *
- * Writes results.jsonl (resumable) and report.md to /home/garrett/pdf-survey/out-fast-check/.
+ * Writes results.jsonl (resumable) and measurements.md to /home/garrett/pdf-survey/out-fast-check/.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -45,6 +46,8 @@ if (!path.relative(repoRoot, out).startsWith('..')) throw new Error('output must
 fs.mkdirSync(out, { recursive: true });
 const resFile = path.join(out, 'results.jsonl');
 const only = new Set((args.get('only') ?? 'corpus,generated,survey,raw').split(','));
+/** Every category's jobs are listed (the report covers them all); `only` picks the ones run. */
+const all = new Set(['corpus', 'generated', 'survey', 'raw', 'timing']);
 
 const half = (sha: string): FastJob['half'] => (Number.parseInt(sha[0], 16) % 2 === 0 ? 'tune' : 'held');
 
@@ -62,27 +65,39 @@ function roundRobin<T>(groups: Map<string, T[]>, n: number): T[] {
 }
 
 const jobs: FastJob[] = [];
-if (only.has('corpus')) {
+if (all.has('corpus')) {
+
 	const dir = path.join(repoRoot, 'tests/corpus/files');
 	const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')) as Record<string, { password?: string }>;
 	for (const f of fs.readdirSync(dir).filter((n) => n.endsWith('.pdf')).sort()) {
 		jobs.push({ id: `corpus:${f}`, path: path.join(dir, f), kind: 'corpus', source: 'corpus', half: 'tune', fullFirst: jobs.length % 2 === 1, password: manifest[f]?.password });
 	}
 }
-if (only.has('generated')) {
+if (all.has('generated')) {
+
 	const files = await generate(path.join(out, 'gen'));
 	for (const [n, p] of Object.entries(files)) jobs.push({ id: `generated:${n}`, path: p, kind: 'generated', source: 'generated', half: 'tune', fullFirst: jobs.length % 2 === 1 });
 }
 const profiles = readJsonl<Profile>(args.get('profiles') ?? path.join(PILE, 'out/profiles.jsonl')).filter((p) => p.path.startsWith(`${PILE}/raw/`) && fs.existsSync(p.path));
 const surveyPicked: Profile[] = [];
-if (only.has('survey')) {
+if (all.has('survey')) {
+
 	const big = profiles.filter((p) => p.size >= 2e6 && p.size <= 45e6 && (p.status === 'ok' || p.status === 'partial')).sort((a, b) => b.size - a.size);
 	const bySource = new Map<string, Profile[]>();
 	for (const p of big) bySource.set(p.source, [...(bySource.get(p.source) ?? []), p]);
 	surveyPicked.push(...roundRobin(bySource, args.num('size', 100)));
 	for (const p of surveyPicked) jobs.push({ id: p.sha256, path: p.path, kind: 'survey', source: p.source, half: half(p.sha256), fullFirst: Number.parseInt(p.sha256[1], 16) % 2 === 1 });
 }
-if (only.has('raw')) {
+if (all.has('timing')) {
+
+	// The survey sample again, check of the file as given only, one worker: for times on a quieter box.
+	const big = profiles.filter((p) => p.size >= 2e6 && p.size <= 45e6 && (p.status === 'ok' || p.status === 'partial')).sort((a, b) => b.size - a.size);
+	const bySource = new Map<string, Profile[]>();
+	for (const p of big) bySource.set(p.source, [...(bySource.get(p.source) ?? []), p]);
+	for (const p of roundRobin(bySource, args.num('size', 100))) jobs.push({ id: `timing:${p.sha256}`, path: p.path, kind: 'survey', source: p.source, half: half(p.sha256), fullFirst: false, rawOnly: true });
+}
+if (all.has('raw')) {
+
 	const taken = new Set(surveyPicked.map((p) => p.sha256));
 	const rest = profiles.filter((p) => !taken.has(p.sha256) && p.size <= 60e6).sort((a, b) => a.sha256.localeCompare(b.sha256));
 	const groups = new Map<string, Profile[]>();
@@ -93,18 +108,19 @@ if (only.has('raw')) {
 	for (const p of roundRobin(groups, args.num('raw', 300))) jobs.push({ id: p.sha256, path: p.path, kind: 'survey', source: p.source, half: half(p.sha256), fullFirst: false, rawOnly: true });
 }
 
+const catOf = (j: FastJob) => (j.id.startsWith('timing:') ? 'timing' : j.kind === 'survey' ? (j.rawOnly ? 'raw' : 'survey') : j.kind);
 const done = new Set(readJsonl<FastResult>(resFile).map((r) => r.id));
-const todo = jobs.filter((j) => !done.has(j.id));
+const todo = jobs.filter((j) => !done.has(j.id) && only.has(catOf(j)));
 
 if (!args.flag('report-only')) {
-	console.log(`${jobs.length} jobs (${jobs.filter((j) => j.kind === 'corpus').length} corpus, ${jobs.filter((j) => j.kind === 'generated').length} generated, ${jobs.filter((j) => j.kind === 'survey' && !j.rawOnly).length} survey, ${jobs.filter((j) => j.rawOnly).length} raw); ${todo.length} to do`);
+	console.log(`${todo.length} of ${jobs.length} jobs to run (${jobs.filter((j) => j.kind === 'corpus').length} corpus, ${jobs.filter((j) => j.kind === 'generated').length} generated, ${jobs.filter((j) => j.kind === 'survey' && !j.rawOnly).length} survey, ${jobs.filter((j) => j.rawOnly).length} raw)`);
 	const t0 = Date.now();
 	let n = 0;
 	// Big files first, so the pool's two workers are not left with one long file at the end.
 	todo.sort((a, b) => Number(a.rawOnly ?? false) - Number(b.rawOnly ?? false) || fs.statSync(b.path).size - fs.statSync(a.path).size);
 	await runPool<FastJob, FastResult>(todo, {
 		script: path.join(here, 'worker.ts'),
-		workers: Math.min(2, args.num('workers', 2)),
+		workers: only.has('timing') ? 1 : Math.min(2, args.num('workers', 2)),
 		memMB: args.num('mem-mb', 3500),
 		timeoutMs: args.num('timeout', 900) * 1000,
 		recycleAfter: 10,
@@ -157,7 +173,8 @@ function report() {
 		['Corpus', rows.filter((r) => r.kind === 'corpus')],
 		['Survey, tuning half (exported)', rows.filter((r) => r.kind === 'survey' && r.half === 'tune' && r.open !== undefined)],
 		['Survey, held-out half (exported)', rows.filter((r) => r.kind === 'survey' && r.half === 'held' && r.open !== undefined)],
-		['Survey, raw check only', rows.filter((r) => r.kind === 'survey' && r.open === undefined)]
+		['Survey, raw check only', rows.filter((r) => r.kind === 'survey' && r.open === undefined && !r.id.startsWith('timing:'))],
+		['Survey sample, check of the file as given, one worker on a quieter box', rows.filter((r) => r.id.startsWith('timing:'))]
 	] as const) {
 		if (!list.length) continue;
 		md.push(`## ${label}: ${list.length} files`, '');
@@ -211,6 +228,6 @@ function report() {
 			md.push('');
 		}
 	}
-	fs.writeFileSync(path.join(out, 'report.md'), md.join('\n') + '\n');
+	fs.writeFileSync(path.join(out, 'measurements.md'), md.join('\n') + '\n');
 	console.log(md.slice(0, 40).join('\n'));
 }
