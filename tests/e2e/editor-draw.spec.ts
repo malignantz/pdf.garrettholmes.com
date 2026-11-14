@@ -698,7 +698,7 @@ test.describe('phone tool bar', () => {
 			await expect(menu).toBeVisible();
 			await page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== 'running'));
 			const items = menu.getByRole('menuitemradio');
-			expect(await items.evaluateAll((els) => els.map((e) => e.textContent!.trim()))).toEqual(['Initials', 'Date', 'Check', 'Dot', 'Redact']);
+			expect(await items.evaluateAll((els) => els.map((e) => e.textContent!.trim()))).toEqual(['Initials', 'Date', 'Check', 'Dot', 'Redact', 'Crop']);
 			const mb = (await menu.boundingBox())!;
 			const barBox = (await bar.boundingBox())!;
 			expect(mb.x).toBeGreaterThanOrEqual(0);
@@ -850,14 +850,14 @@ test.describe('phone tool bar', () => {
 		await page.keyboard.press('ArrowUp');
 		await expect(item('Initials')).toBeFocused();
 		await page.keyboard.press('End');
-		await expect(item('Redact')).toBeFocused();
+		await expect(item('Crop')).toBeFocused();
 		await page.keyboard.press('Home');
 		await page.keyboard.press('ArrowDown');
 		await expect(item('Dot')).toBeFocused();
 		await page.keyboard.press('ArrowUp');
 		await expect(item('Initials')).toBeFocused();
 		await page.keyboard.press('ArrowLeft');
-		await expect(item('Redact')).toBeFocused();
+		await expect(item('Crop')).toBeFocused();
 		await page.keyboard.press('ArrowRight');
 		await expect(item('Initials')).toBeFocused();
 		// Arrow keys stay in the sheet: the page did not change.
