@@ -40,6 +40,7 @@ import {
 import type { Rotation } from '../core/types';
 import { parsePng } from './images';
 import { NUMBER_CAP_EM, numberLayout, type NumberingJob } from './numbering';
+import { WATERMARK_OPACITY, watermarkOps, type WatermarkJob } from './watermark';
 import {
 	LANE_PAD_PT,
 	TEXT_MARGIN_PT,
@@ -91,7 +92,9 @@ export async function applyStamps(
 	/** Receives plain-language warnings (e.g. a stamp lies under an annotation). */
 	warnings?: string[],
 	/** Keep filled blanks editable: these linked stamps become form fields (blank-fields.ts). */
-	fields?: BlankFieldsJob
+	fields?: BlankFieldsJob,
+	/** Text across every page, on top of everything else (watermark.ts). */
+	watermark?: WatermarkJob
 ): Promise<Uint8Array> {
 	const { lib } = deps;
 	const { PDFDocument, PDFName, PDFArray, PDFDict, PDFRef, PDFRawStream, PDFContentStream, ParseSpeeds } = lib;
@@ -114,6 +117,7 @@ export async function applyStamps(
 		const label = numbering?.labels[i] ?? null;
 		if (job) work.push(job);
 		else if (label !== null) work.push({ pageIndex: i, stamps: [], expected: numbering!.expected[i] });
+		else if (watermark) work.push({ pageIndex: i, stamps: [], expected: watermark.expected[i] });
 	}
 	for (const j of jobs) if (!pages[j.pageIndex]) work.push(j); // reported below
 
@@ -159,6 +163,8 @@ export async function applyStamps(
 	const gsRef = ctx.register(
 		ctx.obj({ Type: 'ExtGState', CA: 1, ca: 1, BM: 'Normal', SMask: 'None', LW: 1, LC: 0, LJ: 0, D: [[], 0] })
 	);
+	const wmOpacity = watermark ? WATERMARK_OPACITY[watermark.watermark.strength] : 1;
+	const wmGsRef = watermark ? ctx.register(ctx.obj({ Type: 'ExtGState', CA: wmOpacity, ca: wmOpacity, BM: 'Normal' })) : null;
 
 	for (const job of work) {
 		const page = pages[job.pageIndex];
@@ -429,6 +435,19 @@ export async function applyStamps(
 			const num = numberOps(ops, geom, numbering.numbering, label, f, fontName, job.pageIndex);
 			body.push(...num.ops);
 			drawn.push(num.rect);
+		}
+		if (watermark && wmGsRef) {
+			// Last, so it lies over the page and every stamp; not counted in `drawn` (an
+			// annotation over it hides nothing that matters).
+			const f = await getFont();
+			if (!fontName) {
+				fonts ??= sub('Font');
+				fontName = name(fonts, 'PgsF');
+				fonts.set(PDFName.of(fontName), f.ref);
+			}
+			const wmName = name(extg, 'PgsWm');
+			extg.set(PDFName.of(wmName), wmGsRef);
+			body.push(...watermarkOps(lib, geom, watermark.watermark, f, fontName, wmName, watermark.redactions[job.pageIndex] ?? [], job.pageIndex));
 		}
 		if (warnings && coveredByAnnotation(lib, leaf, drawn)) {
 			warnings.push(`On page ${job.pageIndex + 1}, an annotation on the page (such as a comment, sticker or form field) lies over a stamp and may hide part of it.`);

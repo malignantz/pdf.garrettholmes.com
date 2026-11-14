@@ -68,6 +68,7 @@ import { scannedPagesOf } from './ocr/eligible';
 import { addLayers, readScans, throwIfCancelled, verifyTextLayer, type OcrBackend, type OcrTrace, type ScanReading } from './ocr/stage';
 import type { WrittenWord } from './ocr/layer';
 import { graftTags, planTags, verifyTags, type GraftResult, type TagsPlan } from './tags';
+import { verifyWatermark, watermarkJob } from './watermark';
 
 export interface EngineAssets {
 	qpdf: QpdfLoader;
@@ -506,6 +507,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			if (bad) throw new EngineError('unsupported', `The page numbers use characters the stamp font cannot draw: ${bad}`);
 			numbering = { numbering: options.numbering, labels, expected };
 		}
+		const wmJob = await watermarkJob(font, options.watermark, pages, expected);
 
 		const warnings: string[] = [];
 		for (const s of used) {
@@ -577,7 +579,8 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			redactJobs.push({ pageIndex: i, boxes, expected: expected[i], overlays });
 			allowedText.push([
 				...ref.stamps.flatMap((s) => (s.kind === 'text' ? normalizeStampText(s.text).split('\n').filter(Boolean) : [])),
-				...(numbering?.labels[i] ? [numbering.labels[i]!] : [])
+				...(numbering?.labels[i] ? [numbering.labels[i]!] : []),
+				...(wmJob ? [wmJob.watermark.text] : [])
 			]);
 		});
 		if (redactJobs.length) bytes = await applyRedactions(deps, bytes, redactJobs, warnings);
@@ -604,12 +607,12 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			});
 		}
 		let made: MadeField[] = [];
-		if (jobs.length || numbering) {
+		if (jobs.length || numbering || wmJob) {
 			const [lib, fk] = await Promise.all([pdfLib(), font.fontkit()]);
 			const stampDeps = { lib, fontkit: fk, fontBytes: () => font.bytes(), artifacts };
 			const assembled = bytes;
 			const stampWarnings: string[] = [];
-			const ordinary = await applyStamps(stampDeps, assembled, jobs, assetList, numbering ?? undefined, stampWarnings);
+			const ordinary = await applyStamps(stampDeps, assembled, jobs, assetList, numbering ?? undefined, stampWarnings, undefined, wmJob ?? undefined);
 			bytes = ordinary;
 			if (blanks && blanks.ids.size) {
 				// Build with fields, prove them against the ordinary build, and draw any that fail
@@ -619,7 +622,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 				for (let round = 0; round < 2 && ids.size; round++) {
 					const job: BlankFieldsJob = { ids, made: [], plain: new Map() };
 					const w: string[] = [];
-					const out = await applyStamps(stampDeps, assembled, jobs, assetList, numbering ?? undefined, w, job);
+					const out = await applyStamps(stampDeps, assembled, jobs, assetList, numbering ?? undefined, w, job, wmJob ?? undefined);
 					for (const [id, why] of job.plain) {
 						blanks.plain.set(id, why);
 						ids.delete(id);
@@ -688,7 +691,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 
 		// (f) Verify.
 		// Whether the structure check is the last slow part (the checks below it are not quick).
-		const last = !formsRan && redactJobs.length === 0 && !numbering && made.length === 0 && layered.size === 0;
+		const last = !formsRan && redactJobs.length === 0 && !numbering && !wmJob && made.length === 0 && layered.size === 0;
 		const checkProgress = report && ((done: number, total: number) => report({ stage: 'check', done, total, last }));
 		const verifyAll = async (file: Uint8Array, w: string[]) => {
 			const checks = await verify(file, expected, password, options.stripMetadata, used, w, checkProgress);
@@ -698,6 +701,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			if (made.length) checks.push(await verifyBlankFields(deps, file, made, password));
 			if (layered.size) checks.push(await verifyTextLayer(await pdfjs(), file, layered, password));
 			if (tagged) checks.push(await verifyTags(qpdf, file, tagged.expected, password));
+			if (wmJob) checks.push(await verifyWatermark(deps, file, wmJob.watermark, pages.length, password));
 			checks.push(...stageChecks);
 			return checks;
 		};

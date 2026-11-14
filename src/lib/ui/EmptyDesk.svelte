@@ -22,7 +22,7 @@
 	const features: { icon: IconName; title: string; line: string }[] = [
 		{ icon: 'duplicate', title: 'Combine and rearrange', line: 'Merge files, then reorder, rotate or delete pages.' },
 		{ icon: 'sign', title: 'Sign and fill in', line: 'Add your signature, type on the page, fill in form fields.' },
-		{ icon: 'highlight', title: 'Mark up', line: 'Highlight, add check marks, dates and page numbers.' },
+		{ icon: 'highlight', title: 'Mark up', line: 'Highlight, add check marks, dates, page numbers or a watermark such as DRAFT.' },
 		{ icon: 'redact', title: 'Black out private details', line: 'Redaction that truly removes what is under the box.' },
 		{ icon: 'shrink', title: 'Make it smaller', line: 'Shrink a file to fit an email limit.' },
 		{ icon: 'lock', title: 'Lock, unlock, convert', line: 'Add or remove a password. Unlock files that block printing or copying. Turn photos into a PDF.' }

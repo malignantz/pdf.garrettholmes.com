@@ -142,5 +142,6 @@ export function pictureExportOptions(o: ExportOptions): ExportOptions {
 	const out: ExportOptions = { filename: o.filename, compress: false, stripMetadata: o.stripMetadata };
 	if (o.flattenForms) out.flattenForms = true;
 	if (o.numbering) out.numbering = o.numbering;
+	if (o.watermark) out.watermark = o.watermark;
 	return out;
 }
