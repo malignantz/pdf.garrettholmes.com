@@ -124,6 +124,11 @@ async function samePixels(a: Uint8Array, b: Uint8Array, p: number) {
 const job = (read: OcrRead, pageIndex = 0, userRotation: LayerPage['userRotation'] = 0): LayerPage => ({ pageIndex, userRotation, read, dpi: DPI });
 
 describe('OCR: which pages qualify', () => {
+	it('offers a scan whose picture size is stored as references', async () => {
+		const qpdf = new Qpdf(nodeAssets().qpdf);
+		expect(await scannedPagesOf(qpdf, mupdf, corpus('ocr-indirect-size.pdf'), [{ width: W, height: H }])).toEqual([0]);
+	});
+
 	it('tries only picture pages of 200 ppi and more without any text', async () => {
 		const qpdf = new Qpdf(nodeAssets().qpdf);
 		const bytes = corpus('ocr-scans.pdf');

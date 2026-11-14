@@ -123,14 +123,15 @@ function appendContent(doc, page, text) {
 }
 
 /** A page of size pw × ph that is only `img`, stretched over it. */
-function picturePage(doc, img, pw, ph) {
+function picturePage(doc, img, pw, ph, indirectSize = false) {
 	const page = doc.addPage([pw, ph]);
+	const num = (n) => (indirectSize ? doc.context.register(doc.context.obj(n)) : n);
 	const ref = doc.context.register(
 		doc.context.stream(zlib.deflateSync(img.px, { level: 9 }), {
 			Type: 'XObject',
 			Subtype: 'Image',
-			Width: img.w,
-			Height: img.h,
+			Width: num(img.w),
+			Height: num(img.h),
 			ColorSpace: 'DeviceGray',
 			BitsPerComponent: 8,
 			Filter: 'FlateDecode'
@@ -176,6 +177,15 @@ export default async function generateOcrCorpus(write) {
 		eligible: [0, 1, 2, 7],
 		searchable: [0, 7],
 		declined: [1, 2]
+	});
+	// Some scanner software stores the picture's /Width and /Height as separate objects.
+	const letter = await typed(LETTER, 300, 0.7);
+	const doc = await PDFDocument.create();
+	picturePage(doc, letter, W, H, true);
+	write('ocr-indirect-size.pdf', await doc.save({ useObjectStreams: false, addDefaultPage: false }), {
+		pages: 1,
+		note: 'Make scanned pages searchable: a 300 ppi scan whose image /Width and /Height are indirect references (qpdf lists them as "n 0 R"); the page must still be offered',
+		eligible: [0]
 	});
 }
 

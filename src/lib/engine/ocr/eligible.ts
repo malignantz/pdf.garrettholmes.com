@@ -27,6 +27,8 @@ export const MIN_COVER = 0.85;
 export const MAX_RENDER_PIXELS = 25_000_000;
 export const MAX_IMAGE_PIXELS = 36_000_000;
 
+const isRef = (v: unknown): boolean => typeof v === 'string' && /^\d+ \d+ R$/.test(v);
+
 /** Pages whose images could make them eligible (qpdf only; no MuPDF). */
 export async function imageCandidates(qpdf: Qpdf, bytes: Uint8Array, pages: PageSize[]): Promise<number[]> {
 	const res = await qpdf.run({ args: ['--json=2', '--json-key=pages', '/c.pdf'], inputs: { '/c.pdf': bytes } });
@@ -44,6 +46,8 @@ export async function imageCandidates(qpdf: Qpdf, bytes: Uint8Array, pages: Page
 		// Pixels a picture needs to cover 85% of the page at 200 ppi (rounded, as below).
 		const need = MIN_COVER * ((size.width / 72) * (MIN_PPI - 0.5)) * ((size.height / 72) * (MIN_PPI - 0.5));
 		const ok = (p.images ?? []).some((im) => {
+			// A size stored as a reference ("7 0 R") is not followed here: MuPDF decides.
+			if (isRef(im.width) || isRef(im.height)) return true;
 			const w = Number(im.width);
 			const h = Number(im.height);
 			return Number.isFinite(w) && Number.isFinite(h) && w * h >= need * 0.999;

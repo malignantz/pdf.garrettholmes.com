@@ -2764,5 +2764,12 @@
 			"SECRET-INFO-TITLE",
 			"SECRET-INFO-SUBJECT"
 		]
+	},
+	"ocr-indirect-size.pdf": {
+		"pages": 1,
+		"note": "Make scanned pages searchable: a 300 ppi scan whose image /Width and /Height are indirect references (qpdf lists them as \"n 0 R\"); the page must still be offered",
+		"eligible": [
+			0
+		]
 	}
 }
