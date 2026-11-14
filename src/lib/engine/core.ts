@@ -70,6 +70,7 @@ import type { WrittenWord } from './ocr/layer';
 import { graftTags, planTags, verifyTags, type GraftResult, type TagsPlan } from './tags';
 import { verifyWatermark, watermarkJob } from './watermark';
 import { applyCrops, croppedSize, validateCrop, verifyCrops } from './crop';
+import { graftOutline, outlineWork, planOutline, verifyOutline, type OutlineFailure, type OutlineGraft } from './outline';
 
 export interface EngineAssets {
 	qpdf: QpdfLoader;
@@ -104,6 +105,8 @@ export interface EngineOptions {
 	printCapRules?: Partial<CapRules>;
 	/** false: never keep accessibility tags (today's behaviour before tags.ts), for measurement tools only. */
 	keepTags?: boolean;
+	/** false: never keep the title, bookmarks and named destinations (before outline.ts), for measurement tools only. */
+	keepOutline?: boolean;
 }
 
 export interface LosslessPasses {
@@ -442,8 +445,8 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		sources: Source[],
 		assetList: Asset[],
 		control?: ExportControl,
-		/** A second build of the same plan without tags, after the first one's tags check failed. */
-		again?: { noTags: TagsDropReason; reading: ScanReading | null; started: number }
+		/** A second build of the same plan without tags (or bookmarks, or details), after the first one's check of them failed. */
+		again?: { noTags?: TagsDropReason; noBookmarks?: boolean; noInfo?: boolean; reading: ScanReading | null; started: number }
 	): Promise<ExportResult> {
 		const started = again?.started ?? now();
 		const { pages } = plan;
@@ -529,7 +532,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		throwIfCancelled(control);
 
 		// Accessibility tags: whether this export can keep its source's structure tree (tags.ts).
-		const tagsPlan: TagsPlan = again
+		const tagsPlan: TagsPlan = again?.noTags
 			? { kind: 'drop', reason: again.noTags }
 			: options_.keepTags === false
 				? { kind: 'none' }
@@ -549,6 +552,28 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			} else tagsInfo = { kept: false, reason: 'unsupported' };
 		} else if (tagsPlan.kind === 'drop') debug(`tags: not kept (${tagsPlan.reason})`);
 		const artifacts = tagged !== null;
+
+		// (a1b) Title, document details, bookmarks and named destinations (outline.ts).
+		const outlinePlan =
+			options_.keepOutline === false
+				? null
+				: await planOutline(qpdf, pages, byId, used, { redaction: hasRedaction, stripMetadata: options.stripMetadata, noBookmarks: again?.noBookmarks, noInfo: again?.noInfo });
+		let outlined: OutlineGraft | null = null;
+		/** What the last 'outline' check found wrong (set by verifyAll). */
+		const outlineFailed: { last: OutlineFailure | null } = { last: null };
+		let bookmarksInfo: ExportResult['bookmarks'] = !outlinePlan || outlinePlan.bookmarks === 'none' ? undefined : outlinePlan.bookmarks === 'keep' ? { kept: true, items: 0 } : { kept: false, reason: outlinePlan.bookmarks.drop };
+		let docInfo = outlinePlan?.infoResult;
+		if (outlinePlan && outlineWork(outlinePlan)) {
+			outlined = await graftOutline(qpdf, bytes, outlinePlan, debug);
+			if (outlined) {
+				bytes = outlined.bytes;
+				if (bookmarksInfo?.kept) bookmarksInfo = { kept: true, items: outlined.items };
+				debug(`outline: ${outlined.items} bookmarks, ${outlined.names} names, ${outlined.links} links, details ${outlinePlan.info ? 'kept' : 'none'}, ${outlined.ms} ms`);
+			} else {
+				if (bookmarksInfo?.kept) bookmarksInfo = { kept: false, reason: 'unsupported' };
+				if (docInfo?.kept) docInfo = { kept: false, reason: 'unsupported' };
+			}
+		}
 
 		// (a2) OCR text layers, checked page by page (ocr/stage.ts).
 		let layered = new Map<number, WrittenWord[]>();
@@ -710,6 +735,11 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			if (tagged) checks.push(await verifyTags(qpdf, file, tagged.expected, password));
 			if (wmJob) checks.push(await verifyWatermark(deps, file, wmJob.watermark, pages.length, password));
 			if (anyCrop) checks.push(await verifyCrops(deps, file, crops.rects, password));
+			if (outlined) {
+				const v = await verifyOutline(qpdf, file, outlined.expected, password);
+				outlineFailed.last = v.check.ok ? null : v.failed;
+				checks.push(v.check);
+			}
 			checks.push(...stageChecks);
 			return checks;
 		};
@@ -726,11 +756,19 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 				warnings.push(...w);
 			}
 		}
-		if (!checks.every((c) => c.ok) && tagged && checks.every((c) => c.ok || c.name === 'tags')) {
-			// Only the tags failed their check: the same plan again, without them ("avoid, don't fail").
-			debug(`tags: the export's tags failed their check (${checks.find((c) => c.name === 'tags')?.detail}); exporting without them`);
+		if (!checks.every((c) => c.ok) && (tagged || outlined) && checks.every((c) => c.ok || c.name === 'tags' || c.name === 'outline')) {
+			// Only the tags, or the bookmarks and details, failed their check: the same plan again,
+			// without what failed ("avoid, don't fail").
+			for (const c of checks) if (!c.ok) debug(`${c.name}: the export's ${c.name === 'tags' ? 'tags' : 'title and bookmarks'} failed their check (${c.detail}); exporting without them`);
 			throwIfCancelled(control);
-			return exportPlan(plan, sources, assetList, control, { noTags: 'check', reading, started });
+			const tagsBad = checks.some((c) => !c.ok && c.name === 'tags');
+			return exportPlan(plan, sources, assetList, control, {
+				noTags: again?.noTags ?? (tagsBad ? 'check' : undefined),
+				noBookmarks: again?.noBookmarks || outlineFailed.last?.bookmarks,
+				noInfo: again?.noInfo || outlineFailed.last?.info,
+				reading,
+				started
+			});
 		}
 		if (!checks.every((c) => c.ok)) {
 			throw new EngineError('verification-failed', 'The exported file did not pass its checks, so it was not saved.', checks);
@@ -747,6 +785,8 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		if (ocrReport) result.ocr = ocrReport;
 		if (printCap) result.printCap = printCap;
 		if (tagsInfo) result.tags = tagsInfo;
+		if (bookmarksInfo) result.bookmarks = bookmarksInfo;
+		if (docInfo) result.docInfo = docInfo;
 		return result;
 	}
 

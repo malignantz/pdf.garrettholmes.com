@@ -356,7 +356,13 @@ export interface VerifyCheck {
 		/** Added 2026-11-14: every page carries the watermark text, where and how it was drawn (ExportOptions.watermark). */
 		| 'watermark'
 		/** Added 2026-11-14: every cropped page shows exactly its planned part (PageRef.crop), inside its MediaBox. */
-		| 'crop';
+		| 'crop'
+		/**
+		 * Added 2026-11-14: the document details (Info), bookmarks (outline), named destinations
+		 * and links to them kept from the sources read back as written (ExportResult.bookmarks,
+		 * ExportResult.docInfo).
+		 */
+		| 'outline';
 	ok: boolean;
 	detail: string;
 }
@@ -398,7 +404,36 @@ export interface ExportResult {
 	 * 'tags' check); otherwise `reason` says why it has none.
 	 */
 	tags?: { kept: true } | { kept: false; reason: TagsDropReason };
+	/**
+	 * Added 2026-11-14 (title and bookmarks). Present when a source of the export has bookmarks
+	 * (an outline): `kept` with the number written (0 when none went to a kept page), checked
+	 * (the 'outline' check); otherwise `reason` says why the export has none.
+	 */
+	bookmarks?: { kept: true; items: number } | { kept: false; reason: BookmarksDropReason };
+	/**
+	 * Added 2026-11-14. Present when a source of the export has document details (Info: title,
+	 * author, subject, keywords, creator, creation date): `kept` when the export carries them,
+	 * checked; otherwise `reason` says why not.
+	 */
+	docInfo?: { kept: true } | { kept: false; reason: DocInfoDropReason };
 }
+
+/**
+ * Why an export has none of its source's bookmarks. 'redacted': something is blacked out
+ * (titles can repeat what was hidden); 'damaged': a source's outline is broken (an item
+ * reached twice, not a dictionary, nested too deep, unreadable named destinations); 'large':
+ * more bookmarks (or objects) than an export copies (outline.ts MAX_ITEMS); 'unsupported': the
+ * outline could not be written; 'check': the export's own check of them failed.
+ */
+export type BookmarksDropReason = 'redacted' | 'damaged' | 'large' | 'unsupported' | 'check';
+
+/**
+ * Why an export has no document details. 'removed': "Remove hidden details" was on;
+ * 'redacted': something is blacked out (which removes them); 'merged': pages of several PDF
+ * files (a new document); 'unsupported': they could not be written; 'check': the export's own
+ * check of them failed.
+ */
+export type DocInfoDropReason = 'removed' | 'redacted' | 'merged' | 'unsupported' | 'check';
 
 /**
  * Why an export of a tagged file has no accessibility tags. 'redacted': something is

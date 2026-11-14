@@ -142,6 +142,13 @@ describe('exportSplit', () => {
 		expect(splitNotes({ parts: [part(undefined), part({ kept: false, reason: 'repeated' })] })).toEqual([why]);
 		expect(splitNotes({ parts: [part({ kept: true }), part({ kept: true })] })).toEqual([]);
 	});
+
+	it('says once why bookmarks were not kept, naming the files when not all', () => {
+		const part = (bookmarks: ExportResult['bookmarks']) => ({ name: 'a', pages: '', bytes: 1, result: result(1, bookmarks ? { bookmarks } : {}) });
+		const why = 'Bookmarks were not kept because something was blacked out.';
+		expect(splitNotes({ parts: [part({ kept: true, items: 2 }), part({ kept: false, reason: 'redacted' })] })).toEqual([`File 2: ${why}`]);
+		expect(splitNotes({ parts: [part(undefined), part({ kept: false, reason: 'redacted' })] })).toEqual([why]);
+	});
 });
 
 describe('exportPictures', () => {

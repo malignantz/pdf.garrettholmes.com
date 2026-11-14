@@ -4,7 +4,7 @@
  * so everything here is unit-tested in tests/workspace/.
  */
 
-import type { ExportOptions, ExportResult, PageId, PageNumbering, PageRef, Source, TagsDropReason, VerifyCheck, Watermark } from '../core/types';
+import type { BookmarksDropReason, ExportOptions, ExportResult, PageId, PageNumbering, PageRef, Source, TagsDropReason, VerifyCheck, Watermark } from '../core/types';
 import { numberingLabels } from '../engine/numbering';
 import type { OutputKind, PictureQuality } from './pictures-plan';
 import type { SplitRule } from './split-plan';
@@ -359,6 +359,12 @@ export function plainCheck(
 			return c.ok ? 'Every page carries the watermark.' : 'The watermark is missing from some pages.';
 		case 'crop':
 			return c.ok ? 'Every cropped page shows the part you chose.' : 'Some pages did not come out cropped as you chose.';
+		case 'outline': {
+			if (!c.ok) return 'The title and bookmarks did not read back.';
+			const title = /Document details kept/.test(c.detail);
+			const marks = /bookmarks? kept/.test(c.detail);
+			return title && marks ? 'Title and bookmarks kept.' : marks ? 'Bookmarks kept.' : title ? 'Title kept.' : 'Document settings kept.';
+		}
 	}
 }
 
@@ -610,6 +616,25 @@ const TAGS_WHY: Record<TagsDropReason, string> = {
 export function tagsLine(r: Pick<ExportResult, 'tags'>): string | null {
 	if (!r.tags || r.tags.kept) return null;
 	return `Accessibility tags (used by screen readers) were not kept because ${TAGS_WHY[r.tags.reason]}.`;
+}
+
+const BOOKMARKS_WHY: Record<BookmarksDropReason, string> = {
+	redacted: 'Bookmarks were not kept because something was blacked out.',
+	damaged: 'Bookmarks could not be kept: they are damaged in the original file.',
+	large: 'Bookmarks were not kept because the file has too many of them to copy on this device.',
+	unsupported: 'Bookmarks could not be kept in this file.',
+	check: 'Bookmarks could not be kept in this file.'
+};
+
+/**
+ * The result lines when an export does not keep its source's bookmarks or title, or none (kept,
+ * or not kept by design: details removed on request, or several files merged into a new document).
+ */
+export function outlineLines(r: Pick<ExportResult, 'bookmarks' | 'docInfo'>): string[] {
+	const lines: string[] = [];
+	if (r.bookmarks && !r.bookmarks.kept) lines.push(BOOKMARKS_WHY[r.bookmarks.reason]);
+	if (r.docInfo && !r.docInfo.kept && (r.docInfo.reason === 'check' || r.docInfo.reason === 'unsupported')) lines.push('The document title could not be kept in this file.');
+	return lines;
 }
 
 /** Number of redaction boxes on the pages of a plan. */

@@ -33,7 +33,8 @@
 		"ocr:gate": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/ocr/gate.ts",
 		"unlock:measure": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/unlock/measure.ts",
 		"tags:measure": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/tags/measure.ts",
-		"cropmark:measure": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/crop-watermark/measure.ts"
+		"cropmark:measure": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/crop-watermark/measure.ts",
+		"outline:measure": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/outline/measure.ts"
 	},
 	"devDependencies": {
 		"@playwright/test": "^1.65.0",

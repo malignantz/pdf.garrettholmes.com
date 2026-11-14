@@ -15,7 +15,7 @@
 
 import type { Asset, EngineErrorShape, ExportControl, ExportPlan, ExportProgress, ExportResult, PageId, VerifyCheck, Source } from '../core/types';
 import { isEngineErrorShape } from '../engine/errors';
-import { plural, tagsLine } from './logic';
+import { outlineLines, plural, tagsLine } from './logic';
 import { JPEG_QUALITY, mimeOf, pictureName, ranOutMessage } from './pictures-plan';
 import { partName, partPages, type Part } from './split-plan';
 import { crc32, ZipWriter } from './zip';
@@ -209,6 +209,15 @@ export function splitNotes(out: Pick<SplitOutput, 'parts'>): string[] {
 	});
 	for (const [line, files] of lines) {
 		notes.push(files.length === tagged.length ? line : `${files.length === 1 ? `File ${files[0]}` : `Files ${files.join(', ')}`}: ${line}`);
+	}
+	// Bookmarks or title not kept: the same, counted against the parts that had them.
+	const marked = out.parts.filter((p) => p.result.bookmarks || p.result.docInfo);
+	const marks = new Map<string, number[]>();
+	out.parts.forEach((p, i) => {
+		for (const line of outlineLines(p.result)) marks.set(line, [...(marks.get(line) ?? []), i + 1]);
+	});
+	for (const [line, files] of marks) {
+		notes.push(files.length === marked.length ? line : `${files.length === 1 ? `File ${files[0]}` : `Files ${files.join(', ')}`}: ${line}`);
 	}
 	return notes;
 }

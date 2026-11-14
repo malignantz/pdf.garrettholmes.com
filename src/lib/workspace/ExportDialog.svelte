@@ -59,6 +59,7 @@
 		redactionCount,
 		shrinkSummary,
 		tagsLine,
+		outlineLines,
 		targetBytesFor,
 		WATERMARK_COLORS,
 		WATERMARK_LOOKS,
@@ -514,7 +515,7 @@
 					result,
 					headline: headline(result.checks, result.pageCount),
 					line: null,
-					notes: [...(tagsLine(result) ? [tagsLine(result)!] : []), ...(limitsLine ? [limitsLine] : [])],
+					notes: [...(tagsLine(result) ? [tagsLine(result)!] : []), ...outlineLines(result), ...(limitsLine ? [limitsLine] : [])],
 					files: []
 				};
 			}
@@ -625,7 +626,8 @@
 		'text-layer': 'Searchable text',
 		tags: 'Accessibility tags',
 		watermark: 'Watermark',
-		crop: 'Crop'
+		crop: 'Crop',
+		outline: 'Title and bookmarks'
 	};
 
 	function headline(checks: VerifyCheck[], pageCount: number): string {
@@ -661,8 +663,8 @@
 
 {#snippet checkList(checks: VerifyCheck[], pageCount: number)}
 	<ul class="checks">
-		<!-- Kept accessibility tags are said under Details only (the 'tags' check). -->
-		{#each checks.filter((c) => c.name !== 'tags' || !c.ok) as c, i (i)}
+		<!-- Kept accessibility tags, title and bookmarks are said under Details only. -->
+		{#each checks.filter((c) => (c.name !== 'tags' && c.name !== 'outline') || !c.ok) as c, i (i)}
 			<li class:bad={!c.ok}>
 				<Icon name={c.ok ? 'check' : 'cross'} size={18} />
 				<span>{plainCheck(c, pageCount)}</span>

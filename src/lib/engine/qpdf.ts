@@ -58,6 +58,8 @@ export interface QpdfRunOptions {
 	 * decodes it, so for the long runs (`--check` of a file of scans) this tracks the work done.
 	 */
 	readProgress?: { path: string; report: (read: number, total: number) => void; everyMs?: number };
+	/** Also return stdout as bytes (`QpdfResult.stdoutLatin1`: one character per byte), for output that is not UTF-8 (`--show-object` of a string). */
+	latin1Stdout?: boolean;
 }
 
 export interface QpdfResult {
@@ -65,6 +67,8 @@ export interface QpdfResult {
 	stdout: string;
 	stderr: string;
 	files: Map<string, Uint8Array>;
+	/** With `latin1Stdout`: stdout, one character per byte. */
+	stdoutLatin1?: string;
 }
 
 export interface QpdfLoader {
@@ -123,7 +127,7 @@ export class Qpdf {
 		return next;
 	}
 
-	async #runNow({ args, inputs = {}, outputs = [], outputDirs = [], readProgress }: QpdfRunOptions): Promise<QpdfResult> {
+	async #runNow({ args, inputs = {}, outputs = [], outputDirs = [], readProgress, latin1Stdout }: QpdfRunOptions): Promise<QpdfResult> {
 		const [module, factory] = await Promise.all([this.#getModule(), this.#getFactory()]);
 		const out: number[] = [];
 		const err: number[] = [];
@@ -196,7 +200,9 @@ export class Qpdf {
 					}
 				}
 			}
-			return { code, stdout: decode(out), stderr: decode(err), files };
+			const res: QpdfResult = { code, stdout: decode(out), stderr: decode(err), files };
+			if (latin1Stdout) res.stdoutLatin1 = latin1(out);
+			return res;
 		} finally {
 			if (proc) proc.exitCode = savedExitCode;
 			for (const path of [...written, ...outputs]) {
@@ -260,6 +266,12 @@ function watchReads(fs: EmscriptenFS, path: string, total: number, report: (read
 		}
 		return n;
 	};
+}
+
+function latin1(bytes: number[]): string {
+	let s = '';
+	for (let i = 0; i < bytes.length; i += 8192) s += String.fromCharCode(...bytes.slice(i, i + 8192).map((b) => b & 255));
+	return s;
 }
 
 function decode(bytes: number[]): string {
