@@ -321,7 +321,12 @@ export interface VerifyCheck {
 		/** Every filled blank made into a form field reads back with its answer and rectangle. */
 		| 'blank-fields'
 		/** Every page that got an OCR text layer reads back with its words (ExportOptions.ocr). */
-		| 'text-layer';
+		| 'text-layer'
+		/**
+		 * Added 2026-11-13: the accessibility tags (structure tree) kept from a tagged source
+		 * read back whole and tied to their page content (ExportResult.tags).
+		 */
+		| 'tags';
 	ok: boolean;
 	detail: string;
 }
@@ -357,7 +362,23 @@ export interface ExportResult {
 	 * (finalizing twice to know it exactly would double the work).
 	 */
 	printCap?: { images: number; savedBytes: number; ppi: number };
+	/**
+	 * Added 2026-11-13 (accessibility tags). Present when a source of the export is a tagged
+	 * PDF (it has a structure tree): `kept` when the export carries the tags, checked (the
+	 * 'tags' check); otherwise `reason` says why it has none.
+	 */
+	tags?: { kept: true } | { kept: false; reason: TagsDropReason };
 }
+
+/**
+ * Why an export of a tagged file has no accessibility tags. 'redacted': something is
+ * blacked out; 'flattened': a tagged form is locked (flattened); 'merged': pages from
+ * another file, other than blank pages; 'repeated': a page is used more than once;
+ * 'damaged': the source's tags do not match its pages; 'unsupported': a tree the engine
+ * cannot copy exactly; 'large': more structure elements than an export copies (tags.ts
+ * MAX_ELEMENTS, a time budget); 'check': the export's own check of the tags failed.
+ */
+export type TagsDropReason = 'redacted' | 'flattened' | 'merged' | 'repeated' | 'damaged' | 'unsupported' | 'large' | 'check';
 
 /**
  * "Make scanned pages searchable" (ExportOptions.ocr): OCR adds an invisible text

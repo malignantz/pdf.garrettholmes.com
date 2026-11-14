@@ -15,7 +15,7 @@
 
 import type { Asset, EngineErrorShape, ExportControl, ExportPlan, ExportProgress, ExportResult, PageId, VerifyCheck, Source } from '../core/types';
 import { isEngineErrorShape } from '../engine/errors';
-import { plural } from './logic';
+import { plural, tagsLine } from './logic';
 import { JPEG_QUALITY, mimeOf, pictureName, ranOutMessage } from './pictures-plan';
 import { partName, partPages, type Part } from './split-plan';
 import { crc32, ZipWriter } from './zip';
@@ -200,6 +200,16 @@ export function splitNotes(out: Pick<SplitOutput, 'parts'>): string[] {
 	if (capped) notes.push(`${plural(capped, 'oversized picture')} brought down to 300 dpi.`);
 	const ocr = out.parts.reduce((n, p) => n + (p.result.ocr?.searchable.length ?? 0), 0);
 	if (out.parts.some((p) => p.result.ocr)) notes.push(`${plural(ocr, 'scanned page')} made searchable.`);
+	// Accessibility tags not kept: one line per reason, naming the files when not all of them.
+	const tagged = out.parts.filter((p) => p.result.tags);
+	const lines = new Map<string, number[]>();
+	out.parts.forEach((p, i) => {
+		const line = tagsLine(p.result);
+		if (line) lines.set(line, [...(lines.get(line) ?? []), i + 1]);
+	});
+	for (const [line, files] of lines) {
+		notes.push(files.length === tagged.length ? line : `${files.length === 1 ? `File ${files[0]}` : `Files ${files.join(', ')}`}: ${line}`);
+	}
 	return notes;
 }
 

@@ -23,6 +23,7 @@
  * Every word written is returned with where it was put, for the stage's checks.
  */
 
+import { joinParts, markedContent } from '../marked';
 import type * as PdfLib from '@cantoo/pdf-lib';
 import type { Rotation } from '../../core/types';
 import { graphicsNesting } from '../content';
@@ -186,8 +187,12 @@ export function layoutLines(read: OcrRead, dpi: number): LaidLine[] {
 	return out;
 }
 
-/** Adds the layer to each page in `pages`; pages whose content cannot be wrapped safely are skipped. */
-export async function writeLayers(lib: typeof PdfLib, bytes: Uint8Array, pages: LayerPage[]): Promise<LayerResult> {
+/**
+ * Adds the layer to each page in `pages`; pages whose content cannot be wrapped safely are skipped.
+ * `artifacts` (the export keeps accessibility tags, tags.ts): the layer is `/Artifact` marked
+ * content, after closing any marked-content sequence the page leaves open.
+ */
+export async function writeLayers(lib: typeof PdfLib, bytes: Uint8Array, pages: LayerPage[], artifacts = false): Promise<LayerResult> {
 	const { PDFDocument, PDFName, PDFArray, PDFRef, PDFRawStream, PDFContentStream, PDFString, ParseSpeeds } = lib;
 	const doc = await PDFDocument.load(bytes, { updateMetadata: false, throwOnInvalidObject: true, parseSpeed: ParseSpeeds.Fastest });
 	const ctx = doc.context;
@@ -321,7 +326,9 @@ export async function writeLayers(lib: typeof PdfLib, bytes: Uint8Array, pages: 
 		const pushes = 1 - nest.minDepth;
 		const pops = pushes + nest.finalDepth;
 		const pre = ctx.register(ctx.flateStream('q\n'.repeat(pushes)));
-		const tail = ctx.register(ctx.flateStream(`${nest.inText ? 'ET\n' : ''}${'Q\n'.repeat(pops)}q\n${ops.join('\n')}\nQ\n`));
+		const open = artifacts ? markedContent(joinParts(decoded)).open : 0;
+		const body = artifacts ? `/Artifact BMC\n${ops.join('\n')}\nEMC` : ops.join('\n');
+		const tail = ctx.register(ctx.flateStream(`${nest.inText ? 'ET\n' : ''}${'EMC\n'.repeat(open)}${'Q\n'.repeat(pops)}q\n${body}\nQ\n`));
 		leaf.set(PDFName.of('Contents'), ctx.obj([pre, ...kept, tail]));
 		written.set(job.pageIndex, words);
 	}

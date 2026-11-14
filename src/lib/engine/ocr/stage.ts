@@ -333,7 +333,9 @@ export async function addLayers(
 	bytes: Uint8Array,
 	pages: PageRef[],
 	reading: ScanReading,
-	debug?: (note: string) => void
+	debug?: (note: string) => void,
+	/** The export keeps accessibility tags: the layer is drawn as an artifact (ocr/layer.ts). */
+	artifacts = false
 ): Promise<LayerOutcome> {
 	const want: LayerPage[] = [];
 	for (const i of reading.tried) {
@@ -347,7 +349,7 @@ export async function addLayers(
 		const lib = await deps.pdfLib();
 		let todo = want;
 		for (let round = 0; round < 2 && todo.length; round++) {
-			const r = await writeLayers(lib, bytes, todo);
+			const r = await writeLayers(lib, bytes, todo, artifacts);
 			for (const [p, why] of r.skipped) debug?.(`ocr: page ${p + 1} left without a layer: ${why}`);
 			const failed = await checkLayers(deps, bytes, r.bytes, r.written);
 			for (const [p, why] of failed) debug?.(`ocr: page ${p + 1} failed its check (${why}); its layer is dropped`);

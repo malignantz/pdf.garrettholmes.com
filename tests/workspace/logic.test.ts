@@ -15,7 +15,9 @@ import {
 	pngName,
 	slotAfterSelection,
 	sourceBoundaries,
-	type Rect
+	type Rect,
+	tagsLine,
+	plainCheck
 } from '../../src/lib/workspace/logic';
 import type { PageRef } from '../../src/lib/core/types';
 
@@ -259,5 +261,18 @@ describe('plainCheck', () => {
 			'It opens only with your password.'
 		]);
 		for (const line of out) expect(line).not.toMatch(/qpdf|PDF\.js|XMP|AES/);
+	});
+});
+
+describe('tagsLine', () => {
+	it('says nothing without a tagged file or when the tags were kept, and why when they were not', () => {
+		expect(tagsLine({})).toBeNull();
+		expect(tagsLine({ tags: { kept: true } })).toBeNull();
+		expect(tagsLine({ tags: { kept: false, reason: 'redacted' } })).toBe('Accessibility tags (used by screen readers) were not kept because something was blacked out.');
+		expect(tagsLine({ tags: { kept: false, reason: 'merged' } })).toBe('Accessibility tags (used by screen readers) were not kept because pages from another file were added.');
+		for (const reason of ['flattened', 'repeated', 'damaged', 'unsupported', 'large', 'check'] as const) expect(tagsLine({ tags: { kept: false, reason } })).toMatch(/^Accessibility tags \(used by screen readers\) were not kept because [^.]+\.$/);
+	});
+	it('the kept check reads plainly', () => {
+		expect(plainCheck({ name: 'tags', ok: true, detail: '' }, 3)).toBe('Accessibility tags kept.');
 	});
 });

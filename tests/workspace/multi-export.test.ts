@@ -132,6 +132,16 @@ describe('exportSplit', () => {
 			})
 		).toEqual(['File 2 is still over 10 MB: that is the smallest they can get without damaging text.', '2 oversized pictures brought down to 300 dpi.']);
 	});
+
+	it('says once why accessibility tags were not kept, naming the files when not all', () => {
+		const part = (tags: ExportResult['tags']) => ({ name: 'a', pages: '', bytes: 1, result: result(1, tags ? { tags } : {}) });
+		const why = 'Accessibility tags (used by screen readers) were not kept because a page is used more than once.';
+		expect(splitNotes({ parts: [part({ kept: true }), part({ kept: false, reason: 'repeated' })] })).toEqual([`File 2: ${why}`]);
+		expect(splitNotes({ parts: [part({ kept: false, reason: 'repeated' }), part({ kept: false, reason: 'repeated' })] })).toEqual([why]);
+		// Parts without a tagged file do not count.
+		expect(splitNotes({ parts: [part(undefined), part({ kept: false, reason: 'repeated' })] })).toEqual([why]);
+		expect(splitNotes({ parts: [part({ kept: true }), part({ kept: true })] })).toEqual([]);
+	});
 });
 
 describe('exportPictures', () => {

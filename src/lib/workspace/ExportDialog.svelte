@@ -55,6 +55,7 @@
 		plural,
 		redactionCount,
 		shrinkSummary,
+		tagsLine,
 		targetBytesFor
 	} from './logic';
 
@@ -430,7 +431,7 @@
 					result,
 					headline: headline(result.checks, result.pageCount),
 					line: null,
-					notes: limitsLine ? [limitsLine] : [],
+					notes: [...(tagsLine(result) ? [tagsLine(result)!] : []), ...(limitsLine ? [limitsLine] : [])],
 					files: []
 				};
 			}
@@ -538,7 +539,8 @@
 		visual: 'Pages look the same',
 		'target-size': 'File size',
 		'blank-fields': 'Filled blanks',
-		'text-layer': 'Searchable text'
+		'text-layer': 'Searchable text',
+		tags: 'Accessibility tags'
 	};
 
 	function headline(checks: VerifyCheck[], pageCount: number): string {
@@ -574,7 +576,8 @@
 
 {#snippet checkList(checks: VerifyCheck[], pageCount: number)}
 	<ul class="checks">
-		{#each checks as c, i (i)}
+		<!-- Kept accessibility tags are said under Details only (the 'tags' check). -->
+		{#each checks.filter((c) => c.name !== 'tags' || !c.ok) as c, i (i)}
 			<li class:bad={!c.ok}>
 				<Icon name={c.ok ? 'check' : 'cross'} size={18} />
 				<span>{plainCheck(c, pageCount)}</span>

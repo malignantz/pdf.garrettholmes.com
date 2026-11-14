@@ -371,7 +371,9 @@ function identityKind(d: Dict): string | null {
 	if (t === '/OCG' || t === '/OCMD' || t === '/Sig' || t === '/Bead' || t === '/Thread' || t === '/Filespec' || t === '/StructElem' || t === '/MCR' || t === '/OBJR') return t;
 	if (t === '/Annot' || (d['/Subtype'] !== undefined && d['/Rect'] !== undefined)) return 'annotation';
 	if (d['/FT'] !== undefined || (d['/T'] !== undefined && (d['/Kids'] !== undefined || d['/Parent'] !== undefined))) return 'field';
-	if (d['/S'] !== undefined && d['/P'] !== undefined && (d['/K'] !== undefined || d['/Pg'] !== undefined)) return 'structure';
+	// A struct element without /Type, also an empty one (no /K, no /Pg): MuPDF's deduplication
+	// would merge two equal empty ones into one object reached twice (tags.ts then refuses the tree).
+	if (d['/S'] !== undefined && typeof d['/P'] === 'string' && keyOf(d['/P'] as string) !== null) return 'structure';
 	if (d['/Title'] !== undefined && d['/Parent'] !== undefined) return 'outline item';
 	return null;
 }
