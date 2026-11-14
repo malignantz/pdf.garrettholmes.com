@@ -74,6 +74,8 @@ export type { TagsDropReason };
 
 /** Most struct elements carried (memory: the JSON of the tree is held a few times over). */
 export const MAX_ELEMENTS = 400_000;
+/** Most objects in a tagged source whose tree is read (every object is dumped as JSON once). */
+export const MAX_OBJECTS = 2_000_000;
 /** Most stream data in the tree carried (base64 characters: about 24 MB of data). */
 const MAX_STREAM_CHARS = 32 * 1024 * 1024;
 /** Text keys dropped from an element whose content lies partly on removed pages. */
@@ -657,10 +659,37 @@ export const FATAL: ReadonlySet<Problem['kind']> = new Set([
 	'too-many'
 ]);
 
+/** What the catalog says (two cheap `--show-object` runs), cached by the source's bytes. */
+interface CatalogFacts {
+	tagged: boolean;
+	form: boolean;
+	/** The trailer's /Size: how many objects the file has, at most. */
+	size: number;
+}
+const factsCache = new WeakMap<Uint8Array, Promise<CatalogFacts>>();
+function catalogFacts(qpdf: Qpdf, bytes: Uint8Array): Promise<CatalogFacts> {
+	let p = factsCache.get(bytes);
+	if (!p) {
+		p = (async () => {
+			const cat = await catalogText(qpdf, bytes);
+			const t = await qpdf.run({ args: ['--show-object=trailer', '/f.pdf'], inputs: { '/f.pdf': bytes } });
+			const size = Number(/\/Size (\d+)/.exec(t.stdout)?.[1] ?? 0);
+			return { tagged: catalogHas(cat, 'StructTreeRoot'), form: catalogHas(cat, 'AcroForm'), size };
+		})().catch(() => ({ tagged: false, form: false, size: 0 }));
+		factsCache.set(bytes, p);
+	}
+	return p;
+}
+
 async function readSourceTags(qpdf: Qpdf, bytes: Uint8Array): Promise<SourceTags | null> {
 	const t0 = now();
-	const cat = await catalogText(qpdf, bytes);
-	if (!catalogHas(cat, 'StructTreeRoot')) return null;
+	const facts = await catalogFacts(qpdf, bytes);
+	if (!facts.tagged) return null;
+	if (facts.size > MAX_OBJECTS) {
+		// Reading every object of a file this large would take too much memory on a phone.
+		const problem: Problem = { kind: 'too-many', detail: `${facts.size} objects` };
+		return { model: emptyModel([problem]), fatal: [problem], streams: false, form: facts.form, ms: Math.round(now() - t0) };
+	}
 	const dump = await dumpAll(qpdf, bytes);
 	if (!dump) return null;
 	const model = readModel(dump);
@@ -674,9 +703,13 @@ async function readSourceTags(qpdf: Qpdf, bytes: Uint8Array): Promise<SourceTags
 		model,
 		fatal: model.problems.filter((p) => FATAL.has(p.kind)),
 		streams: treeStreams(model),
-		form: catalogHas(cat, 'AcroForm'),
+		form: facts.form,
 		ms: Math.round(now() - t0)
 	};
+}
+
+function emptyModel(problems: Problem[]): TagModel {
+	return { objects: {}, header: {}, catalogRef: '', catalog: {}, rootRef: '', root: {}, pages: [], pageIndex: new Map(), contents: [], elems: [], elemOf: new Map(), pt: new Map(), ids: [], owners: new Map(), annotAt: new Map(), xobjPage: new Map(), problems };
 }
 
 /** Whether anything reachable from the tree (other than through /Pg, /Obj, /Stm) is a stream. */
@@ -737,21 +770,25 @@ export async function planTags(
 	used: Source[],
 	opts: { redaction: boolean; flatten: boolean }
 ): Promise<TagsPlan> {
-	const parts: TagsPart[] = [];
+	// The cheap rules first: they need only the catalogs.
+	const taggedSources: Source[] = [];
+	let form = false;
 	for (const s of used) {
 		if (s.kind !== 'pdf') continue;
-		const t = await sourceTags(qpdf, s);
-		if (t) parts.push({ source: s, tags: t });
+		const f = await catalogFacts(qpdf, s.bytes);
+		if (!f.tagged) continue;
+		taggedSources.push(s);
+		form ||= f.form;
 	}
-	if (parts.length === 0) return { kind: 'none' };
+	if (taggedSources.length === 0) return { kind: 'none' };
 	if (opts.redaction) return { kind: 'drop', reason: 'redacted' };
-	if (opts.flatten && parts.some((t) => t.tags.form)) return { kind: 'drop', reason: 'flattened' };
-	const partOf = new Map(parts.map((p, i) => [p.source, i]));
+	if (opts.flatten && form) return { kind: 'drop', reason: 'flattened' };
+	const partOf = new Map(taggedSources.map((s, i) => [s, i]));
 	// Pages of a file without tags would be outside the tree: screen readers that follow the
 	// tags would skip them, so the whole export goes without (readers then read every page).
 	if (used.some((s) => !partOf.has(s) && s.kind !== 'blank')) return { kind: 'drop', reason: 'merged' };
 	const from: ({ part: number; page: number } | null)[] = [];
-	const seen = parts.map(() => new Set<number>());
+	const seen = taggedSources.map(() => new Set<number>());
 	for (const ref of pages) {
 		const part = partOf.get(byId.get(ref.sourceId)!);
 		if (part === undefined) {
@@ -762,7 +799,14 @@ export async function planTags(
 		seen[part].add(ref.pageIndex);
 		from.push({ part, page: ref.pageIndex });
 	}
-	if (parts.some((p) => p.tags.fatal.length)) return { kind: 'drop', reason: 'damaged' };
+	const parts: TagsPart[] = [];
+	for (const s of taggedSources) {
+		const t = await sourceTags(qpdf, s);
+		if (!t) return { kind: 'drop', reason: 'unsupported' };
+		parts.push({ source: s, tags: t });
+	}
+	const fatal = parts.flatMap((p) => p.tags.fatal);
+	if (fatal.length) return { kind: 'drop', reason: fatal.every((p) => p.kind === 'too-many') ? 'unsupported' : 'damaged' };
 	if (parts.length > 1 && mergeProblem(parts.map((p) => p.tags.model))) return { kind: 'drop', reason: 'merged' };
 	return { kind: 'keep', parts, from, whole: parts.length === 1 && seen[0].size === parts[0].source.pages.length };
 }
