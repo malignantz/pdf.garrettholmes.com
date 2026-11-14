@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import type { Asset, ExportOptions, ExportResult, PageRef, Source, Stamp } from '../../src/lib/core/types';
 import { createCoreEngine } from '../../src/lib/engine/core';
 import { Qpdf } from '../../src/lib/engine/qpdf';
-import { MAX_ITEMS, inspectOutline, outlineLines, stringBytes, verifyOutline, type OutlineExpected } from '../../src/lib/engine/outline';
+import { MAX_ITEMS, inspectOutline, outlineLines, parsePdfValue, stringBytes, verifyOutline, type OutlineExpected } from '../../src/lib/engine/outline';
 import { corpus, defaultOptions, engine, loadPdfjs, manifest, nodeAssets, openCorpus, pageTexts, ref } from './helpers';
 
 const T = 60_000;
@@ -438,6 +438,20 @@ describe('outline: numbers', () => {
 });
 
 describe('outline: strings', () => {
+	it('parsePdfValue reads qpdf\'s printed syntax into its JSON form, strings as exact bytes', () => {
+		const text = '<< /A [ 1 0 R -2 .5 3. 0.50 12345678901234567890 null true ] /B (a\\(b\\)\\n\\101\xe9) /C <FEFF00e9> /D /x#20y#2F /E << >> /F () >>\n';
+		const v = parsePdfValue(text) as Record<string, unknown[]>;
+		expect(v['/A'].slice(0, 2)).toEqual(['1 0 R', -2]);
+		expect(v['/A'].slice(2, 5).map(Number)).toEqual([0.5, 3, 0.5]);
+		expect(v['/A'].slice(6)).toEqual([null, true]);
+		expect(String(v['/A'][5].valueOf())).toBe('12345678901234567000');
+		expect(v['/B']).toBe('b:612862290a41e9');
+		expect(v['/C']).toBe('b:feff00e9');
+		expect(v['/D']).toBe('/x y/');
+		expect(v['/E']).toEqual({});
+		expect(v['/F']).toBe('b:');
+	});
+
 	it('stringBytes: b: exact, u: ASCII as ASCII, other u: as UTF-16BE with a byte order mark', () => {
 		expect([...stringBytes('b:e9ff')]).toEqual([0xe9, 0xff]);
 		expect([...stringBytes('u:ab')]).toEqual([0x61, 0x62]);

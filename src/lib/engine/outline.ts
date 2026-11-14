@@ -111,29 +111,169 @@ const arrAt = (objects: Objects, v: Json): Json[] | null => {
 const isStr = (v: Json): v is string => typeof v === 'string' && (v.startsWith('u:') || v.startsWith('b:'));
 const isName = (v: Json): v is string => typeof v === 'string' && v.startsWith('/');
 
-async function dumpObjects(qpdf: Qpdf, bytes: Uint8Array, refs: string[], password?: string): Promise<{ header: Dict; objects: Objects } | null> {
-	const pw = password !== undefined ? [`--password=${password}`] : [];
-	const objects: Objects = {};
-	let header: Dict = {};
-	const unique = [...new Set(refs)];
-	for (let at = 0; at < unique.length; at += 4000) {
-		const chunk = unique.slice(at, at + 4000);
-		const res = await qpdf.run({
-			args: [...pw, '--json=2', '--json-key=qpdf', ...chunk.map((r) => `--json-object=${r === 'trailer' ? r : objArg(r)}`), '--json-stream-data=none', '/d.pdf', '/d.json'],
-			inputs: { '/d.pdf': bytes },
-			outputs: ['/d.json']
-		});
-		const file = res.files.get('/d.json');
-		if ((res.code !== QPDF_OK && res.code !== QPDF_WARNINGS) || !file) return null;
-		try {
-			const parsed = JSON.parse(new TextDecoder().decode(file)) as { qpdf: [Dict, Objects] };
-			header = parsed.qpdf[0];
-			Object.assign(objects, parsed.qpdf[1]);
-		} catch {
-			return null;
-		}
+/**
+ * A number as qpdf printed it, when a JavaScript number would not write it back the same (more
+ * digits than a double keeps); `jsonText` writes the token.
+ */
+class RawNumber {
+	constructor(readonly token: string) {}
+	valueOf() {
+		return Number(this.token);
 	}
-	return { header, objects };
+}
+
+/**
+ * One object (or the trailer) in qpdf's own PDF syntax (`--show-object`), parsed into qpdf JSON
+ * form: about 25 ms even on large files, where a `--json-object` dump reads every object (a
+ * second on a 3 MB form). Strings become "b:" hex of their exact bytes; names are decoded (#xx),
+ * as qpdf's JSON writes them. Null when qpdf cannot show it or the text does not parse.
+ */
+async function show(qpdf: Qpdf, bytes: Uint8Array, what: string, password?: string): Promise<Json | null> {
+	const pw = password !== undefined ? [`--password=${password}`] : [];
+	const res = await qpdf.run({ args: [...pw, `--show-object=${what === 'trailer' ? what : objArg(what)}`, '/s.pdf'], inputs: { '/s.pdf': bytes }, latin1Stdout: true });
+	if ((res.code !== QPDF_OK && res.code !== QPDF_WARNINGS) || res.stdoutLatin1 === undefined) return null;
+	try {
+		return parsePdfValue(res.stdoutLatin1);
+	} catch {
+		return null;
+	}
+}
+
+/** The first value of qpdf's printed PDF syntax (a stream prints as its dictionary). */
+export function parsePdfValue(text: string): Json {
+	let i = 0;
+	const ws = () => {
+		while (i < text.length) {
+			const c = text.charCodeAt(i);
+			if (c === 0x25) {
+				while (i < text.length && text[i] !== '\n' && text[i] !== '\r') i++;
+			} else if (c === 0x20 || c === 0x0a || c === 0x0d || c === 0x09 || c === 0x0c || c === 0x00) i++;
+			else break;
+		}
+	};
+	const DELIM = /[\s()<>[\]{}/%]/;
+	const bytesHex = (b: number[]) => `b:${b.map((x) => x.toString(16).padStart(2, '0')).join('')}`;
+	const value = (depth: number): Json => {
+		if (depth > 64) throw new Error('too deep');
+		ws();
+		const c = text[i];
+		if (c === undefined) throw new Error('end of text');
+		if (c === '<' && text[i + 1] === '<') {
+			i += 2;
+			const d: Dict = {};
+			for (;;) {
+				ws();
+				if (text[i] === '>' && text[i + 1] === '>') {
+					i += 2;
+					return d;
+				}
+				const k = value(depth + 1);
+				if (typeof k !== 'string' || !k.startsWith('/')) throw new Error('a key is not a name');
+				d[k] = value(depth + 1);
+			}
+		}
+		if (c === '[') {
+			i++;
+			const a: Json[] = [];
+			for (;;) {
+				ws();
+				if (text[i] === ']') {
+					i++;
+					return a;
+				}
+				a.push(value(depth + 1));
+			}
+		}
+		if (c === '<') {
+			const end = text.indexOf('>', i);
+			if (end < 0) throw new Error('open hex string');
+			let h = text.slice(i + 1, end).replace(/\s+/g, '');
+			if (!/^[0-9a-fA-F]*$/.test(h)) throw new Error('bad hex string');
+			if (h.length % 2) h += '0';
+			i = end + 1;
+			return `b:${h.toLowerCase()}`;
+		}
+		if (c === '(') {
+			i++;
+			const out: number[] = [];
+			let nest = 1;
+			for (;;) {
+				if (i >= text.length) throw new Error('open string');
+				const ch = text.charCodeAt(i++);
+				if (ch === 0x5c) {
+					const e = text[i++];
+					const map: Record<string, number> = { n: 10, r: 13, t: 9, b: 8, f: 12, '(': 40, ')': 41, '\\': 92 };
+					if (e in map) out.push(map[e]);
+					else if (e >= '0' && e <= '7') {
+						let o = e;
+						while (o.length < 3 && text[i] >= '0' && text[i] <= '7') o += text[i++];
+						out.push(Number.parseInt(o, 8) & 255);
+					} else if (e === '\r') {
+						if (text[i] === '\n') i++;
+					} else if (e !== '\n') out.push(e.charCodeAt(0) & 255);
+				} else if (ch === 0x28) {
+					nest++;
+					out.push(ch);
+				} else if (ch === 0x29) {
+					if (--nest === 0) return bytesHex(out);
+					out.push(ch);
+				} else {
+					if (ch > 255) throw new Error('a character outside a byte');
+					out.push(ch);
+				}
+			}
+		}
+		if (c === '/') {
+			let j = i + 1;
+			while (j < text.length && !DELIM.test(text[j])) j++;
+			const raw = text.slice(i + 1, j);
+			i = j;
+			return `/${raw.replace(/#([0-9a-fA-F]{2})/g, (_m, h: string) => String.fromCharCode(Number.parseInt(h, 16)))}`;
+		}
+		let j = i;
+		while (j < text.length && !DELIM.test(text[j])) j++;
+		const tok = text.slice(i, j);
+		i = j;
+		if (tok === 'true') return true;
+		if (tok === 'false') return false;
+		if (tok === 'null') return null;
+		if (/^[+-]?(\d+\.?\d*|\.\d+)$/.test(tok)) {
+			// "N G R": a reference.
+			const m = /^\s+(\d+)\s+R(?=[\s()<>[\]{}/%]|$)/.exec(text.slice(i));
+			if (/^\d+$/.test(tok) && m) {
+				i += m[0].length;
+				return `${tok} ${m[1]} R`;
+			}
+			const norm = tok.replace(/^\+/, '').replace(/^(-?)\./, '$10.').replace(/\.$/, '.0');
+			const n = Number(norm);
+			return String(n) === norm ? n : new RawNumber(norm);
+		}
+		throw new Error(`unexpected ${tok.slice(0, 20) || c}`);
+	};
+	return value(0);
+}
+
+/** The given objects (refs or 'trailer'), each by `show`; missing ones are left out. */
+async function showObjects(qpdf: Qpdf, bytes: Uint8Array, refs: string[], password?: string): Promise<Objects> {
+	const out: Objects = {};
+	for (const r of new Set(refs)) {
+		const v = await show(qpdf, bytes, r, password);
+		if (v !== null) out[r === 'trailer' ? r : objKey(r)] = { value: v };
+	}
+	return out;
+}
+
+/** qpdf JSON text, writing numbers as plain decimals (qpdf reads 1e-7 as 0) and RawNumber tokens as they are. */
+function jsonText(v: Json): string {
+	if (v instanceof RawNumber) return v.token;
+	if (typeof v === 'number') {
+		if (!Number.isFinite(v)) return '0';
+		const t = String(v);
+		return /e/i.test(t) ? v.toFixed(Math.min(20, Math.max(0, 6 - Math.floor(Math.log10(Math.abs(v) || 1))))).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '') : t;
+	}
+	if (Array.isArray(v)) return `[${v.map(jsonText).join(',')}]`;
+	if (isDict(v)) return `{${Object.entries(v).map(([k, x]) => `${JSON.stringify(k)}:${jsonText(x)}`).join(',')}}`;
+	return JSON.stringify(v);
 }
 
 interface FullDump {
@@ -164,26 +304,24 @@ async function catalogDump(qpdf: Qpdf, bytes: Uint8Array, full: boolean, passwor
 	let d: FullDump | null;
 	if (full) d = await dumpAll(qpdf, bytes, password);
 	else {
+		// Cheap: the page list (no object dump), the trailer, the catalog and Info shown one by one.
 		const pw = password !== undefined ? [`--password=${password}`] : [];
-		const res = await qpdf.run({
-			args: [...pw, '--json=2', '--json-key=qpdf', '--json-key=pages', '--json-object=trailer', '--json-stream-data=none', '/o.pdf', '/o.json'],
-			inputs: { '/o.pdf': bytes },
-			outputs: ['/o.json']
-		});
+		const res = await qpdf.run({ args: [...pw, '--json=2', '--json-key=pages', '/o.pdf', '/o.json'], inputs: { '/o.pdf': bytes }, outputs: ['/o.json'] });
 		const file = res.files.get('/o.json');
 		if ((res.code !== QPDF_OK && res.code !== QPDF_WARNINGS) || !file) return null;
+		let pages: string[];
 		try {
-			const parsed = JSON.parse(new TextDecoder().decode(file)) as { qpdf: [Dict, Objects]; pages?: { object: string }[] };
-			d = { header: parsed.qpdf[0], objects: parsed.qpdf[1], pages: (parsed.pages ?? []).map((p) => p.object) };
+			pages = ((JSON.parse(new TextDecoder().decode(file)) as { pages?: { object: string }[] }).pages ?? []).map((p) => p.object);
 		} catch {
 			return null;
 		}
-		const t = d.objects.trailer?.value;
+		const objects = await showObjects(qpdf, bytes, ['trailer'], password);
+		const t = objects.trailer?.value;
 		const root = isDict(t) ? t['/Root'] : null;
-		if (!isRef(root)) return null;
-		const more = await dumpObjects(qpdf, bytes, [root, ...(isDict(t) && isRef(t['/Info']) ? [t['/Info'] as string] : [])], password);
-		if (!more) return null;
-		Object.assign(d.objects, more.objects);
+		if (!isDict(t) || !isRef(root)) return null;
+		Object.assign(objects, await showObjects(qpdf, bytes, [root, ...(isRef(t['/Info']) ? [t['/Info'] as string] : [])], password));
+		const size = t['/Size'];
+		d = { header: { jsonversion: 2, maxobjectid: typeof size === 'number' ? size - 1 : 0 }, objects, pages };
 	}
 	if (!d) return null;
 	const trailer = d.objects.trailer?.value;
@@ -356,8 +494,7 @@ async function readSourceDoc(qpdf: Qpdf, bytes: Uint8Array, pageCount: number): 
 	for (const k of ['/Lang', '/ViewerPreferences', '/Names', '/PageMode']) if (isRef(catalog[k])) want.push(catalog[k] as string);
 	const objs: Objects = { ...small.objects };
 	if (want.length) {
-		const more = await dumpObjects(qpdf, bytes, want);
-		if (more) Object.assign(objs, more.objects);
+		Object.assign(objs, await showObjects(qpdf, bytes, want));
 	}
 
 	let info: Dict | null = null;
@@ -885,7 +1022,7 @@ export async function graftOutline(qpdf: Qpdf, assembled: Uint8Array, plan: Outl
 		if (cat['/Metadata'] !== undefined) delete cat['/Metadata'];
 	}
 
-	const json = new TextEncoder().encode(JSON.stringify({ qpdf: [out.header, updates] }));
+	const json = new TextEncoder().encode(jsonText({ qpdf: [{ jsonversion: 2 }, updates] }));
 	const res = await qpdf.run({
 		args: ['/g.pdf', '--update-from-json=/g.json', '--object-streams=disable', '/g-out.pdf'],
 		inputs: { '/g.pdf': assembled, '/g.json': json },
