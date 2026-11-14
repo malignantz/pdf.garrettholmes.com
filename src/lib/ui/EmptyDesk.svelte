@@ -25,7 +25,7 @@
 		{ icon: 'duplicate', title: 'Combine files', line: 'Merge several PDFs into one, in the order you want.' },
 		{ icon: 'file', title: 'Pictures to PDF', line: 'Turn photos and scans into one PDF.' },
 		{ icon: 'image', title: 'PDF to pictures', line: 'Save pages as JPG or PNG.' },
-		{ icon: 'shrink', title: 'Make it smaller', line: 'Shrink a file to fit an email limit.' },
+		{ icon: 'shrink', title: 'Make it smaller', line: 'Shrink a file or a scan to fit an email limit.' },
 		{ icon: 'sign', title: 'Fill in and sign', line: 'Add your signature, type on the page, fill in form fields.' },
 		{ icon: 'extract', title: 'Split', line: 'Save some pages as a new file, or split one into several.' },
 		{ icon: 'trash', title: 'Delete and reorder pages', line: 'Drag pages into place and remove the ones you do not need.' },
