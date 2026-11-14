@@ -253,7 +253,9 @@ async function uniqueWord(bytes: Uint8Array, pick: () => number): Promise<{ page
 	const m = await mupdf();
 	const doc = m.Document.openDocument(bytes.slice(), 'application/pdf');
 	try {
-		const n = Math.min(50, doc.countPages());
+		// Every page is read, so the word is known to occur once in the whole file.
+		const n = doc.countPages();
+		if (n > 300) return null;
 		const words = new Map<string, { page: number; quad: number[]; count: number; text: string }>();
 		const bounds: number[][] = [];
 		for (let i = 0; i < n; i++) {
@@ -278,7 +280,7 @@ async function uniqueWord(bytes: Uint8Array, pick: () => number): Promise<{ page
 			};
 			st.walk({
 				onChar(c: string, _o: unknown, _f: unknown, _s: unknown, q: number[]) {
-					if (/\s/.test(c)) flush();
+					if (!/[A-Za-z]/.test(c)) flush();
 					else {
 						cur += c;
 						quads.push(q);
@@ -324,7 +326,11 @@ async function leakOf(out: Uint8Array, word: string): Promise<string> {
 		for (let at = buf.indexOf(b); at >= 0; at = buf.indexOf(b, at + 1)) {
 			const before = step === 1 ? buf[at - 1] : enc === 'utf16be' ? buf[at - 1] : buf[at - 2];
 			const after = step === 1 ? buf[at + b.length] : enc === 'utf16be' ? buf[at + b.length + 1] : buf[at + b.length];
-			if (letter(before) || letter(after)) continue;
+			if (letter(before) || letter(after) || buf[at - 1] === 0x2f) continue;
+			// Font programs and embedded files hold text that is not page content (names, licences).
+			const head = buf.lastIndexOf('\n%% Original object ID', at);
+			const dict = buf.subarray(head < 0 ? 0 : head, Math.min(at, (head < 0 ? 0 : head) + 4000)).toString('latin1');
+			if (/\/Length[123] |\/Subtype \/(Type1C|CIDFontType0C|OpenType)|\/Type \/EmbeddedFile|\/Type \/Metadata/.test(dict.split('stream\n')[0])) continue;
 			return `${enc} at ${at}: ${buf.subarray(Math.max(0, at - 60), at + b.length + 20).toString('latin1').replace(/[^\x20-\x7e]/g, '.')}`;
 		}
 	}
