@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>final check bench</title>
+<script type="module">
+	// One worker per job, as the app has one engine worker; files come from the bench's /__fc/file/ route.
+	window.bench = (name, job) =>
+		new Promise(async (resolve) => {
+			const file = await (await fetch(`/__fc/file/${name}`)).arrayBuffer();
+			const w = new Worker(new URL('./bench-worker.ts', import.meta.url), { type: 'module' });
+			w.onmessage = (e) => {
+				// Only the bench's own replies (PDF.js may talk on this port too).
+				if (!e.data || !('result' in e.data || 'error' in e.data)) return;
+				w.terminate();
+				resolve(e.data);
+			};
+			w.onerror = (e) => {
+				w.terminate();
+				resolve({ error: String(e.message) });
+			};
+			w.postMessage({ file, job }, [file]);
+		});
+	window.benchReady = true;
+</script>

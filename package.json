@@ -32,7 +32,9 @@
 		"ocr:osd": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/ocr/osd.ts",
 		"ocr:gate": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/ocr/gate.ts",
 		"unlock:measure": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/unlock/measure.ts",
-		"tags:measure": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/tags/measure.ts"
+		"tags:measure": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/tags/measure.ts",
+		"fastcheck:measure": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/fast-check/measure.ts",
+		"fastcheck:browser": "node --experimental-transform-types --no-warnings --import ./tools/survey/register.mjs tools/fast-check/browser.ts"
 	},
 	"devDependencies": {
 		"@playwright/test": "^1.65.0",
