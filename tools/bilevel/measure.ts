@@ -97,7 +97,9 @@ if (sets.has('synth')) {
 }
 
 const done = new Set(readJsonl<BlResult>(resFile).map((r) => r.id));
-const todo = jobs.filter((j) => !done.has(j.id));
+const ids = args.get('ids')?.split(',');
+const todo = jobs.filter((j) => !done.has(j.id) && (!ids || ids.includes(j.id)));
+if (args.flag('review-refused')) for (const j of todo) j.reviewRefused = true;
 
 if (!args.flag('report-only')) {
 	console.log(`${jobs.length} files, ${todo.length} to do → ${resFile}`);
@@ -108,7 +110,7 @@ if (!args.flag('report-only')) {
 		workers: Math.min(2, args.num('workers', 2)),
 		memMB: args.num('mem-mb', 2500),
 		timeoutMs: args.num('timeout', 300) * 1000,
-		recycleAfter: 10,
+		recycleAfter: args.num('recycle', 10),
 		onResult: (_job, r) => appendJsonl(resFile, r),
 		onDone: () => {
 			if (++n % 10 === 0) console.log(`  ${n}/${todo.length} (${Math.round((Date.now() - t0) / 1000)} s)`);

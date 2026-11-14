@@ -76,7 +76,7 @@ export const BILEVEL_RULES: Readonly<BilevelRules> = {
 	midHigh: 0.7,
 	edgeDark: 0.8,
 	greyBlockShare: 0.04,
-	maxGreyBlocks: 6,
+	maxGreyBlocks: 12,
 	maxOrphanShare: 0.002,
 	cellLoss: 24,
 	cellGain: 24,
