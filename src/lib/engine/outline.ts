@@ -309,6 +309,14 @@ export function sourceDoc(qpdf: Qpdf, source: Source): Promise<SourceDoc | null>
 	return p;
 }
 
+/**
+ * A number with at most six significant digits: what a 32-bit float keeps. MuPDF's cleanup writes
+ * reals as 32-bit floats, and a cleanup that writes a number the file did not have is turned down
+ * (cleanup.ts sameStructure): a view coordinate such as 656.25747 would cost such files the
+ * cleanup's saving. Six digits are 0.001 pt at 1000 pt: no visible change of the view.
+ */
+const six = (x: number) => (Number.isInteger(x) || x === 0 ? x : Number(x.toPrecision(6)));
+
 function normView(rest: Json[], stats: SourceStats): View {
 	const t = rest[0];
 	const n = typeof t === 'string' ? VIEW_ARGS[t] : undefined;
@@ -318,12 +326,13 @@ function normView(rest: Json[], stats: SourceStats): View {
 	}
 	const ps = rest.slice(1, 1 + n).map((x) => (typeof x === 'number' && Number.isFinite(x) ? x : null));
 	while (ps.length < n) ps.push(null);
+	const rounded = ps.map((p) => (p === null ? null : six(p)));
 	if (t === '/FitR' && ps.some((p) => p === null)) {
 		stats.viewsFixed++;
 		return ['/Fit'];
 	}
 	if (rest.length !== 1 + n || ps.some((p, i) => p !== rest[1 + i])) stats.viewsFixed++;
-	return [t, ...ps];
+	return [t, ...rounded];
 }
 
 async function readSourceDoc(qpdf: Qpdf, bytes: Uint8Array, pageCount: number): Promise<SourceDoc | null> {
@@ -498,7 +507,7 @@ async function readSourceDoc(qpdf: Qpdf, bytes: Uint8Array, pageCount: number): 
 				const count = val(o, d['/Count']);
 				const item: Item = { title: isStr(t) ? t : 'u:', target: null, open: typeof count === 'number' && count > 0, kids };
 				const c = arrAt(o, d['/C'])?.map((x) => val(o, x));
-				if (c && c.length === 3 && c.every((x) => typeof x === 'number' && x >= 0 && x <= 1)) item.c = c as number[];
+				if (c && c.length === 3 && c.every((x) => typeof x === 'number' && x >= 0 && x <= 1)) item.c = (c as number[]).map(six);
 				const f = val(o, d['/F']);
 				if (typeof f === 'number' && Number.isInteger(f) && (f & 3) !== 0) item.f = f & 3;
 				if (d['/Dest'] !== undefined) item.target = dest(d['/Dest']);

@@ -176,8 +176,8 @@ describe('lossless compress', () => {
 			expect(await renders(packed)).toEqual(await renders(plain));
 			expect(await pageTexts(packed)).toEqual(await pageTexts(plain));
 			expect(await facts(packed)).toEqual(await facts(plain));
-			// The export's assemble step drops the outline and attachments (as before); the
-			// cleanup itself keeps them: run it on the file directly.
+			// The export drops the attachments (and kept the outline only since outline.ts); the
+			// cleanup itself keeps both: run it on the file directly.
 			const input = corpus('compress-subset.pdf');
 			const cleaned = await cleanupWithMupdf(deps, input, true, () => {});
 			expect(cleaned).not.toBeNull();

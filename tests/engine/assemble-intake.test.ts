@@ -218,13 +218,19 @@ describe('assemble: one source with a form is edited in place', () => {
 		expect((await pageTexts(res.bytes)).slice(0, 2)).toEqual([`form-tree p${n}`, `form-tree p${n - 1}`]);
 	}, T);
 
-	it('keeps nothing of a deleted page in the catalog, and drops XFA and Info like a copy', async () => {
+	it('keeps nothing of a deleted page in the catalog, and drops XFA like a copy', async () => {
 		const src = await openCorpus('form-catalog.pdf');
 		for (const pages of [[ref(src, 0)], [ref(src, 0), ref(src, 1)]]) {
 			const res = await engine().exportPlan({ pages, options: defaultOptions }, [src], []);
 			const text = latin1(res.bytes);
-			for (const secret of ['SECRETOUTLINE', 'SECRETALT', 'SECRETINFO', 'SECRETXFA', '/XFA']) expect(text).not.toContain(secret);
-			if (pages.length === 1) expect(text).not.toContain('SECRETPAGE2');
+			for (const secret of ['SECRETALT', 'SECRETXFA', '/XFA']) expect(text).not.toContain(secret);
+			// Since outline.ts the title (one source) and the bookmarks to kept pages are kept;
+			// the bookmark to page 2 goes with page 2.
+			expect(text).toContain('SECRETINFO');
+			if (pages.length === 1) {
+				expect(text).not.toContain('SECRETPAGE2');
+				expect(text).not.toContain('SECRETOUTLINE');
+			} else expect(text).toContain('SECRETOUTLINE');
 			expect(Object.keys(await fieldValues(res.bytes))).toEqual(['name']);
 		}
 	}, T);
