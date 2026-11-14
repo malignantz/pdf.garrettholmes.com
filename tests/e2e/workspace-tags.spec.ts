@@ -51,7 +51,7 @@ test.describe('desktop', () => {
 		expect(raw).toContain('(A grey test picture)');
 		await expect(done.getByText(/Accessibility tags \(used/)).toHaveCount(0);
 		// Under Details, one calm line.
-		await done.getByText('Details').click();
+		await done.getByText('Details', { exact: true }).click();
 		await expect(done.getByText(/Accessibility tags: passed\. Accessibility tags kept: 16 structure elements/)).toBeVisible();
 		await page.keyboard.press('Escape');
 		await expect(done).toBeHidden();
