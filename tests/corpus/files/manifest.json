@@ -2678,5 +2678,40 @@
 		"tagged": true,
 		"elements": 2,
 		"note": "indirect /S and catalog /Lang, PDFDocEncoding /ActualText, an empty name in an attribute"
+	},
+	"crop-odd.pdf": {
+		"pages": 3,
+		"label": "crop",
+		"note": "inherited non-zero-origin MediaBox and /Rotate, Trim/Bleed/ArtBox, a CropBox past the MediaBox with UserUnit 2, indirect boxes, three-level page tree",
+		"visible": [
+			[
+				-100,
+				-50,
+				512,
+				742
+			],
+			[
+				0,
+				0,
+				300,
+				400
+			],
+			[
+				0,
+				0,
+				500,
+				300
+			]
+		],
+		"rotate": [
+			90,
+			270,
+			180
+		],
+		"userUnit": [
+			1,
+			2,
+			1
+		]
 	}
 }

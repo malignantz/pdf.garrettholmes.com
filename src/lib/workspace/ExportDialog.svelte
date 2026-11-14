@@ -576,7 +576,8 @@
 		'blank-fields': 'Filled blanks',
 		'text-layer': 'Searchable text',
 		tags: 'Accessibility tags',
-		watermark: 'Watermark'
+		watermark: 'Watermark',
+		crop: 'Crop'
 	};
 
 	function headline(checks: VerifyCheck[], pageCount: number): string {

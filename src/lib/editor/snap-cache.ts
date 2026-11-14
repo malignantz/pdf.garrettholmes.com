@@ -27,7 +27,8 @@ const key = (sourceId: string, pageIndex: number) => `${sourceId}#${pageIndex}`;
 
 /** Whether snapping may happen on this page at all. `fields`: the source's form fields, undefined while unknown. */
 export function snapEligible(source: Source | undefined, ref: PageRef | undefined, fields: readonly FormField[] | undefined): boolean {
-	if (!source || !ref || source.kind !== 'pdf' || ref.rotation !== 0) return false;
+	// Not on rotated or cropped pages (the blanks are read in the source page's frame).
+	if (!source || !ref || source.kind !== 'pdf' || ref.rotation !== 0 || ref.crop) return false;
 	if (!fields) return false;
 	return !fields.some((f) => f.widgets.some((w) => w.pageIndex === ref.pageIndex));
 }

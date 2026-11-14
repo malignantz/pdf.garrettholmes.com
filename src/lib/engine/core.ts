@@ -69,6 +69,7 @@ import { addLayers, readScans, throwIfCancelled, verifyTextLayer, type OcrBacken
 import type { WrittenWord } from './ocr/layer';
 import { graftTags, planTags, verifyTags, type GraftResult, type TagsPlan } from './tags';
 import { verifyWatermark, watermarkJob } from './watermark';
+import { applyCrops, croppedSize, validateCrop, verifyCrops } from './crop';
 
 export interface EngineAssets {
 	qpdf: QpdfLoader;
@@ -482,7 +483,8 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 				fileOf.set(src.id, `/src/${used.length}.pdf`);
 				used.push(src);
 			}
-			expected.push(rotateSize(src.pages[ref.pageIndex], ref.rotation));
+			validateCrop(i, ref.crop);
+			expected.push(croppedSize(rotateSize(src.pages[ref.pageIndex], ref.rotation), ref.crop));
 			validateStamps(i, ref.stamps, assetIds);
 		}
 		const formValues = usedFormValues(plan.formValues, byId, fileOf);
@@ -558,6 +560,11 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			ocrReport = r.report;
 		}
 		throwIfCancelled(control);
+
+		// (a3) Crop: each cropped page's /CropBox; every later stage works in the cropped page (crop.ts).
+		const crops = await applyCrops(qpdf, bytes, pages);
+		bytes = crops.bytes;
+		const anyCrop = crops.rects.some((r) => r !== null);
 
 		// (b) Forms: answers, appearances, flatten.
 		const formsCtx: FormsContext = {
@@ -691,7 +698,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 
 		// (f) Verify.
 		// Whether the structure check is the last slow part (the checks below it are not quick).
-		const last = !formsRan && redactJobs.length === 0 && !numbering && !wmJob && made.length === 0 && layered.size === 0;
+		const last = !formsRan && redactJobs.length === 0 && !numbering && !wmJob && !anyCrop && made.length === 0 && layered.size === 0;
 		const checkProgress = report && ((done: number, total: number) => report({ stage: 'check', done, total, last }));
 		const verifyAll = async (file: Uint8Array, w: string[]) => {
 			const checks = await verify(file, expected, password, options.stripMetadata, used, w, checkProgress);
@@ -702,6 +709,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			if (layered.size) checks.push(await verifyTextLayer(await pdfjs(), file, layered, password));
 			if (tagged) checks.push(await verifyTags(qpdf, file, tagged.expected, password));
 			if (wmJob) checks.push(await verifyWatermark(deps, file, wmJob.watermark, pages.length, password));
+			if (anyCrop) checks.push(await verifyCrops(deps, file, crops.rects, password));
 			checks.push(...stageChecks);
 			return checks;
 		};

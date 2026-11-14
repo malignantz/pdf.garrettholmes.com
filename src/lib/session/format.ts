@@ -17,10 +17,11 @@ import { DEFAULT_FORM, FORM_CHOICES, type ExportForm } from '../workspace/logic'
  * without it and are still read (READS); drop 1 from READS after 2026-11-26.
  * 3 (2026-11-13): text, picture and check stamps may carry `turn` (marks turn with a
  * rotated page). Schema 1 and 2 records are the same shape without it (turn 0).
+ * 4 (2026-11-14): pages may carry `crop` (Crop). Schemas 1 to 3 are the same shape without it.
  */
-export const SCHEMA = 3;
+export const SCHEMA = 4;
 /** Schemas this build reads: older ones only where they are a subset of SCHEMA. */
-const READS: readonly number[] = [1, 2, SCHEMA];
+const READS: readonly number[] = [1, 2, 3, SCHEMA];
 
 /** A saved session is deleted this long after its last change. */
 export const EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
@@ -118,7 +119,7 @@ type AllCovered = { [K in Stamp['kind']]: Missing<K> extends never ? true : Miss
 const covered: AllCovered = { image: true, text: true, mark: true, highlight: true, redact: true };
 void covered;
 
-const PAGE_REF_KEYS = ['id', 'sourceId', 'pageIndex', 'rotation', 'stamps'] as const satisfies readonly (keyof PageRef)[];
+const PAGE_REF_KEYS = ['id', 'sourceId', 'pageIndex', 'rotation', 'stamps', 'crop'] as const satisfies readonly (keyof PageRef)[];
 const pageRefCovered: Exclude<keyof PageRef, (typeof PAGE_REF_KEYS)[number]> extends never ? true : false = true;
 void pageRefCovered;
 
@@ -185,13 +186,11 @@ export function buildRecord(input: RecordInput): SessionRecord {
 		app: input.app,
 		clean: input.clean,
 		sources,
-		pages: input.pages.map((p) => ({
-			id: p.id,
-			sourceId: p.sourceId,
-			pageIndex: p.pageIndex,
-			rotation: p.rotation,
-			stamps: p.stamps.map(copyStamp)
-		})),
+		pages: input.pages.map((p) => {
+			const out: PageRef = { id: p.id, sourceId: p.sourceId, pageIndex: p.pageIndex, rotation: p.rotation, stamps: p.stamps.map(copyStamp) };
+			if (p.crop) out.crop = copyBox(p.crop);
+			return out;
+		}),
 		assets,
 		formValues,
 		exportForm: cleanExportForm(input.exportForm)
@@ -323,13 +322,15 @@ function readStamp(v: unknown): Stamp {
 function readPage(v: unknown): PageRef {
 	if (!isObj(v) || !str(v.id) || !str(v.sourceId) || !Number.isInteger(v.pageIndex) || !Array.isArray(v.stamps)) fail('bad page');
 	if (![0, 90, 180, 270].includes(v.rotation as number)) fail('bad rotation');
-	return {
+	const out: PageRef = {
 		id: v.id,
 		sourceId: v.sourceId,
 		pageIndex: v.pageIndex as number,
 		rotation: v.rotation as Rotation,
 		stamps: v.stamps.map(readStamp)
 	};
+	if (v.crop !== undefined) out.crop = readBox(v.crop);
+	return out;
 }
 
 function readSource(v: unknown): SavedSource {

@@ -198,7 +198,9 @@ describe('format', () => {
 		const sources = [source('a', 2)];
 		const pages: PageRef[] = [
 			{ id: 'p1', sourceId: 'a', pageIndex: 1, rotation: 270, stamps: everyStamp() },
-			{ id: 'p2', sourceId: 'a', pageIndex: 0, rotation: 0, stamps: [] }
+			{ id: 'p2', sourceId: 'a', pageIndex: 0, rotation: 0, stamps: [] },
+			// Cropped (schema 4).
+			{ id: 'p3', sourceId: 'a', pageIndex: 0, rotation: 90, stamps: [], crop: { x: 0.1, y: 0.2, w: 0.5, h: 0.6 } }
 		];
 		return buildRecord({
 			writer: 'w',
@@ -221,7 +223,12 @@ describe('format', () => {
 		const back = parseRecord(structuredClone(rec));
 		expect(back).toEqual(rec);
 		expect(back.pages[0].stamps).toEqual(everyStamp());
+		expect(back.pages[2].crop).toEqual({ x: 0.1, y: 0.2, w: 0.5, h: 0.6 });
+		expect('crop' in back.pages[1]).toBe(false);
 		expect(back.schema).toBe(SCHEMA);
+		// A schema 3 record (no crops) still reads.
+		const v3 = structuredClone({ ...rec, schema: 3, pages: rec.pages.slice(0, 2) });
+		expect(parseRecord(v3).pages).toHaveLength(2);
 	});
 
 	it('never keeps an export password or file name', () => {

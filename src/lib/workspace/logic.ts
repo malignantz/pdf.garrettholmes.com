@@ -357,6 +357,8 @@ export function plainCheck(
 			return c.ok ? 'Accessibility tags kept.' : 'The accessibility tags did not read back.';
 		case 'watermark':
 			return c.ok ? 'Every page carries the watermark.' : 'The watermark is missing from some pages.';
+		case 'crop':
+			return c.ok ? 'Every cropped page shows the part you chose.' : 'Some pages did not come out cropped as you chose.';
 	}
 }
 
