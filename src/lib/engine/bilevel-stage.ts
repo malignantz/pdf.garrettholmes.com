@@ -217,24 +217,32 @@ export interface BilevelPreview {
 	after: Uint8Array;
 }
 
-/** Top-left of the cw × ch window with the most ink, avoiding solid black areas. */
+/**
+ * Top-left of the cw × ch window with the most ink, avoiding solid black areas and windows
+ * whose top or bottom edge cuts through ink (so the preview shows whole lines).
+ */
 function inkiest(bits: Uint8Array, w: number, h: number, cw: number, ch: number): [number, number] {
-	const G = 16;
+	const G = 8;
 	const gw = Math.ceil(w / G);
 	const gh = Math.ceil(h / G);
 	const ink = new Float64Array(gw * gh);
 	const rb = rowBytesOf(w);
 	for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (!(bits[y * rb + (x >> 3)] & (0x80 >> (x & 7)))) ink[Math.floor(y / G) * gw + Math.floor(x / G)]++;
-	const ww = Math.min(gw, Math.ceil(cw / G));
-	const wh = Math.min(gh, Math.ceil(ch / G));
-	let best = -1;
+	const ww = Math.min(gw, Math.floor(cw / G));
+	const wh = Math.min(gh, Math.floor(ch / G));
+	let best = -Infinity;
 	let at: [number, number] = [0, 0];
 	for (let gy = 0; gy + wh <= gh; gy++)
 		for (let gx = 0; gx + ww <= gw; gx += 2) {
 			let s = 0;
-			for (let y = gy; y < gy + wh; y++) for (let x = gx; x < gx + ww; x++) s += ink[y * gw + x];
+			let edges = 0;
+			for (let y = gy; y < gy + wh; y++)
+				for (let x = gx; x < gx + ww; x++) {
+					s += ink[y * gw + x];
+					if (y === gy || y === gy + wh - 1) edges += ink[y * gw + x];
+				}
 			const share = s / (ww * wh * G * G);
-			const score = share > 0.35 ? s * 0.2 : s;
+			const score = (share > 0.35 ? s * 0.2 : s) - 6 * edges;
 			if (score > best) {
 				best = score;
 				at = [gx * G, gy * G];
@@ -248,7 +256,7 @@ function inkiest(bits: Uint8Array, w: number, h: number, cw: number, ch: number)
  * null when the page would be left as it is (not a scanned page, or its picture fails the
  * qualify test or the "nothing vanished" check).
  */
-export async function bilevelPreview(mupdf: () => Promise<Mupdf>, source: Source, index: number, size = { width: 260, height: 130 }): Promise<BilevelPreview | null> {
+export async function bilevelPreview(mupdf: () => Promise<Mupdf>, source: Source, index: number, size = { width: 300, height: 150 }): Promise<BilevelPreview | null> {
 	if (source.kind !== 'pdf' || !Number.isInteger(index) || index < 0 || index >= source.pages.length) return null;
 	const m = await mupdf();
 	const doc = new m.PDFDocument(source.bytes);

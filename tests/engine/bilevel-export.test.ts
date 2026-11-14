@@ -52,7 +52,7 @@ describe('black and white scans: engine', () => {
 		expect(await e.bilevelPages({ ...src, kind: 'image' })).toEqual([]);
 		const p = await e.bilevelPreview(src, 0);
 		expect(p).not.toBeNull();
-		expect([p!.width, p!.height]).toEqual([260, 130]);
+		expect([p!.width, p!.height]).toEqual([300, 150]);
 		for (const png of [p!.before, p!.after]) expect([...png.slice(1, 4)]).toEqual([0x50, 0x4e, 0x47]);
 		expect(await e.bilevelPreview(src, 1)).toBeNull(); // colour
 		expect(await e.bilevelPreview(src, 2)).toBeNull(); // faint mark
