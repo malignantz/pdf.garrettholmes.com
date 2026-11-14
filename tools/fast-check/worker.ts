@@ -7,7 +7,7 @@
  *    check in one instance, no fallback): same exit code, stdout and stderr?
  *  - open with the real engine.
  *  - exports (all pages): plain (Optimize off) and the app's default (Optimize and the
- *    print-size cap on), each with the fast check and with `fullCheck` (order alternates by
+ *    print-size cap on; survey files up to 12 MB), each with the fast check and with `fullCheck` (order alternates by
  *    job), comparing outcome, checks and warnings; time of the whole export and of the
  *    final check (the engine's debug note).
  *  - corpus and generated files only: breakdown on the plain export's bytes: a fresh qpdf instance; copying the file into
@@ -88,6 +88,8 @@ const engines = () => {
 };
 
 const now = () => performance.now();
+/** Survey files above this get the plain export pair only. */
+const OPTIMIZED_MAX = 12e6;
 
 async function timed<T>(fn: () => Promise<T>): Promise<[T, number]> {
 	const t = now();
@@ -211,8 +213,9 @@ serveJobs<FastJob, FastResult>(async (job, io) => {
 		if (src) {
 			const plain = await pair(src, {}, job.fullFirst, io, 'plain');
 			r.plain = { fast: plain.fast.run, full: plain.full.run, agree: agree(plain.fast.run, plain.full.run) };
-			const opt = await pair(src, { compress: true, printCap: true }, !job.fullFirst, io, 'optimized');
-			r.optimized = { fast: opt.fast.run, full: opt.full.run, agree: agree(opt.fast.run, opt.full.run) };
+			// The default export too, except for large survey files (time: the box is shared).
+			const opt = job.kind === 'survey' && bytes.length > OPTIMIZED_MAX ? null : await pair(src, { compress: true, printCap: true }, !job.fullFirst, io, 'optimized');
+			if (opt) r.optimized = { fast: opt.fast.run, full: opt.full.run, agree: agree(opt.fast.run, opt.full.run) };
 			// Survey files: the export pairs above already compare the two checks' verdicts; the
 			// breakdown and raw comparisons of the exports are for corpus and generated files (time).
 			if (job.kind !== 'survey') {
@@ -222,7 +225,7 @@ serveJobs<FastJob, FastResult>(async (job, io) => {
 					r.breakdown = await breakdown(plain.fast.bytes);
 					r.exportRaw.plain = await rawCompare(plain.fast.bytes);
 				}
-				if (opt.fast.bytes) r.exportRaw.optimized = await rawCompare(opt.fast.bytes);
+				if (opt?.fast.bytes) r.exportRaw.optimized = await rawCompare(opt.fast.bytes);
 			}
 		}
 	}

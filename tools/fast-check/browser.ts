@@ -21,6 +21,7 @@ const args = parseArgs(process.argv.slice(2));
 const out = path.resolve(args.get('out') ?? '/home/garrett/pdf-survey/out-fast-check');
 if (!path.relative(repoRoot, out).startsWith('..')) throw new Error('output must be outside the repo');
 const names = (args.get('files') ?? 'scan-30,scan-260,photo-260,text-1000,streams').split(',') as (keyof typeof GENERATED)[];
+if (!names.includes('text-1000')) names.push('text-1000');
 const reps = args.num('reps', 2);
 const port = args.num('port', 4394);
 const files = await generate(path.join(out, 'gen'), names);
@@ -58,8 +59,20 @@ const results: Record<string, unknown>[] = [];
 try {
 	const page = await browser.newPage();
 	page.on('pageerror', (e) => console.log('pageerror', e.message));
-	await page.goto(`http://127.0.0.1:${port}/tools/fast-check/browser/bench.html`);
-	await page.waitForFunction(() => (window as unknown as { benchReady?: boolean }).benchReady === true);
+	const open = async () => {
+		await page.goto(`http://127.0.0.1:${port}/tools/fast-check/browser/bench.html`);
+		await page.waitForFunction(() => (window as unknown as { benchReady?: boolean }).benchReady === true);
+	};
+	// Warm-up: the dev server optimizes dependencies on first use and then reloads the page.
+	for (let i = 0; i < 4; i++) {
+		await open();
+		try {
+			await page.evaluate(() => (window as unknown as { bench: (n: string, j: unknown) => Promise<unknown> }).bench('text-1000', { kind: 'export', order: ['fast'] }));
+			break;
+		} catch (e) {
+			console.log(`warm-up ${i + 1}: ${(e as Error).message.split('\n')[0]}`);
+		}
+	}
 	const ua = await page.evaluate(() => navigator.userAgent);
 	for (const n of names) {
 		for (let r = 0; r < reps; r++) {

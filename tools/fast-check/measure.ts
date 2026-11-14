@@ -8,7 +8,7 @@
  *  - corpus: tests/corpus/files/*.pdf (password files with the manifest's password);
  *  - generated: tools/fast-check/gen.ts (260-page scan, 260 photo pages, 1000 text pages,
  *    big DCT/Flate/JPX/CCITT/JBIG2 streams), written outside the repo;
- *  - survey: --size of the largest survey files (2 MB and up, opened or partly opened by the
+ *  - survey: --size of the largest survey files (2 to 45 MB, opened or partly opened by the
  *    survey profile), round-robin across sources; exported both ways;
  *  - raw: --raw more survey files of any size and state (damaged ones included), round-robin
  *    across sources and damage classes: raw check comparison only.
@@ -76,7 +76,7 @@ if (only.has('generated')) {
 const profiles = readJsonl<Profile>(args.get('profiles') ?? path.join(PILE, 'out/profiles.jsonl')).filter((p) => p.path.startsWith(`${PILE}/raw/`) && fs.existsSync(p.path));
 const surveyPicked: Profile[] = [];
 if (only.has('survey')) {
-	const big = profiles.filter((p) => p.size >= 2e6 && p.size <= 80e6 && (p.status === 'ok' || p.status === 'partial')).sort((a, b) => b.size - a.size);
+	const big = profiles.filter((p) => p.size >= 2e6 && p.size <= 45e6 && (p.status === 'ok' || p.status === 'partial')).sort((a, b) => b.size - a.size);
 	const bySource = new Map<string, Profile[]>();
 	for (const p of big) bySource.set(p.source, [...(bySource.get(p.source) ?? []), p]);
 	surveyPicked.push(...roundRobin(bySource, args.num('size', 100)));
