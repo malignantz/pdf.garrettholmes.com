@@ -14,6 +14,7 @@
 import type { Asset, PageSize, Stamp, VerifyCheck } from '../core/types';
 import type * as PdfLib from '@cantoo/pdf-lib';
 import { EngineError } from './errors';
+import { joinParts, markedContent } from './marked';
 import { graphicsNesting } from './content';
 import {
 	MARKS,
@@ -64,6 +65,12 @@ export interface StampDeps {
 	lib: typeof PdfLib;
 	fontkit: unknown;
 	fontBytes: () => Promise<Uint8Array>;
+	/**
+	 * The export keeps accessibility tags (tags.ts): what the stamps draw is `/Artifact`
+	 * marked content, after closing any marked-content sequence the page leaves open, so it
+	 * never becomes part of a struct element's content.
+	 */
+	artifacts?: boolean;
 }
 
 /** Geometry pdf-lib sees for a page, mirroring PDF.js rules. */
@@ -217,6 +224,7 @@ export async function applyStamps(
 		if (nest.unterminated) {
 			throw new EngineError('unsupported', `Page ${job.pageIndex + 1} has damaged content, so stamps cannot be added to it safely.`);
 		}
+		const openMarked = deps.artifacts ? markedContent(joinParts(decoded)).open : 0;
 		const pushes = 1 - nest.minDepth;
 		const pops = pushes + nest.finalDepth;
 
@@ -446,10 +454,11 @@ export async function applyStamps(
 				ctx.obj({}),
 				[
 					...(nest.inText ? [ops.endText()] : []),
+					...Array.from({ length: openMarked }, () => ops.endMarkedContent()),
 					...Array.from({ length: pops }, () => ops.popGraphicsState()),
 					ops.pushGraphicsState(),
 					ops.setGraphicsState(gsName),
-					...body,
+					...(deps.artifacts ? [ops.beginMarkedContent('Artifact'), ...body, ops.endMarkedContent()] : body),
 					ops.popGraphicsState()
 				],
 				true

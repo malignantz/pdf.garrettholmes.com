@@ -353,6 +353,8 @@ export function plainCheck(
 			return c.ok ? 'Every filled blank is a form field with your answer.' : 'Some filled blanks did not come out as form fields.';
 		case 'text-layer':
 			return c.ok ? 'The searchable text reads back on every page that got it.' : 'The searchable text did not read back.';
+		case 'tags':
+			return c.ok ? 'Accessibility tags kept.' : 'The accessibility tags did not read back.';
 	}
 }
 

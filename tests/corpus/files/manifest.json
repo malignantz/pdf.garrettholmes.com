@@ -2587,5 +2587,75 @@
 		"expect": "declined",
 		"handler": "Adobe.PubSec",
 		"note": "every xref offset off by 64"
+	},
+	"tags-basic.pdf": {
+		"pages": 3,
+		"label": "tags",
+		"tagged": true,
+		"elements": 16,
+		"alt": 2,
+		"actualText": 1,
+		"lang": "en-US"
+	},
+	"tags-form.pdf": {
+		"pages": 1,
+		"label": "tags",
+		"tagged": true,
+		"elements": 5,
+		"alt": 3,
+		"actualText": 0,
+		"fields": [
+			"name",
+			"city",
+			"subscribe"
+		]
+	},
+	"tags-locked.pdf": {
+		"pages": 3,
+		"label": "tags",
+		"tagged": true,
+		"elements": 16,
+		"alt": 2,
+		"actualText": 1,
+		"password": null
+	},
+	"tags-secret.pdf": {
+		"pages": 2,
+		"label": "tags",
+		"tagged": true,
+		"secretBox": [
+			72,
+			700,
+			330,
+			730
+		],
+		"secrets": [
+			"SECRET-STRUCT-ALT",
+			"SECRET-STRUCT-ACTUAL",
+			"SECRET-STRUCT-EXPANSION",
+			"SECRET-STRUCT-TITLE",
+			"SECRET-INLINE-ACTUAL"
+		],
+		"namedSecret": "SECRET-NAMED-PROPERTY"
+	},
+	"tags-second.pdf": {
+		"pages": 2,
+		"label": "tags",
+		"tagged": true,
+		"elements": 4,
+		"alt": 0,
+		"actualText": 1
+	},
+	"tags-broken.pdf": {
+		"pages": 3,
+		"label": "tags",
+		"tagged": true,
+		"expect": "tags dropped: ParentTree names the wrong elements"
+	},
+	"tags-xobject.pdf": {
+		"pages": 1,
+		"label": "tags",
+		"tagged": true,
+		"elements": 3
 	}
 }

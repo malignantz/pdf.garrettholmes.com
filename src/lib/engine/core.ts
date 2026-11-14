@@ -30,6 +30,7 @@ import type {
 	Source,
 	SourceLimits,
 	Stamp,
+	TagsDropReason,
 	VerifyCheck
 } from '../core/types';
 import type { EngineDeps } from './deps';
@@ -66,6 +67,7 @@ import { NEED_BYTES } from './protocol';
 import { scannedPagesOf } from './ocr/eligible';
 import { addLayers, readScans, throwIfCancelled, verifyTextLayer, type OcrBackend, type OcrTrace, type ScanReading } from './ocr/stage';
 import type { WrittenWord } from './ocr/layer';
+import { graftTags, planTags, verifyTags, type GraftResult, type TagsPlan } from './tags';
 
 export interface EngineAssets {
 	qpdf: QpdfLoader;
@@ -430,8 +432,15 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			})
 	};
 
-	async function exportPlan(plan: ExportPlan, sources: Source[], assetList: Asset[], control?: ExportControl): Promise<ExportResult> {
-		const started = now();
+	async function exportPlan(
+		plan: ExportPlan,
+		sources: Source[],
+		assetList: Asset[],
+		control?: ExportControl,
+		/** A second build of the same plan without tags, after the first one's tags check failed. */
+		again?: { noTags: TagsDropReason; reading: ScanReading | null; started: number }
+	): Promise<ExportResult> {
+		const started = again?.started ?? now();
 		const { pages } = plan;
 		if (pages.length === 0) throw new EngineError('unsupported', 'There are no pages to export.');
 		const hasRedaction = pages.some((p) => p.stamps.some((s) => s.kind === 'redact'));
@@ -505,21 +514,38 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		}
 
 		// (OCR) Read the scanned pages first: the slow part, and the one that can be cancelled.
-		let reading: ScanReading | null = null;
-		if (options.ocr === true) {
+		let reading: ScanReading | null = again ? again.reading : null;
+		if (options.ocr === true && !again) {
 			if (!assets.ocr) throw new EngineError('unsupported', 'Making pages searchable is not available here.');
 			reading = await readScans(deps, pages, byId, { backend: assets.ocr, control, trace: ocrTrace, debug });
 		}
 		throwIfCancelled(control);
 
+		// Accessibility tags: whether this export can keep its source's structure tree (tags.ts).
+		const tagsPlan: TagsPlan = again
+			? { kind: 'drop', reason: again.noTags }
+			: await planTags(qpdf, pages, byId, used, { redaction: hasRedaction, flatten: options.flattenForms });
+
 		// (a) Assemble.
 		let bytes = await assemble(qpdf, { pages, used, fileOf, run: (r, output) => runOrFail(r, output, warnings) });
+
+		// (a1) The structure tree, copied onto the assembled pages and pruned to them.
+		let tagsInfo: ExportResult['tags'] = tagsPlan.kind === 'none' ? undefined : tagsPlan.kind === 'drop' ? { kept: false, reason: tagsPlan.reason } : { kept: true };
+		let tagged: GraftResult | null = null;
+		if (tagsPlan.kind === 'keep') {
+			tagged = await graftTags(qpdf, bytes, tagsPlan, debug);
+			if (tagged) {
+				bytes = tagged.bytes;
+				debug(`tags: ${tagged.expected.elements} elements kept (${tagsPlan.whole ? 'whole file' : 'pruned'}), graft ${tagged.ms} ms, source read ${tagsPlan.tags.ms} ms`);
+			} else tagsInfo = { kept: false, reason: 'unsupported' };
+		} else if (tagsPlan.kind === 'drop') debug(`tags: not kept (${tagsPlan.reason})`);
+		const artifacts = tagged !== null;
 
 		// (a2) OCR text layers, checked page by page (ocr/stage.ts).
 		let layered = new Map<number, WrittenWord[]>();
 		let ocrReport: ExportResult['ocr'];
 		if (reading) {
-			const r = await addLayers(deps, bytes, pages, reading, debug);
+			const r = await addLayers(deps, bytes, pages, reading, debug, artifacts);
 			bytes = r.bytes;
 			layered = r.written;
 			ocrReport = r.report;
@@ -575,7 +601,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		let made: MadeField[] = [];
 		if (jobs.length || numbering) {
 			const [lib, fk] = await Promise.all([pdfLib(), font.fontkit()]);
-			const stampDeps = { lib, fontkit: fk, fontBytes: () => font.bytes() };
+			const stampDeps = { lib, fontkit: fk, fontBytes: () => font.bytes(), artifacts };
 			const assembled = bytes;
 			const stampWarnings: string[] = [];
 			const ordinary = await applyStamps(stampDeps, assembled, jobs, assetList, numbering ?? undefined, stampWarnings);
@@ -666,6 +692,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			if (numbering) checks.push(...(await verifyNumbering(deps, file, numbering.labels, password, numbering.numbering)));
 			if (made.length) checks.push(await verifyBlankFields(deps, file, made, password));
 			if (layered.size) checks.push(await verifyTextLayer(await pdfjs(), file, layered, password));
+			if (tagged) checks.push(await verifyTags(qpdf, file, tagged.expected, password));
 			checks.push(...stageChecks);
 			return checks;
 		};
@@ -682,6 +709,12 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 				warnings.push(...w);
 			}
 		}
+		if (!checks.every((c) => c.ok) && tagged && checks.every((c) => c.ok || c.name === 'tags')) {
+			// Only the tags failed their check: the same plan again, without them ("avoid, don't fail").
+			debug(`tags: the export's tags failed their check (${checks.find((c) => c.name === 'tags')?.detail}); exporting without them`);
+			throwIfCancelled(control);
+			return exportPlan(plan, sources, assetList, control, { noTags: 'check', reading, started });
+		}
 		if (!checks.every((c) => c.ok)) {
 			throw new EngineError('verification-failed', 'The exported file did not pass its checks, so it was not saved.', checks);
 		}
@@ -696,6 +729,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		if (blanks) result.blankFields = { fields: made.length, plain: blanks.total - made.length };
 		if (ocrReport) result.ocr = ocrReport;
 		if (printCap) result.printCap = printCap;
+		if (tagsInfo) result.tags = tagsInfo;
 		return result;
 	}
 
