@@ -24,7 +24,7 @@
 	import SaveLine from '../session/SaveLine.svelte';
 	import { getSession, useSession } from '../session/index.svelte';
 	import { BROKEN_MESSAGE } from '../session/session';
-	import { exportForm } from './export-form.svelte';
+	import { exportForm, startNewJob } from './export-form.svelte';
 	import { play, snapshot } from './flip';
 	import { createIntake, type PasswordAsk } from './intake.svelte';
 	import { holdBusy } from '../ui/busy';
@@ -249,6 +249,8 @@
 	// ------------------------------------------------------------ commands
 
 	function addFiles(files: File[]) {
+		// Files into an empty workspace start a new job: the watermark switch goes back to off.
+		if (files.length && store.state.pages.length === 0 && !intake.busy) startNewJob();
 		intake.add(files);
 	}
 

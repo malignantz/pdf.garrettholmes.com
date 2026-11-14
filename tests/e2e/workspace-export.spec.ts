@@ -4,6 +4,7 @@ import * as mupdf from 'mupdf';
 import { fileURLToPath } from 'node:url';
 import type { Locator, Page } from '@playwright/test';
 import { test, expect } from './fixtures';
+import { moreButton, openMore } from './export-helpers';
 
 const corpus = (name: string) => fileURLToPath(new URL(`../corpus/files/${name}`, import.meta.url));
 
@@ -39,6 +40,7 @@ const exportButton = (d: Locator) => d.getByRole('button', { name: 'Export', exa
 test('page numbers: choose, preview, export, read back', async ({ page }) => {
 	test.setTimeout(90_000);
 	const dialog = await open(page, 'multi.pdf', 6);
+	await openMore(dialog);
 	await dialog.getByRole('switch', { name: 'Number the pages' }).click();
 	await expect(dialog.getByRole('radio', { name: 'Bottom center' })).toBeChecked();
 	await expect(dialog.getByText('First: "Page 1 of 6" · Last: "Page 6 of 6"')).toBeVisible();
@@ -59,6 +61,7 @@ test('page numbers: choose, preview, export, read back', async ({ page }) => {
 
 test('bates: too few digits is explained and blocks the export', async ({ page }) => {
 	const dialog = await open(page, 'multi.pdf', 6);
+	await openMore(dialog);
 	await dialog.getByRole('switch', { name: 'Number the pages' }).click();
 	await dialog.getByLabel('Style').selectOption({ label: 'Bates number' });
 	await dialog.getByLabel('Prefix').fill('ACME-');
@@ -73,6 +76,7 @@ test('bates: too few digits is explained and blocks the export', async ({ page }
 test('fit under a size: reached', async ({ page }) => {
 	test.setTimeout(240_000);
 	const dialog = await open(page, 'shrink-photos.pdf', 12);
+	await openMore(dialog);
 	await dialog.getByRole('switch', { name: 'Fit under a size' }).click();
 	await expect(dialog.getByRole('radio', { name: '10 MB' })).toBeChecked();
 	const compress = dialog.getByRole('switch', { name: 'Optimize' });
@@ -101,6 +105,7 @@ test('fit under a size: out of reach offers the smallest file, without an error'
 	test.setTimeout(240_000);
 	// Nothing in this file is safe to shrink, so 0.1 MB cannot be reached (it is about 380 KB).
 	const dialog = await open(page, 'shrink-skips.pdf', 6);
+	await openMore(dialog);
 	await dialog.getByRole('switch', { name: 'Fit under a size' }).click();
 	await dialog.getByRole('radio', { name: 'Other' }).click();
 	await dialog.getByLabel('Size in MB').fill('0.1');
@@ -115,6 +120,7 @@ test('fit under a size: out of reach offers the smallest file, without an error'
 
 test('options are remembered when the dialog is reopened; the password is not', async ({ page }) => {
 	const dialog = await open(page, 'multi.pdf', 6);
+	await openMore(dialog);
 	await dialog.getByRole('switch', { name: 'Remove metadata' }).click();
 	await dialog.getByRole('switch', { name: 'Number the pages' }).click();
 	await dialog.getByRole('radio', { name: 'Top left' }).click();
@@ -131,8 +137,63 @@ test('options are remembered when the dialog is reopened; the password is not', 
 	await expect(dialog.getByRole('switch', { name: 'Add a password' })).not.toBeChecked();
 });
 
+test('more options: folded at first; anything switched on inside is shown or named', async ({ page }) => {
+	let dialog = await open(page, 'multi.pdf', 6);
+	const more = moreButton(dialog);
+	// The common options are in view; the rest are folded.
+	await expect(more).toHaveAttribute('aria-expanded', 'false');
+	await expect(more).toHaveAccessibleName('More options');
+	await expect(dialog.getByRole('switch', { name: 'Optimize' })).toBeVisible();
+	await expect(dialog.getByRole('switch', { name: 'Add a password' })).toBeVisible();
+	await expect(dialog.getByRole('switch', { name: 'Number the pages' })).toHaveCount(0);
+	// Keyboard: the button is reachable and opens with Enter.
+	await more.focus();
+	await page.keyboard.press('Enter');
+	await expect(more).toHaveAttribute('aria-expanded', 'true');
+	await dialog.getByRole('switch', { name: 'Number the pages' }).click();
+	await dialog.getByRole('switch', { name: 'Add a watermark' }).click();
+	// Folded while something is on: the button says what.
+	await more.click();
+	await expect(more).toHaveAttribute('aria-expanded', 'false');
+	await expect(more).toHaveAccessibleName('More options · Page numbers, Watermark on');
+	await expect(dialog.getByRole('switch', { name: 'Number the pages' })).toHaveCount(0);
+	// Reopened with options on inside: open, although it was left folded.
+	await dialog.getByRole('button', { name: 'Cancel' }).click();
+	await page.getByRole('button', { name: 'Export', exact: true }).click();
+	dialog = page.getByRole('dialog', { name: 'Export PDF' });
+	await expect(more).toHaveAttribute('aria-expanded', 'true');
+	await expect(dialog.getByRole('switch', { name: 'Number the pages' })).toBeChecked();
+	// Nothing on: it stays as the person left it (folded).
+	await dialog.getByRole('switch', { name: 'Number the pages' }).click();
+	await dialog.getByRole('switch', { name: 'Add a watermark' }).click();
+	await dialog.getByRole('button', { name: 'Cancel' }).click();
+	await page.getByRole('button', { name: 'Export', exact: true }).click();
+	await expect(more).toHaveAttribute('aria-expanded', 'false');
+});
+
+test('more options: a problem inside opens it, and folded it still says so', async ({ page }) => {
+	let dialog = await open(page, 'multi.pdf', 6);
+	await openMore(dialog);
+	const more = moreButton(dialog);
+	await dialog.getByRole('switch', { name: 'Number the pages' }).click();
+	await dialog.getByLabel('Style').selectOption({ label: 'Bates number' });
+	await dialog.getByLabel('Digits').fill('2');
+	await expect(dialog.getByRole('alert').filter({ hasText: 'Bates numbers must have between 3 and 10 digits.' })).toBeVisible();
+	// Folded by the person: the button says what is on and that it needs a fix; Export waits.
+	await more.click();
+	await expect(more).toHaveAccessibleName('More options · Page numbers on · Needs a fix');
+	await expect(exportButton(dialog)).toBeDisabled();
+	// Opened again with the problem: the section is open and shows it.
+	await dialog.getByRole('button', { name: 'Cancel' }).click();
+	await page.getByRole('button', { name: 'Export', exact: true }).click();
+	dialog = page.getByRole('dialog', { name: 'Export PDF' });
+	await expect(more).toHaveAttribute('aria-expanded', 'true');
+	await expect(dialog.getByRole('alert').filter({ hasText: 'Bates numbers must have between 3 and 10 digits.' })).toBeVisible();
+});
+
 test('everything stays reachable with all sections open', async ({ page }) => {
 	const dialog = await open(page, 'multi.pdf', 6);
+	await openMore(dialog);
 	await dialog.getByRole('switch', { name: 'Fit under a size' }).click();
 	await dialog.getByRole('switch', { name: 'Number the pages' }).click();
 	await dialog.getByLabel('Style').selectOption({ label: 'Bates number' });

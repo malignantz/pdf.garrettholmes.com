@@ -220,3 +220,36 @@ describe('watermark option', () => {
 		expect(odd).toMatchObject({ wmLook: 'diagonal', wmColor: 'grey' });
 	});
 });
+
+describe('more options', () => {
+	const shown = { pictures: false, canSplit: true, redacting: false, scanned: 0 };
+
+	it('names every option under More options that is switched on, in order', async () => {
+		const { moreOptionsOn } = await import('../../src/lib/workspace/logic');
+		expect(moreOptionsOn(form(), shown)).toEqual([]);
+		expect(moreOptionsOn(form({ number: true, watermark: true }), shown)).toEqual(['Page numbers', 'Watermark']);
+		expect(
+			moreOptionsOn(form({ split: true, fit: true, number: true, watermark: true, stripMetadata: true, ocr: true }), { ...shown, scanned: 2 })
+		).toEqual(['Split', 'Size limit', 'Page numbers', 'Watermark', 'Remove metadata', 'Searchable text']);
+	});
+
+	it('counts only what this export shows: redaction turns metadata removal on', async () => {
+		const { moreOptionsOn } = await import('../../src/lib/workspace/logic');
+		// Searchable text is offered only when a page is scanned; split only with more than one page.
+		expect(moreOptionsOn(form({ ocr: true, split: true }), { ...shown, canSplit: false })).toEqual([]);
+		// Pictures carry page numbers and the watermark, nothing else.
+		expect(moreOptionsOn(form({ fit: true, stripMetadata: true, number: true }), { ...shown, pictures: true, canSplit: false })).toEqual([
+			'Page numbers'
+		]);
+		expect(moreOptionsOn(form(), { ...shown, redacting: true })).toEqual(['Remove metadata']);
+	});
+});
+
+describe('a new job', () => {
+	it('switches the watermark off and keeps how it looks', async () => {
+		const { exportForm, startNewJob } = await import('../../src/lib/workspace/export-form.svelte');
+		Object.assign(exportForm, { watermark: true, wmPick: 'other', wmText: 'Mine', wmColor: 'red', number: true });
+		startNewJob();
+		expect(exportForm).toMatchObject({ watermark: false, wmPick: 'other', wmText: 'Mine', wmColor: 'red', number: true });
+	});
+});

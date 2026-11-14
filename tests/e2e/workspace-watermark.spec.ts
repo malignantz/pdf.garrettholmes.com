@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { Locator, Page } from '@playwright/test';
 import { test, expect } from './fixtures';
+import { openMore } from './export-helpers';
 
 const corpus = (name: string) => fileURLToPath(new URL(`../corpus/files/${name}`, import.meta.url));
 const shots = process.env.CW_SHOTS;
@@ -49,6 +50,7 @@ async function open(page: Page, file: string, pages: number): Promise<Locator> {
 test('watermark: choose, preview, export, every page carries it', async ({ page }) => {
 	test.setTimeout(90_000);
 	const dialog = await open(page, 'multi.pdf', 6);
+	await openMore(dialog);
 	await dialog.getByRole('switch', { name: 'Add a watermark' }).click();
 	const section = dialog.getByTestId('watermark-section');
 	await expect(section.getByRole('radio', { name: 'Draft' })).toBeChecked();
@@ -78,6 +80,7 @@ test('watermark: choose, preview, export, every page carries it', async ({ page 
 test('watermark: typed text, straight; characters the font cannot draw block the export; remembered', async ({ page }) => {
 	test.setTimeout(90_000);
 	const dialog = await open(page, 'multi.pdf', 6);
+	await openMore(dialog);
 	await dialog.getByRole('switch', { name: 'Add a watermark' }).click();
 	const section = dialog.getByTestId('watermark-section');
 	await section.getByRole('radio', { name: 'Other' }).click();
@@ -109,6 +112,94 @@ test('watermark: typed text, straight; characters the font cannot draw block the
 	}
 });
 
+const pagesOf = (page: Page) => page.getByRole('option');
+
+async function startOver(page: Page) {
+	await page.getByRole('button', { name: 'More actions' }).click();
+	await page.getByRole('menuitem', { name: 'Start over' }).click();
+	await expect(pagesOf(page)).toHaveCount(0);
+}
+
+async function reopen(page: Page): Promise<Locator> {
+	await page.getByRole('button', { name: 'Export', exact: true }).click();
+	const dialog = page.getByRole('dialog', { name: 'Export PDF' });
+	await expect(dialog).toBeVisible();
+	return dialog;
+}
+
+test('watermark: switched off for new files; kept for the same work and after Undo; its text stays chosen', async ({ page }) => {
+	const dialog = await open(page, 'multi.pdf', 6);
+	await openMore(dialog);
+	await dialog.getByRole('switch', { name: 'Add a watermark' }).click();
+	const section = dialog.getByTestId('watermark-section');
+	await section.getByRole('radio', { name: 'Other' }).click();
+	await section.getByLabel('Watermark text').fill('For Ana');
+	await section.getByRole('radio', { name: 'Red' }).click();
+	await dialog.getByRole('button', { name: 'Cancel' }).click();
+
+	// Start over, then Undo: the same work, so the watermark is still on.
+	await startOver(page);
+	await page.getByRole('button', { name: 'Undo', exact: true }).click();
+	await expect(pagesOf(page)).toHaveCount(6);
+	let again = await reopen(page);
+	await expect(again.getByRole('switch', { name: 'Add a watermark' })).toBeChecked();
+	await again.getByRole('button', { name: 'Cancel' }).click();
+
+	// Start over with a different file: a new job, the switch is off.
+	await startOver(page);
+	await page.locator('input[type=file]').first().setInputFiles([corpus('rotated.pdf')]);
+	await expect(pagesOf(page)).toHaveCount(6, { timeout: 30_000 });
+	again = await reopen(page);
+	await openMore(again);
+	const wm = again.getByRole('switch', { name: 'Add a watermark' });
+	await expect(wm).not.toBeChecked();
+	await expect(again.getByTestId('watermark-section')).toHaveCount(0);
+	// How it looks is remembered.
+	await wm.click();
+	await expect(again.getByTestId('watermark-section').getByLabel('Watermark text')).toHaveValue('For Ana');
+	await expect(again.getByTestId('watermark-section').getByRole('radio', { name: 'Red' })).toBeChecked();
+});
+
+test('watermark: restoring saved work brings it back as it was', async ({ page }) => {
+	test.setTimeout(90_000);
+	const dialog = await open(page, 'multi.pdf', 6);
+	await openMore(dialog);
+	await dialog.getByRole('switch', { name: 'Add a watermark' }).click();
+	await dialog.getByRole('button', { name: 'Cancel' }).click();
+	// Wait until the saved record holds the switch.
+	await expect
+		.poll(
+			() =>
+				page.evaluate(
+					() =>
+						new Promise<boolean>((resolve) => {
+							const r = indexedDB.open('pdf-workspace-session');
+							r.onerror = () => resolve(false);
+							r.onsuccess = () => {
+								const db = r.result;
+								if (!db.objectStoreNames.contains('session')) return resolve(false);
+								const get = db.transaction('session').objectStore('session').get('current');
+								get.onsuccess = () => {
+									db.close();
+									resolve(!!(get.result as { exportForm?: { watermark?: boolean } } | undefined)?.exportForm?.watermark);
+								};
+								get.onerror = () => resolve(false);
+							};
+						})
+				),
+			{ timeout: 15_000 }
+		)
+		.toBe(true);
+	await page.waitForTimeout(700);
+	await page.reload();
+	const card = page.getByRole('region', { name: 'Pick up where you left off?' });
+	await card.getByRole('button', { name: 'Restore' }).click();
+	await expect(pagesOf(page)).toHaveCount(6, { timeout: 30_000 });
+	const again = await reopen(page);
+	// Folded by nobody, opened because something inside is on.
+	await expect(again.getByRole('switch', { name: 'Add a watermark' })).toBeChecked();
+});
+
 for (const [name, viewport] of [
 	['desktop', { width: 1280, height: 900 }],
 	['phone', { width: 360, height: 740 }]
@@ -119,6 +210,7 @@ for (const [name, viewport] of [
 		const ctx = await browser.newContext({ baseURL, viewport, deviceScaleFactor: 2, hasTouch: name === 'phone', isMobile: name === 'phone' });
 		const page = await ctx.newPage();
 		const dialog = await open(page, 'multi.pdf', 6);
+		await openMore(dialog);
 		await dialog.getByRole('switch', { name: 'Add a watermark' }).click();
 		await dialog.getByTestId('watermark-section').getByRole('radio', { name: 'Confidential' }).click();
 		const fig = dialog.getByRole('figure');

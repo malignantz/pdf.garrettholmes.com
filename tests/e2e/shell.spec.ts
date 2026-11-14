@@ -32,18 +32,22 @@ test('the start page says what the tool does', async ({ page }) => {
 	await page.goto('/');
 	await expect(page.getByRole('heading', { level: 1, name: 'Combine, sign and fix PDFs' })).toBeVisible();
 	await expect(page.getByRole('heading', { level: 2, name: 'What you can do' })).toBeVisible();
-	const items = page.getByRole('list').filter({ has: page.getByText('Combine and rearrange') }).getByRole('listitem');
-	await expect(items).toHaveCount(6);
-	for (const title of [
-		'Combine and rearrange',
-		'Sign and fill in',
-		'Mark up',
-		'Black out private details',
-		'Make it smaller',
-		'Lock, unlock, convert'
-	]) {
-		await expect(page.getByText(title, { exact: true })).toBeVisible();
+	// Most used first; the rest fold under "More it can do" (open on a roomy desktop window).
+	const first = ['Combine files', 'Pictures to PDF', 'PDF to pictures', 'Make it smaller', 'Fill in and sign', 'Split', 'Delete and reorder pages', 'Unlock'];
+	const rest = ['Rotate', 'Crop', 'Add a password', 'Black out private details', 'Page numbers', 'Watermark', 'Mark up', 'Searchable scans'];
+	const list = page.locator('#features');
+	const titles = () => list.locator('li strong').allTextContents();
+	const more = page.getByRole('button', { name: 'More it can do' });
+	if ((await more.getAttribute('aria-expanded')) === 'true') {
+		await expect.poll(titles).toEqual([...first, ...rest]);
+		await more.click();
 	}
+	await expect(more).toHaveAttribute('aria-expanded', 'false');
+	await expect.poll(titles).toEqual(first);
+	await more.click();
+	await expect(more).toHaveAttribute('aria-expanded', 'true');
+	await expect.poll(titles).toEqual([...first, ...rest]);
+	for (const title of [...first, ...rest]) await expect(list.getByText(title, { exact: true })).toBeVisible();
 	await expect(page.getByRole('button', { name: 'Choose files' })).toBeVisible();
 });
 
