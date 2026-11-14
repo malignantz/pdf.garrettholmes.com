@@ -1,0 +1,47 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>ZetaOffice trial</title>
+<p id="s">loading</p>
+<canvas id="qtcanvas" style="display:none"></canvas>
+<script src="/web/chunked-fetch.js"></script>
+<script>installChunkedFetch('/v/chunks/zeta');</script>
+<script type="module">
+	import { ZetaHelperMain } from '/v/zeta/zetajs/zetaHelper.js';
+	const t0 = performance.now();
+	window.trial = { ready: false, error: null };
+	const zHM = new ZetaHelperMain('/web/zeta-thread.js', { threadJsType: 'module', wasmPkg: 'url:/v/zeta/' });
+	zHM.Module.uno_scripts[1] = '/web/zeta-wrap.js';
+	zHM.Module.onAbort = (w) => { window.trial.error = 'abort ' + w; };
+	let pending = null;
+	// Emscripten's file packager loads soffice.data with XHR, which the chunked fetch cannot see:
+	// fetch it (in pieces) first and hand it over through the getPreloadedPackage hook.
+	const dataBuf = await (await fetch('/v/zeta/soffice.data')).arrayBuffer();
+	zHM.Module.getPreloadedPackage = () => dataBuf;
+	zHM.start(() => {
+		zHM.thrPort.onmessage = (e) => {
+			if (e.data.cmd === 'start') {
+				window.trial.ready = true;
+				window.trial.readyMs = performance.now() - t0;
+				document.getElementById('s').textContent = 'ready';
+			} else if (pending) {
+				const p = pending; pending = null; p(e.data);
+			}
+		};
+	});
+	let n = 0;
+	window.convertUrl = async (url) => {
+		const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+		const t = performance.now();
+		const from = `/tmp/in${n}.docx`, to = `/tmp/out${n++}.pdf`;
+		FS.writeFile(from, bytes);
+		const r = await new Promise((res) => { pending = res; zHM.thrPort.postMessage({ cmd: 'convert', from, to }); });
+		const ms = performance.now() - t;
+		try { FS.unlink(from); } catch {}
+		if (r.cmd !== 'converted') return { ms, error: r.msg || 'failed' };
+		const d = FS.readFile(to);
+		try { FS.unlink(to); } catch {}
+		let bin = '';
+		for (let i = 0; i < d.length; i += 0x8000) bin += String.fromCharCode.apply(null, d.subarray(i, i + 0x8000));
+		return { ms, pdf: btoa(bin) };
+	};
+</script>

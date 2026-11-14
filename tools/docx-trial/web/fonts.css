@@ -1,0 +1,16 @@
+/* Metric-compatible free fonts under the Office names, for the HTML routes (served from our origin).
+   Files: the TrueType fonts shipped with desktop LibreOffice (Carlito, Caladea, Liberation; OFL / OFL). */
+@font-face { font-family: 'Calibri'; src: url('/v/lo-desktop/squashfs-root/opt/libreoffice26.8/share/fonts/truetype/Carlito-Regular.ttf'); }
+@font-face { font-family: 'Calibri'; font-weight: bold; src: url('/v/lo-desktop/squashfs-root/opt/libreoffice26.8/share/fonts/truetype/Carlito-Bold.ttf'); }
+@font-face { font-family: 'Calibri'; font-style: italic; src: url('/v/lo-desktop/squashfs-root/opt/libreoffice26.8/share/fonts/truetype/Carlito-Italic.ttf'); }
+@font-face { font-family: 'Calibri Light'; src: url('/v/lo-desktop/squashfs-root/opt/libreoffice26.8/share/fonts/truetype/Carlito-Regular.ttf'); }
+@font-face { font-family: 'Cambria'; src: url('/v/lo-desktop/squashfs-root/opt/libreoffice26.8/share/fonts/truetype/Caladea-Regular.ttf'); }
+@font-face { font-family: 'Cambria'; font-weight: bold; src: url('/v/lo-desktop/squashfs-root/opt/libreoffice26.8/share/fonts/truetype/Caladea-Bold.ttf'); }
+@font-face { font-family: 'Cambria'; font-style: italic; src: url('/v/lo-desktop/squashfs-root/opt/libreoffice26.8/share/fonts/truetype/Caladea-Italic.ttf'); }
+@font-face { font-family: 'Arial'; src: url('/v/lo-desktop/squashfs-root/opt/libreoffice26.8/share/fonts/truetype/LiberationSans-Regular.ttf'); }
+@font-face { font-family: 'Arial'; font-weight: bold; src: url('/v/lo-desktop/squashfs-root/opt/libreoffice26.8/share/fonts/truetype/LiberationSans-Bold.ttf'); }
+@font-face { font-family: 'Arial'; font-style: italic; src: url('/v/lo-desktop/squashfs-root/opt/libreoffice26.8/share/fonts/truetype/LiberationSans-Italic.ttf'); }
+@font-face { font-family: 'Times New Roman'; src: url('/v/lo-desktop/squashfs-root/opt/libreoffice26.8/share/fonts/truetype/LiberationSerif-Regular.ttf'); }
+@font-face { font-family: 'Times New Roman'; font-weight: bold; src: url('/v/lo-desktop/squashfs-root/opt/libreoffice26.8/share/fonts/truetype/LiberationSerif-Bold.ttf'); }
+@font-face { font-family: 'Times New Roman'; font-style: italic; src: url('/v/lo-desktop/squashfs-root/opt/libreoffice26.8/share/fonts/truetype/LiberationSerif-Italic.ttf'); }
+@font-face { font-family: 'Courier New'; src: url('/v/lo-desktop/squashfs-root/opt/libreoffice26.8/share/fonts/truetype/LiberationMono-Regular.ttf'); }

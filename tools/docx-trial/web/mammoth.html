@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>mammoth trial</title>
+<link rel="stylesheet" href="/web/fonts.css">
+<style>
+	@page { size: 8.5in 11in; margin: 1in; }
+	body { margin: 0; font-family: Calibri, sans-serif; font-size: 11pt; line-height: 1.08; }
+	p { margin: 0 0 8pt; }
+	table { border-collapse: collapse; }
+	td, th { border: 1px solid #000; padding: 2pt 5pt; vertical-align: top; }
+	img { max-width: 100%; }
+</style>
+<div id="out"></div>
+<script src="/v/x/mammoth-1.13.0/package/mammoth.browser.min.js"></script>
+<script>
+	// HTML route: mammoth turns the .docx into semantic HTML (no page geometry, headers, footers,
+	// floats or fonts), then the browser's print engine paginates it. The harness calls page.pdf()
+	// as the best case of that step; a real in-app version would need window.print() or a raster.
+	window.trial = { ready: true, readyMs: 0 };
+	window.convertUrl = async (url) => {
+		const buf = await (await fetch(url)).arrayBuffer();
+		const t = performance.now();
+		try {
+			const r = await mammoth.convertToHtml({ arrayBuffer: buf });
+			document.getElementById('out').innerHTML = r.value;
+			await document.fonts.ready;
+			await Promise.all([...document.images].map((i) => i.decode().catch(() => {})));
+			return { ms: performance.now() - t, print: true, warnings: r.messages.length };
+		} catch (e) { return { ms: performance.now() - t, error: String(e) }; }
+	};
+</script>
