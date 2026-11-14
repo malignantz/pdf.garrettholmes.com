@@ -20,8 +20,8 @@
  *                       (alpha, beta, gamma, a UTF-16 "zeta é"). Bookmarks use them through /Dest
  *                       names and strings and GoTo /D; one names a destination that does not exist.
  *                       Links: page 1 /Dest (gamma) and /A GoTo /D /second; page 2 /Dest "zeta é".
- *   outline-second.pdf  2 pages, its own outline and title; names (alpha), which outline-named.pdf
- *                       defines differently, and (delta).
+ *   outline-second.pdf  2 pages, its own outline and title (one view with 8-digit coordinates);
+ *                       names (alpha), which outline-named.pdf defines differently, and (delta).
  *   outline-cyclic.pdf  2 pages; the outline's second item points back at the first (/Next cycle).
  *   outline-damaged.pdf 2 pages; an item's /First is a number, not a dictionary.
  *   outline-form.pdf    2 pages, a text field on page 1 (the in-place assemble path), 2 bookmarks.
@@ -222,7 +222,8 @@ function second() {
 	const { pagesRef, refs: p } = pagesOf(pdf, 'outline-second', 2);
 	const ol = outline(pdf, [
 		{ title: '(Second file)', dest: `[${R(p[0])} /Fit]` },
-		{ title: '(Second file, page 2)', dest: `[${R(p[1])} /XYZ 0 792 null]` }
+		// Coordinates with more digits than a 32-bit float keeps (written with six).
+		{ title: '(Second file, page 2)', dest: `[${R(p[1])} /XYZ 10.123456 700.98765 null]` }
 	]);
 	const tree = pdf.add(`<< /Names [(alpha) [${R(p[1])} /Fit] (delta) [${R(p[0])} /Fit]] >>`);
 	const info = pdf.add('<< /Title (Second) /Author (Someone else) >>');

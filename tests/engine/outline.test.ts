@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { Asset, ExportOptions, ExportResult, PageRef, Source, Stamp } from '../../src/lib/core/types';
+import { createCoreEngine } from '../../src/lib/engine/core';
 import { Qpdf } from '../../src/lib/engine/qpdf';
 import { MAX_ITEMS, inspectOutline, outlineLines, stringBytes, verifyOutline, type OutlineExpected } from '../../src/lib/engine/outline';
 import { corpus, defaultOptions, engine, loadPdfjs, manifest, nodeAssets, openCorpus, pageTexts, ref } from './helpers';
@@ -297,7 +298,7 @@ describe('outline: named destinations and links', () => {
 			['Gamma', [3, 'Fit']],
 			['Zeta', [3, 'XYZ', 0, 100, 0]],
 			['Second file', [4, 'Fit']],
-			['Second file, page 2', [5, 'XYZ', 0, 792, null]]
+			['Second file, page 2', [5, 'XYZ', 10.1235, 700.988, null]]
 		]);
 	}, T);
 });
@@ -310,7 +311,7 @@ describe('outline: several files', () => {
 		expect(res.docInfo).toEqual({ kept: false, reason: 'merged' });
 		const f = await pdfjsFacts(res.bytes);
 		expect(f.outline.map((m) => m.t)).toEqual(['Second file', 'Second file, page 2', ...BASIC.map((m) => m.t)]);
-		expect(f.outline[1].d).toEqual([6, 'XYZ', 0, 792, null]);
+		expect(f.outline[1].d).toEqual([6, 'XYZ', 10.1235, 700.988, null]);
 		expect(f.outline[2].d).toEqual([2, 'XYZ', 72, 720, 0]);
 		expect(f.info.Title).toBeUndefined();
 		expect(f.info.Author).toBeUndefined();
@@ -410,6 +411,19 @@ describe('outline: forms (the in-place assemble path)', () => {
 		res = await run([ref(src, 1)], [src], { flattenForms: true });
 		f = await pdfjsFacts(res.bytes);
 		expect(f.outline.map((m) => [m.t, m.d])).toEqual([['After the form', [1, 'Fit']]]);
+	}, T);
+});
+
+describe('outline: numbers', () => {
+	it('view coordinates are written with six significant digits, so the MuPDF cleanup is not turned down by them', async () => {
+		const notes: string[] = [];
+		const e = createCoreEngine(nodeAssets(), { debug: (n) => notes.push(n), lossless: { cleanup: 'always' } });
+		const src = await e.openPdf(corpus('outline-second.pdf'), 'second.pdf');
+		const res = await e.exportPlan({ pages: all(src), options: { ...defaultOptions, compress: true } }, [src], []);
+		expect(res.checks.every((c) => c.ok)).toBe(true);
+		expect(notes.some((n) => /^cleanup: estimate/.test(n))).toBe(true);
+		expect(notes.filter((n) => /rejected/.test(n))).toEqual([]);
+		expect((await pdfjsFacts(res.bytes)).outline[1].d).toEqual([2, 'XYZ', 10.1235, 700.988, null]);
 	}, T);
 });
 
