@@ -2771,5 +2771,20 @@
 		"eligible": [
 			0
 		]
+	},
+	"bilevel-scans.pdf": {
+		"pages": 6,
+		"note": "Black and white scans: 300 ppi RGB JPEG pages: p1 typed lines (converted); p2 + light grey line (refused); p3 + red stamp (refused: colour); p4 + pencil scribble (refused); p5 + colour photo (refused: colour); p6 typed lines on yellowed paper (converted)",
+		"ppi": 300,
+		"converted": [
+			0,
+			5
+		],
+		"refused": [
+			1,
+			2,
+			3,
+			4
+		]
 	}
 }
