@@ -541,7 +541,7 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 			tagged = await graftTags(qpdf, bytes, tagsPlan, debug);
 			if (tagged) {
 				bytes = tagged.bytes;
-				debug(`tags: ${tagged.expected.elements} elements kept (${tagsPlan.whole ? 'whole file' : 'pruned'}), graft ${tagged.ms} ms, source read ${tagsPlan.tags.ms} ms`);
+				debug(`tags: ${tagged.expected.elements} elements kept (${tagsPlan.whole ? 'whole file' : 'pruned'}), graft ${tagged.ms} ms, source read ${tagsPlan.parts.reduce((n, t) => n + t.tags.ms, 0)} ms${tagsPlan.parts.length > 1 ? `, ${tagsPlan.parts.length} files merged` : ''}`);
 			} else tagsInfo = { kept: false, reason: 'unsupported' };
 		} else if (tagsPlan.kind === 'drop') debug(`tags: not kept (${tagsPlan.reason})`);
 		const artifacts = tagged !== null;

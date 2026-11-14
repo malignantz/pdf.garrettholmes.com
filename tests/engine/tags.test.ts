@@ -331,6 +331,49 @@ describe('tags: subsets, order, blank pages (tier 2)', () => {
 	}, T);
 });
 
+describe('tags: several tagged files merged (tier 2)', () => {
+	it('puts both trees under one root, keys of the second file moved past the first’s', async () => {
+		const a = await openCorpus('tags-basic.pdf');
+		const b = await openCorpus('tags-second.pdf');
+		const res = await run([...all(a), ...all(b)], [a, b], { compress: true });
+		expect(keptCheck(res).detail).toContain('20 structure elements, 2 picture descriptions (/Alt), 2 replacement texts');
+		const ta = await trees(a.bytes);
+		const tb = await trees(b.bytes);
+		expect(await trees(res.bytes)).toEqual([...ta, ...tb]);
+		const raw = (await expanded(res.bytes)).toString('latin1');
+		expect(raw).toMatch(/\/RoleMap <<\s*\/Heading1 \/H1\s*\/Title \/H1\s*>>/);
+		expect(raw).toMatch(/\/ParentTreeNextKey 6/);
+		expect(raw.match(/\/StructParents [45]\b/g)?.length).toBe(2);
+		// The IDTree holds the IDs of both, sorted.
+		expect(raw).toMatch(/\/Names \[\s*\(t2-title\)\s+\d+ 0 R\s*\(th-name\)\s+\d+ 0 R\s*\(th-value\)\s+\d+ 0 R\s*\]/);
+	}, T);
+
+	it('interleaved, pruned, with a blank page; a second file in another language gets its /Lang on its elements', async () => {
+		const a = await openCorpus('tags-basic.pdf');
+		const f = await openCorpus('tags-form.pdf');
+		const blank = await engine().blankPage({ width: 612, height: 792 });
+		const res = await run([ref(a, 2), ref(f, 0), ref(blank, 0), ref(a, 0)], [a, f, blank], { compress: true });
+		keptCheck(res);
+		const ta = await trees(a.bytes);
+		const [tf] = await trees(f.bytes);
+		const out = await trees(res.bytes);
+		expect(out[0]).toEqual(ta[2]);
+		expect(out[3]).toEqual(ta[0]);
+		const doc = (out[1]!.children![0] as Node);
+		expect(doc.lang).toBe('en-GB');
+		expect({ ...doc, lang: undefined }).toEqual({ ...(tf!.children![0] as Node), lang: undefined });
+		expect(await catalogOf(res.bytes)).toMatch(/\/Lang \(en-US\)/);
+	}, T);
+
+	it('declines trees that map one role two ways or share an ID', async () => {
+		const a = await openCorpus('tags-basic.pdf');
+		const b = await openCorpus('tags-locked.pdf');
+		// The same IDs in both (a copy of the same file).
+		const res = await run([...all(a), ...all(b)], [a, b]);
+		expect(res.tags).toEqual({ kept: false, reason: 'merged' });
+	}, T);
+});
+
 describe('tags: not kept, with a reason (the export is as before)', () => {
 	it('a page used twice', async () => {
 		const src = await openCorpus('tags-basic.pdf');
@@ -339,12 +382,11 @@ describe('tags: not kept, with a reason (the export is as before)', () => {
 		expect(await catalogOf(res.bytes)).not.toMatch(/StructTreeRoot/);
 	}, T);
 
-	it('pages from another file: tagged, untagged or a picture', async () => {
+	it('pages from a file without tags, or a picture', async () => {
 		const src = await openCorpus('tags-basic.pdf');
-		const second = await openCorpus('tags-second.pdf');
 		const plain = await openCorpus('multi.pdf');
 		const img = await engine().openImage(corpus('photo-plain.jpg'), 'image/jpeg', 'photo.jpg');
-		for (const other of [second, plain, img]) {
+		for (const other of [plain, img]) {
 			const res = await run([...all(src), ref(other, 0)], [src, other]);
 			expect(res.tags, other.name).toEqual({ kept: false, reason: 'merged' });
 			expect(await catalogOf(res.bytes)).not.toMatch(/StructTreeRoot|MarkInfo/);

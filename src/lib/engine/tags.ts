@@ -708,21 +708,26 @@ function treeStreams(model: TagModel): boolean {
 	return found;
 }
 
+export interface TagsPart {
+	source: Source;
+	tags: SourceTags;
+}
+
 export type TagsPlan =
 	| { kind: 'none' }
 	| { kind: 'drop'; reason: TagsDropReason }
 	| {
 			kind: 'keep';
-			source: Source;
-			tags: SourceTags;
-			/** For each output page: the source page index, or null (a blank page). */
-			from: (number | null)[];
-			/** Every page of the source is in the export. */
+			/** Tagged sources, in the order their first page appears. */
+			parts: TagsPart[];
+			/** For each output page: its part and source page index, or null (a blank page). */
+			from: ({ part: number; page: number } | null)[];
+			/** One source, every one of its pages in the export. */
 			whole: boolean;
 	  };
 
 /**
- * Whether this export can keep its source's tags. Cheap when no source is tagged (one
+ * Whether this export can keep its sources' tags. Cheap when no source is tagged (one
  * `--show-object` pair per source); a tagged source is read and checked once (cached).
  */
 export async function planTags(
@@ -732,31 +737,103 @@ export async function planTags(
 	used: Source[],
 	opts: { redaction: boolean; flatten: boolean }
 ): Promise<TagsPlan> {
-	const tagged: { source: Source; tags: SourceTags }[] = [];
+	const parts: TagsPart[] = [];
 	for (const s of used) {
 		if (s.kind !== 'pdf') continue;
 		const t = await sourceTags(qpdf, s);
-		if (t) tagged.push({ source: s, tags: t });
+		if (t) parts.push({ source: s, tags: t });
 	}
-	if (tagged.length === 0) return { kind: 'none' };
+	if (parts.length === 0) return { kind: 'none' };
 	if (opts.redaction) return { kind: 'drop', reason: 'redacted' };
-	if (opts.flatten && tagged.some((t) => t.tags.form)) return { kind: 'drop', reason: 'flattened' };
-	const main = tagged[0];
-	if (used.some((s) => s !== main.source && s.kind !== 'blank')) return { kind: 'drop', reason: 'merged' };
-	const from: (number | null)[] = [];
-	const seen = new Set<number>();
+	if (opts.flatten && parts.some((t) => t.tags.form)) return { kind: 'drop', reason: 'flattened' };
+	const partOf = new Map(parts.map((p, i) => [p.source, i]));
+	// Pages of a file without tags would be outside the tree: screen readers that follow the
+	// tags would skip them, so the whole export goes without (readers then read every page).
+	if (used.some((s) => !partOf.has(s) && s.kind !== 'blank')) return { kind: 'drop', reason: 'merged' };
+	const from: ({ part: number; page: number } | null)[] = [];
+	const seen = parts.map(() => new Set<number>());
 	for (const ref of pages) {
-		const s = byId.get(ref.sourceId);
-		if (s !== main.source) {
+		const part = partOf.get(byId.get(ref.sourceId)!);
+		if (part === undefined) {
 			from.push(null);
 			continue;
 		}
-		if (seen.has(ref.pageIndex)) return { kind: 'drop', reason: 'repeated' };
-		seen.add(ref.pageIndex);
-		from.push(ref.pageIndex);
+		if (seen[part].has(ref.pageIndex)) return { kind: 'drop', reason: 'repeated' };
+		seen[part].add(ref.pageIndex);
+		from.push({ part, page: ref.pageIndex });
 	}
-	if (main.tags.fatal.length) return { kind: 'drop', reason: 'damaged' };
-	return { kind: 'keep', source: main.source, tags: main.tags, from, whole: seen.size === main.source.pages.length };
+	if (parts.some((p) => p.tags.fatal.length)) return { kind: 'drop', reason: 'damaged' };
+	if (parts.length > 1 && mergeProblem(parts.map((p) => p.tags.model))) return { kind: 'drop', reason: 'merged' };
+	return { kind: 'keep', parts, from, whole: parts.length === 1 && seen[0].size === parts[0].source.pages.length };
+}
+
+/** Root keys merged by their own rule (the rest must agree where several trees have them). */
+const MERGED_ROOT_KEYS = new Set(['/Type', '/K', '/ParentTree', '/ParentTreeNextKey', '/IDTree', '/RoleMap', '/ClassMap', '/Namespaces']);
+
+/** A value with every reference inlined (pages, annotations and elements as markers), for comparing trees' maps. */
+function inline(model: TagModel, v: Json, depth = 0): Json {
+	if (depth > 32) return '…';
+	if (isRef(v)) {
+		if (model.elemOf.has(v)) return 'element';
+		if (model.pageIndex.has(v)) return 'page';
+		const o = model.objects[objKey(v)];
+		if (!o) return null;
+		return o.stream ? 'stream' : inline(model, o.value, depth + 1);
+	}
+	if (Array.isArray(v)) return v.map((x) => inline(model, x, depth + 1));
+	if (isDict(v)) {
+		const out: Record<string, Json> = {};
+		for (const k of Object.keys(v).sort()) out[k] = inline(model, v[k], depth + 1);
+		return out;
+	}
+	return typeof v === 'string' ? textOf(v) : v;
+}
+
+/**
+ * Why several trees cannot be put under one root, or null: a role or class mapped two
+ * ways, an ID used in two files, another root key with two different values.
+ */
+function mergeProblem(models: TagModel[]): string | null {
+	for (const key of ['/RoleMap', '/ClassMap']) {
+		const seen = new Map<string, string>();
+		for (const m of models) {
+			const d = dictAt(m.objects, m.root[key]);
+			if (!d) continue;
+			for (const [k, v] of Object.entries(d)) {
+				const c = JSON.stringify(inline(m, v));
+				const prev = seen.get(k);
+				if (prev !== undefined && prev !== c) return `${key} ${k} differs`;
+				seen.set(k, c);
+			}
+		}
+	}
+	const ids = new Set<string>();
+	for (const m of models) {
+		for (const [k] of m.ids) {
+			const t = typeof k === 'string' ? textOf(k) : String(k);
+			if (ids.has(t)) return `ID ${t} is in two files`;
+			ids.add(t);
+		}
+	}
+	const other = new Map<string, string>();
+	for (const m of models) {
+		for (const [k, v] of Object.entries(m.root)) {
+			if (MERGED_ROOT_KEYS.has(k)) continue;
+			const c = JSON.stringify(inline(m, v));
+			const prev = other.get(k);
+			if (prev !== undefined && prev !== c) return `${k} differs`;
+			other.set(k, c);
+		}
+	}
+	return null;
+}
+
+/** The first ParentTree key after every key a tree uses. */
+function nextKey(model: TagModel): number {
+	let n = typeof model.root['/ParentTreeNextKey'] === 'number' ? (model.root['/ParentTreeNextKey'] as number) : 0;
+	for (const k of model.pt.keys()) n = Math.max(n, k + 1);
+	for (const k of model.owners.keys()) n = Math.max(n, k + 1);
+	return n;
 }
 
 // ------------------------------------------------------------------------------ pruning
@@ -802,7 +879,7 @@ function prune(model: TagModel, has: (ref: string) => boolean): Keep {
 		kept[i] = parentKept && (f & 1 ? (f & 2) !== 0 : true);
 		partial[i] = kept[i] && (f & 6) === 6;
 	}
-	return { kept, partial, kidKept: (e, k) => model.elems[e].kids[k].k === 'e' ? kept[(model.elems[e].kids[k] as { i: number }).i] : kidOk[e][k] };
+	return { kept, partial, kidKept: (e, k) => (model.elems[e].kids[k].k === 'e' ? kept[(model.elems[e].kids[k] as { i: number }).i] : kidOk[e][k]) };
 }
 
 // ------------------------------------------------------------------------------ graft
@@ -825,249 +902,278 @@ export interface Expected {
 
 class GraftError extends Error {}
 
+/** One source's share of the graft. */
+interface PartGraft {
+	model: TagModel;
+	/** Source object → its copy in the output. */
+	map: Map<string, string>;
+	keep: Keep;
+	newElem: (string | null)[];
+	/** Added to every ParentTree key of this source. */
+	off: number;
+	/** /Lang put on this source's top-level elements (its catalog's, when it differs from the export's). */
+	lang: Json;
+	/** Output page number of each source page in the export. */
+	pageOut: Map<number, number>;
+	T: (v: Json, depth: number) => Json;
+}
+
 /**
- * Copies the source's tree into `assembled` (pages already in place). Null when the copy
- * cannot be made exactly (the caller exports without tags).
+ * Copies the sources' trees into `assembled` (pages already in place), under one root when
+ * there are several. Null when the copy cannot be made exactly (the caller exports without tags).
  */
 export async function graftTags(qpdf: Qpdf, assembled: Uint8Array, plan: Extract<TagsPlan, { kind: 'keep' }>, note: (s: string) => void = () => {}): Promise<GraftResult | null> {
 	const t0 = now();
-	const src = plan.tags.model;
 	const out = await dumpAll(qpdf, assembled);
 	if (!out || out.pages.length !== plan.from.length) {
 		note('tags: the assembled file could not be read');
 		return null;
 	}
-	const so = src.objects;
 	const oo = out.objects;
-
-	// Source object → its copy in the output.
-	const map = new Map<string, string>();
-	const conflict = (a: string, b: string) => {
-		const prev = map.get(a);
-		if (prev !== undefined && prev !== b) throw new GraftError(`${a} has two copies`);
-		map.set(a, b);
-	};
-	try {
-		plan.from.forEach((p, i) => {
-			if (p === null) return;
-			const sref = src.pages[p];
-			const oref = out.pages[i];
-			conflict(sref, oref);
-			const sd = dictAt(so, sref);
-			const od = dictAt(oo, oref);
-			if (!sd || !od) throw new GraftError(`page ${i + 1} unreadable`);
-			const sa = arrAt(so, sd['/Annots']) ?? [];
-			const oa = arrAt(oo, od['/Annots']) ?? [];
-			if (sa.length !== oa.length) throw new GraftError(`page ${i + 1}: ${sa.length} annotations became ${oa.length}`);
-			sa.forEach((a, j) => {
-				if (isRef(a) && isRef(oa[j])) conflict(a, oa[j] as string);
-			});
-			if (src.xobjPage.size) {
-				const walk = (sr: Dict | null, or: Dict | null, depth: number) => {
-					const sx = sr ? dictAt(so, sr['/XObject']) : null;
-					const ox = or ? dictAt(oo, or['/XObject']) : null;
-					if (!sx || !ox || depth > 12) return;
-					for (const [name, x] of Object.entries(sx)) {
-						const y = ox[name];
-						if (!isRef(x) || !isRef(y)) continue;
-						if (map.has(x)) {
-							if (map.get(x) !== y) throw new GraftError(`${x} has two copies`);
-							continue;
-						}
-						map.set(x, y);
-						const xd = dictAt(so, x);
-						const yd = dictAt(oo, y);
-						if (xd?.['/Subtype'] === '/Form') walk(dictAt(so, xd['/Resources']), yd ? dictAt(oo, yd['/Resources']) : null, depth + 1);
-					}
-				};
-				walk(pageResources(so, sd), pageResources(oo, od), 0);
-			}
-		});
-	} catch (e) {
-		note(`tags: ${e instanceof Error ? e.message : String(e)}`);
-		return null;
-	}
-	const has = (ref: string) => map.has(ref);
-	const keep = prune(src, has);
-	// A kid on a page in the export must have its copy: otherwise the tree would lose content silently.
-	for (let i = 0; i < src.elems.length; i++) {
-		if (!keep.kept[i]) continue;
-		const e = src.elems[i];
-		for (const kid of e.kids) {
-			if (kid.k === 'o' && !has(kid.obj)) {
-				const at = isStream(so, kid.obj) ? src.xobjPage.get(kid.obj) : src.annotAt.get(kid.obj)?.[0];
-				if (at !== undefined && has(src.pages[at])) {
-					note(`tags: ${kid.obj} on a kept page has no copy`);
-					return null;
-				}
-			}
-			if (kid.k === 'm' && kid.stm && !has(kid.stm)) {
-				const at = src.xobjPage.get(kid.stm);
-				if (at !== undefined && has(src.pages[at])) {
-					note(`tags: ${kid.stm} on a kept page has no copy`);
-					return null;
-				}
-			}
-		}
-	}
-
-	// New objects.
 	let next = (typeof out.header.maxobjectid === 'number' ? out.header.maxobjectid : Math.max(...Object.keys(oo).map((k) => Number(/obj:(\d+)/.exec(k)?.[1] ?? 0)))) + 1;
 	const fresh = () => `${next++} 0 R`;
 	const updates: Record<string, Obj> = {};
-	const newElem = src.elems.map((_e, i) => (keep.kept[i] ? fresh() : null));
-	const copied = new Map<string, string>();
-	const streams: { src: string; dst: string; dict: Dict }[] = [];
-	let budget = 4 * src.elems.length + 20_000;
-	const T = (v: Json, depth: number): Json => {
-		if (depth > 64) throw new GraftError('too deep');
-		if (isRef(v)) {
-			const ei = src.elemOf.get(v);
-			if (ei !== undefined) return newElem[ei] ?? null;
-			const m = map.get(v);
-			if (m !== undefined) return m;
-			const o = so[objKey(v)];
-			if (!o) return null;
-			if (o.stream) {
-				const d = o.stream.dict;
-				if (isDict(d) && (d['/Subtype'] === '/Form' || d['/Subtype'] === '/Image')) return null;
-				// Another stream (an embedded file of an /AF entry, a pronunciation lexicon): copied
-				// with its data as it is stored (filters and all).
-				const done = copied.get(v);
-				if (done) return done;
-				if (--budget < 0) throw new GraftError('too many objects');
-				const nr = fresh();
-				copied.set(v, nr);
-				const { ['/Length']: _len, ...rest } = isDict(d) ? d : {};
-				streams.push({ src: v, dst: nr, dict: T(rest, depth + 1) as Dict });
-				return nr;
-			}
-			const d = o.value;
-			if (isDict(d) && (d['/Type'] === '/Page' || d['/Type'] === '/Pages' || d['/Type'] === '/Catalog' || isAnnotDict(d))) return null;
-			const done = copied.get(v);
-			if (done) return done;
-			if (--budget < 0) throw new GraftError('too many objects');
-			const nr = fresh();
-			copied.set(v, nr);
-			updates[objKey(nr)] = { value: T(d, depth + 1) };
-			return nr;
-		}
-		if (Array.isArray(v)) return v.map((x) => T(x, depth + 1));
-		if (isDict(v)) {
-			const d: Dict = {};
-			for (const [k, x] of Object.entries(v)) d[k] = T(x, depth + 1);
-			return d;
-		}
-		return v;
-	};
-	const stripSummary = (a: Json): Json => {
-		const one = (x: Json): Json => {
-			const d = dictAt(so, x);
-			if (!d || d['/Summary'] === undefined) return T(x, 1);
-			const { ['/Summary']: _s, ...rest } = d;
-			return T(rest, 1);
-		};
-		const arr = arrAt(so, a);
-		return arr ? arr.map((x) => (typeof x === 'number' ? x : one(x))) : one(a);
-	};
+	const streams: { part: number; src: string; dst: string; dict: Dict }[] = [];
+	const lang0 = plan.parts[0].tags.model.catalog['/Lang'];
+	const graft: PartGraft[] = [];
+	let off = 0;
 
 	try {
-		for (let i = 0; i < src.elems.length; i++) {
-			const nr = newElem[i];
-			if (!nr) continue;
-			const e = src.elems[i];
-			const d: Dict = {};
-			const parent = e.parent < 0 ? null : newElem[e.parent];
-			for (const [k, v] of Object.entries(e.dict)) {
-				if (k === '/K' || k === '/P') continue;
-				if (keep.partial[i] && PRUNED_TEXT.includes(k)) continue;
-				if (k === '/Pg') {
-					const m = isRef(v) ? map.get(v) : undefined;
-					if (m) d[k] = m;
-					continue;
+		for (const [pi, part] of plan.parts.entries()) {
+			const src = part.tags.model;
+			const so = src.objects;
+			const map = new Map<string, string>();
+			const pageOut = new Map<number, number>();
+			const conflict = (a: string, b: string) => {
+				const prev = map.get(a);
+				if (prev !== undefined && prev !== b) throw new GraftError(`${a} has two copies`);
+				map.set(a, b);
+			};
+			plan.from.forEach((f, i) => {
+				if (!f || f.part !== pi) return;
+				pageOut.set(f.page, i);
+				const sref = src.pages[f.page];
+				const oref = out.pages[i];
+				conflict(sref, oref);
+				const sd = dictAt(so, sref);
+				const od = dictAt(oo, oref);
+				if (!sd || !od) throw new GraftError(`page ${i + 1} unreadable`);
+				const sa = arrAt(so, sd['/Annots']) ?? [];
+				const oa = arrAt(oo, od['/Annots']) ?? [];
+				if (sa.length !== oa.length) throw new GraftError(`page ${i + 1}: ${sa.length} annotations became ${oa.length}`);
+				sa.forEach((a, j) => {
+					if (isRef(a) && isRef(oa[j])) conflict(a, oa[j] as string);
+				});
+				if (src.xobjPage.size) {
+					const walk = (sr: Dict | null, or: Dict | null, depth: number) => {
+						const sx = sr ? dictAt(so, sr['/XObject']) : null;
+						const ox = or ? dictAt(oo, or['/XObject']) : null;
+						if (!sx || !ox || depth > 12) return;
+						for (const [name, x] of Object.entries(sx)) {
+							const y = ox[name];
+							if (!isRef(x) || !isRef(y)) continue;
+							if (map.has(x)) {
+								if (map.get(x) !== y) throw new GraftError(`${x} has two copies`);
+								continue;
+							}
+							map.set(x, y);
+							const xd = dictAt(so, x);
+							const yd = dictAt(oo, y);
+							if (xd?.['/Subtype'] === '/Form') walk(dictAt(so, xd['/Resources']), yd ? dictAt(oo, yd['/Resources']) : null, depth + 1);
+						}
+					};
+					walk(pageResources(so, sd), pageResources(oo, od), 0);
 				}
-				if (k === '/Ref') {
-					const list = (arrAt(so, v) ?? [v]).map((x) => (isRef(x) && src.elemOf.has(x) ? newElem[src.elemOf.get(x)!] : null)).filter((x) => x !== null);
-					if (list.length) d[k] = list;
-					continue;
+			});
+			const has = (ref: string) => map.has(ref);
+			const keep = prune(src, has);
+			// A kid on a page in the export must have its copy: otherwise the tree would lose content silently.
+			for (let i = 0; i < src.elems.length; i++) {
+				if (!keep.kept[i]) continue;
+				for (const kid of src.elems[i].kids) {
+					const obj = kid.k === 'o' ? kid.obj : kid.k === 'm' ? kid.stm : null;
+					if (!obj || has(obj)) continue;
+					const at = kid.k === 'm' || isStream(so, obj) ? src.xobjPage.get(obj) : src.annotAt.get(obj)?.[0];
+					if (at !== undefined && has(src.pages[at])) throw new GraftError(`${obj} on a kept page has no copy`);
 				}
-				if (k === '/A' && keep.partial[i]) {
-					d[k] = stripSummary(v);
-					continue;
-				}
-				d[k] = T(v, 1);
 			}
-			d['/P'] = parent ?? 'ROOT';
-			const kids: Json[] = [];
-			e.kids.forEach((kid, k) => {
-				if (!keep.kidKept(i, k)) return;
-				if (kid.k === 'e') kids.push(newElem[kid.i]);
-				else if (kid.k === 'm') {
-					if (typeof kid.raw === 'number') kids.push(kid.raw);
+			const newElem = src.elems.map((_e, i) => (keep.kept[i] ? fresh() : null));
+			const copied = new Map<string, string>();
+			let budget = 4 * src.elems.length + 20_000;
+			const T = (v: Json, depth: number): Json => {
+				if (depth > 64) throw new GraftError('too deep');
+				if (isRef(v)) {
+					const ei = src.elemOf.get(v);
+					if (ei !== undefined) return newElem[ei] ?? null;
+					const m = map.get(v);
+					if (m !== undefined) return m;
+					const o = so[objKey(v)];
+					if (!o) return null;
+					if (o.stream) {
+						const d = o.stream.dict;
+						if (isDict(d) && (d['/Subtype'] === '/Form' || d['/Subtype'] === '/Image')) return null;
+						// Another stream (an embedded file of an /AF entry, a pronunciation lexicon): copied
+						// with its data as it is stored (filters and all).
+						const done = copied.get(v);
+						if (done) return done;
+						if (--budget < 0) throw new GraftError('too many objects');
+						const nr = fresh();
+						copied.set(v, nr);
+						const { ['/Length']: _len, ...rest } = isDict(d) ? d : {};
+						streams.push({ part: pi, src: v, dst: nr, dict: T(rest, depth + 1) as Dict });
+						return nr;
+					}
+					const d = o.value;
+					if (isDict(d) && (d['/Type'] === '/Page' || d['/Type'] === '/Pages' || d['/Type'] === '/Catalog' || isAnnotDict(d))) return null;
+					const done = copied.get(v);
+					if (done) return done;
+					if (--budget < 0) throw new GraftError('too many objects');
+					const nr = fresh();
+					copied.set(v, nr);
+					updates[objKey(nr)] = { value: T(d, depth + 1) };
+					return nr;
+				}
+				if (Array.isArray(v)) return v.map((x) => T(x, depth + 1));
+				if (isDict(v)) {
+					const d: Dict = {};
+					for (const [k, x] of Object.entries(v)) d[k] = T(x, depth + 1);
+					return d;
+				}
+				return v;
+			};
+			const langP = src.catalog['/Lang'];
+			const lang = pi > 0 && langP !== undefined && textOf(String(langP)) !== textOf(String(lang0 ?? '')) ? langP : undefined;
+			graft.push({ model: src, map, keep, newElem, off, lang, pageOut, T });
+			off += nextKey(src);
+		}
+
+		// Elements.
+		for (const g of graft) {
+			const { model: src, keep, newElem, map, T } = g;
+			const so = src.objects;
+			const stripSummary = (a: Json): Json => {
+				const one = (x: Json): Json => {
+					const d = dictAt(so, x);
+					if (!d || d['/Summary'] === undefined) return T(x, 1);
+					const { ['/Summary']: _s, ...rest } = d;
+					return T(rest, 1);
+				};
+				const arr = arrAt(so, a);
+				return arr ? arr.map((x) => (typeof x === 'number' ? x : one(x))) : one(a);
+			};
+			for (let i = 0; i < src.elems.length; i++) {
+				const nr = newElem[i];
+				if (!nr) continue;
+				const e = src.elems[i];
+				const d: Dict = {};
+				const parent = e.parent < 0 ? null : newElem[e.parent];
+				for (const [k, v] of Object.entries(e.dict)) {
+					if (k === '/K' || k === '/P') continue;
+					if (keep.partial[i] && PRUNED_TEXT.includes(k)) continue;
+					if (k === '/Pg') {
+						const m = isRef(v) ? map.get(v) : undefined;
+						if (m) d[k] = m;
+						continue;
+					}
+					if (k === '/Ref') {
+						const list = (arrAt(so, v) ?? [v]).map((x) => (isRef(x) && src.elemOf.has(x) ? newElem[src.elemOf.get(x)!] : null)).filter((x) => x !== null);
+						if (list.length) d[k] = list;
+						continue;
+					}
+					if (k === '/A' && keep.partial[i]) {
+						d[k] = stripSummary(v);
+						continue;
+					}
+					d[k] = T(v, 1);
+				}
+				if (e.parent < 0 && g.lang !== undefined && d['/Lang'] === undefined) d['/Lang'] = g.lang;
+				d['/P'] = parent ?? 'ROOT';
+				const kids: Json[] = [];
+				e.kids.forEach((kid, k) => {
+					if (!keep.kidKept(i, k)) return;
+					if (kid.k === 'e') kids.push(newElem[kid.i]);
+					else if (kid.k === 'm' && typeof kid.raw === 'number') kids.push(kid.raw);
 					else {
 						const md = dictAt(so, kid.raw)!;
 						const nd: Dict = {};
 						for (const [mk, mv] of Object.entries(md)) {
-							if (mk === '/Pg' || mk === '/Stm') {
+							if (mk === '/Pg' || mk === '/Stm' || mk === '/Obj') {
 								const m = isRef(mv) ? map.get(mv) : undefined;
 								if (m) nd[mk] = m;
 							} else nd[mk] = T(mv, 2);
 						}
 						kids.push(nd);
 					}
-				} else {
-					const od = dictAt(so, kid.raw)!;
-					const nd: Dict = {};
-					for (const [mk, mv] of Object.entries(od)) {
-						if (mk === '/Pg' || mk === '/Obj') {
-							const m = isRef(mv) ? map.get(mv) : undefined;
-							if (m) nd[mk] = m;
-						} else nd[mk] = T(mv, 2);
-					}
-					kids.push(nd);
+				});
+				if (kids.length === 1 && !e.kArray) d['/K'] = kids[0];
+				else if (kids.length || e.dict['/K'] !== undefined) d['/K'] = kids;
+				updates[objKey(nr)] = { value: d };
+			}
+			// Every ParentTree key of a later source moves up by its offset, on its pages,
+			// annotations and XObjects (copies in the output, so nothing else shares them).
+			if (g.off > 0) {
+				for (const [, owner] of src.owners) {
+					const o = g.map.get(owner.ref);
+					if (!o || updates[objKey(o)]) continue;
+					const ob = oo[objKey(o)];
+					const bump = (d: Dict) => {
+						const nd = { ...d };
+						for (const k of ['/StructParents', '/StructParent']) if (typeof nd[k] === 'number') nd[k] = (nd[k] as number) + g.off;
+						return nd;
+					};
+					if (ob?.stream && isDict(ob.stream.dict)) updates[objKey(o)] = { stream: { dict: bump(ob.stream.dict) } };
+					else if (ob && isDict(ob.value)) updates[objKey(o)] = { value: bump(ob.value) };
 				}
-			});
-			if (kids.length === 1 && !e.kArray) d['/K'] = kids[0];
-			else if (kids.length || e.dict['/K'] !== undefined) d['/K'] = kids;
-			updates[objKey(nr)] = { value: d };
+			}
 		}
 
 		// The root, its ParentTree and IDTree.
 		const rootRef = fresh();
 		for (const u of Object.values(updates)) if (isDict(u.value) && u.value['/P'] === 'ROOT') u.value['/P'] = rootRef;
+		const one = graft.length === 1;
 		const root: Dict = {};
-		for (const [k, v] of Object.entries(src.root)) {
-			if (k === '/K' || k === '/ParentTree' || k === '/IDTree') continue;
-			root[k] = T(v, 1);
+		for (const g of graft) {
+			for (const [k, v] of Object.entries(g.model.root)) {
+				if (k === '/K' || k === '/ParentTree' || k === '/IDTree' || k === '/Type') continue;
+				if (one) root[k] = g.T(v, 1);
+				else if (k === '/RoleMap' || k === '/ClassMap') root[k] = { ...((isDict(root[k]) ? root[k] : {}) as Dict), ...(g.T(dictAt(g.model.objects, v) ?? {}, 1) as Dict) };
+				else if (k === '/Namespaces') root[k] = [...((Array.isArray(root[k]) ? root[k] : []) as Json[]), ...(g.T(arrAt(g.model.objects, v) ?? [], 1) as Json[])];
+				else if (k !== '/ParentTreeNextKey' && root[k] === undefined) root[k] = g.T(v, 1);
+			}
 		}
+		if (!one) root['/ParentTreeNextKey'] = off;
 		root['/Type'] = '/StructTreeRoot';
-		const topKids = src.elems.flatMap((e, i) => (e.parent < 0 && newElem[i] ? [newElem[i]] : []));
-		root['/K'] = topKids.length === 1 && !Array.isArray(val(so, src.root['/K'])) ? topKids[0] : topKids;
-		if (src.root['/ParentTree'] !== undefined) {
+		const topKids = graft.flatMap((g) => g.model.elems.flatMap((e, i) => (e.parent < 0 && g.newElem[i] ? [g.newElem[i]] : [])));
+		root['/K'] = one && topKids.length === 1 && !Array.isArray(val(graft[0].model.objects, graft[0].model.root['/K'])) ? topKids[0] : topKids;
+		if (graft.some((g) => g.model.root['/ParentTree'] !== undefined)) {
 			const nums: Json[] = [];
-			for (const key of [...src.pt.keys()].sort((a, b) => a - b)) {
-				const owner = src.owners.get(key);
-				if (!owner || !has(owner.ref)) continue;
-				const entry = src.pt.get(key);
-				const arr = arrAt(so, entry);
-				if (arr && (owner.kind === 'page' || (owner.kind === 'xobj' && dictAt(so, owner.ref)?.['/StructParents'] === key))) {
-					nums.push(key, arr.map((x) => (isRef(x) && src.elemOf.has(x) ? (newElem[src.elemOf.get(x)!] ?? null) : null)));
-				} else if (isRef(entry) && src.elemOf.has(entry)) {
-					const ne = newElem[src.elemOf.get(entry)!];
-					if (ne) nums.push(key, ne);
+			for (const g of graft) {
+				const so = g.model.objects;
+				for (const key of [...g.model.pt.keys()].sort((a, b) => a - b)) {
+					const owner = g.model.owners.get(key);
+					if (!owner || !g.map.has(owner.ref)) continue;
+					const entry = g.model.pt.get(key);
+					const arr = arrAt(so, entry);
+					const elem = (x: Json) => (isRef(x) && g.model.elemOf.has(x) ? (g.newElem[g.model.elemOf.get(x)!] ?? null) : null);
+					if (arr && (owner.kind === 'page' || (owner.kind === 'xobj' && dictAt(so, owner.ref)?.['/StructParents'] === key))) nums.push(key + g.off, arr.map(elem));
+					else if (elem(entry)) nums.push(key + g.off, elem(entry));
 				}
 			}
 			const ptRef = fresh();
 			updates[objKey(ptRef)] = { value: { '/Nums': nums } };
 			root['/ParentTree'] = ptRef;
 		}
-		if (src.root['/IDTree'] !== undefined) {
-			const names: Json[] = [];
-			for (const [k, v] of src.ids) {
-				if (isRef(v) && src.elemOf.has(v) && newElem[src.elemOf.get(v)!]) names.push(k, newElem[src.elemOf.get(v)!]);
+		if (graft.some((g) => g.model.root['/IDTree'] !== undefined)) {
+			const names: [Json, Json][] = [];
+			for (const g of graft) {
+				for (const [k, v] of g.model.ids) {
+					const ne = isRef(v) && g.model.elemOf.has(v) ? g.newElem[g.model.elemOf.get(v)!] : null;
+					if (ne) names.push([k, ne]);
+				}
 			}
+			if (!one) names.sort((a, b) => cmp(textOf(String(a[0])), textOf(String(b[0]))));
 			const idRef = fresh();
-			updates[objKey(idRef)] = { value: { '/Names': names } };
+			updates[objKey(idRef)] = { value: { '/Names': names.flat() } };
 			root['/IDTree'] = idRef;
 		}
 		updates[objKey(rootRef)] = { value: root };
@@ -1078,17 +1184,21 @@ export async function graftTags(qpdf: Qpdf, assembled: Uint8Array, plan: Extract
 		const cat = isRef(catRef) ? dictAt(oo, catRef) : null;
 		if (!isRef(catRef) || !cat) throw new GraftError('the assembled catalog is unreadable');
 		const nc: Dict = { ...cat, '/StructTreeRoot': rootRef };
-		for (const k of ['/MarkInfo', '/Lang', '/ViewerPreferences']) if (src.catalog[k] !== undefined) nc[k] = T(src.catalog[k], 1);
+		const mark = graft.find((g) => g.model.catalog['/MarkInfo'] !== undefined);
+		if (mark) nc['/MarkInfo'] = mark.T(mark.model.catalog['/MarkInfo'], 1);
+		for (const k of ['/Lang', '/ViewerPreferences']) if (graft[0].model.catalog[k] !== undefined) nc[k] = graft[0].T(graft[0].model.catalog[k], 1);
 		updates[objKey(catRef)] = { value: nc };
 	} catch (e) {
 		note(`tags: ${e instanceof Error ? e.message : String(e)}`);
 		return null;
 	}
 
-	if (streams.length) {
-		const data = await rawStreams(qpdf, plan.source.bytes, streams.map((x) => x.src));
-		let total = 0;
-		for (const x of streams) {
+	let total = 0;
+	for (const [pi, part] of plan.parts.entries()) {
+		const mine = streams.filter((x) => x.part === pi);
+		if (!mine.length) continue;
+		const data = await rawStreams(qpdf, part.source.bytes, mine.map((x) => x.src));
+		for (const x of mine) {
 			const d = data?.get(x.src);
 			if (d === undefined) {
 				note('tags: a stream in the tree could not be read');
@@ -1097,10 +1207,10 @@ export async function graftTags(qpdf: Qpdf, assembled: Uint8Array, plan: Extract
 			total += d.length;
 			updates[objKey(x.dst)] = { stream: { dict: x.dict, data: d } };
 		}
-		if (total > MAX_STREAM_CHARS) {
-			note('tags: the streams in the tree are too large');
-			return null;
-		}
+	}
+	if (total > MAX_STREAM_CHARS) {
+		note('tags: the streams in the tree are too large');
+		return null;
 	}
 	const json = new TextEncoder().encode(JSON.stringify({ qpdf: [out.header, updates] }));
 	const res = await qpdf.run({
@@ -1113,29 +1223,26 @@ export async function graftTags(qpdf: Qpdf, assembled: Uint8Array, plan: Extract
 		note(`tags: qpdf could not write the tree (${res.stderr.slice(0, 200)})`);
 		return null;
 	}
-	const pageOut = new Map<number, number>();
-	plan.from.forEach((p, i) => {
-		if (p !== null) pageOut.set(p, i);
-	});
-	const expected = expectedOf(src, keep, pageOut);
-	return { bytes, expected, ms: Math.round(now() - t0) };
+	return { bytes, expected: expectedOf(graft, off), ms: Math.round(now() - t0) };
 }
+
+const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
 // ------------------------------------------------------------------------------ canonical form
 
 /**
- * Canonical form of a tree, one string per element in document order: role, keys (refs
+ * Canonical form of trees, one string per element in document order: role, keys (refs
  * replaced: elements by number, pages by output page number, annotations by page and
  * position, other objects inlined), kids. `pageNo` maps the model's page index to the
- * output page number; `keepElem`/`kidKept`/`partial` apply a pruning (all true for an
- * export's own tree).
+ * output page number; `keep` applies a pruning (none for an export's own tree); `base` is
+ * the number of the first element (elements of earlier trees under the same root).
  */
-function canonical(model: TagModel, pageNo: (i: number) => number | undefined, keep?: Keep): string[] {
+function canonCtx(model: TagModel, pageNo: (i: number) => number | undefined, keep: Keep | undefined, base: number) {
 	const { objects } = model;
 	const n = model.elems.length;
 	const kept = keep?.kept ?? new Array<boolean>(n).fill(true);
 	const number = new Map<string, number>();
-	let c = 0;
+	let c = base;
 	for (let i = 0; i < n; i++) if (kept[i]) number.set(model.elems[i].ref, c++);
 	const pageOf = (ref: string) => {
 		const i = model.pageIndex.get(ref);
@@ -1147,11 +1254,8 @@ function canonical(model: TagModel, pageNo: (i: number) => number | undefined, k
 			const p = pageNo(a[0]);
 			return p === undefined ? null : `A${p}.${a[1]}`;
 		}
-		const x = model.xobjPage.get(ref);
-		if (x !== undefined) {
-			const p = pageNo(x);
-			return p === undefined ? null : `X${p}`;
-		}
+		// An XObject can be drawn on several pages: named by kind only.
+		if (model.xobjPage.has(ref)) return 'X';
 		return null;
 	};
 	const cv = (v: Json, depth: number, seen: Set<string>): Json => {
@@ -1186,54 +1290,111 @@ function canonical(model: TagModel, pageNo: (i: number) => number | undefined, k
 		}
 		return typeof v === 'string' ? textOf(v) : v;
 	};
-	const lines: string[] = [];
-	for (let i = 0; i < n; i++) {
-		if (!kept[i]) continue;
-		const e = model.elems[i];
-		const keys: Record<string, Json> = {};
-		for (const k of Object.keys(e.dict).sort()) {
-			if (k === '/K' || k === '/P' || k === '/Pg' || k === '/Type') continue;
-			if (keep?.partial[i] && PRUNED_TEXT.includes(k)) continue;
-			let v = e.dict[k];
-			if (k === '/Ref') {
-				const list = (arrAt(objects, v) ?? [v]).filter((x) => isRef(x) && number.has(x));
-				if (!list.length) continue;
-				v = list;
+	const elems = (lang?: Json): string[] => {
+		const lines: string[] = [];
+		for (let i = 0; i < n; i++) {
+			if (!kept[i]) continue;
+			const e = model.elems[i];
+			const keys: Record<string, Json> = {};
+			const dict = e.parent < 0 && lang !== undefined && e.dict['/Lang'] === undefined ? { ...e.dict, '/Lang': lang } : e.dict;
+			for (const k of Object.keys(dict).sort()) {
+				if (k === '/K' || k === '/P' || k === '/Pg' || k === '/Type') continue;
+				if (keep?.partial[i] && PRUNED_TEXT.includes(k)) continue;
+				let v = dict[k];
+				if (k === '/Ref') {
+					const list = (arrAt(objects, v) ?? [v]).filter((x) => isRef(x) && number.has(x));
+					if (!list.length) continue;
+					v = list;
+				}
+				if (k === '/A' && keep?.partial[i]) {
+					const strip = (x: Json): Json => {
+						const d = dictAt(objects, x);
+						if (!d || d['/Summary'] === undefined) return x;
+						const { ['/Summary']: _s, ...rest } = d;
+						return rest;
+					};
+					const arr = arrAt(objects, v);
+					v = arr ? arr.map(strip) : strip(v);
+				}
+				keys[k] = cv(v, 0, new Set());
 			}
-			if (k === '/A' && keep?.partial[i]) {
-				const strip = (x: Json): Json => {
-					const d = dictAt(objects, x);
-					if (!d || d['/Summary'] === undefined) return x;
-					const { ['/Summary']: _s, ...rest } = d;
-					return rest;
-				};
-				const arr = arrAt(objects, v);
-				v = arr ? arr.map(strip) : strip(v);
-			}
-			keys[k] = cv(v, 0, new Set());
+			const kids: string[] = [];
+			e.kids.forEach((kid, k) => {
+				if (keep && !keep.kidKept(i, k)) return;
+				if (kid.k === 'e') kids.push(`e${number.get(model.elems[kid.i].ref)}`);
+				else if (kid.k === 'm') {
+					const p = kid.stm ? objId(kid.stm) : kid.page !== null ? (pageOf(kid.page) ?? null) : null;
+					kids.push(`m${kid.stm ? '' : 'P'}${p}:${kid.mcid}`);
+				} else kids.push(`o${objId(kid.obj)}`);
+			});
+			lines.push(JSON.stringify([e.dict['/S'], e.parent < 0 ? -1 : number.get(model.elems[e.parent].ref), keys, kids]));
 		}
-		const kids: string[] = [];
-		e.kids.forEach((kid, k) => {
-			if (keep && !keep.kidKept(i, k)) return;
-			if (kid.k === 'e') kids.push(`e${number.get(model.elems[kid.i].ref)}`);
-			else if (kid.k === 'm') {
-				const p = kid.stm ? objId(kid.stm) : kid.page !== null ? (pageOf(kid.page) ?? null) : null;
-				kids.push(`m${kid.stm ? '' : 'P'}${p}:${kid.mcid}`);
-			} else kids.push(`o${objId(kid.obj)}`);
-		});
-		lines.push(JSON.stringify([e.dict['/S'], e.parent < 0 ? -1 : number.get(model.elems[e.parent].ref), keys, kids]));
-	}
-	// The root's own keys (RoleMap, ClassMap, …) and the catalog's tag keys.
+		return lines;
+	};
+	const ids = () => model.ids.filter(([, v]) => isRef(v) && number.has(v)).map(([k, v]) => [cv(k, 0, new Set()), number.get(v as string)] as [Json, number | undefined]);
+	return { cv, elems, ids, count: c - base };
+}
+
+function rootLine(rootKeys: Record<string, Json>, catKeys: Record<string, Json>, ids: [Json, number | undefined][]): string {
+	const sorted: Record<string, Json> = {};
+	for (const k of Object.keys(rootKeys).sort()) sorted[k] = rootKeys[k];
+	return JSON.stringify(['root', sorted, catKeys, ids]);
+}
+
+/** The canonical form of a file's own tree (every element, its pages as they are). */
+function canonical(model: TagModel): string[] {
+	const ctx = canonCtx(model, (i) => i, undefined, 0);
 	const rootKeys: Record<string, Json> = {};
-	for (const k of Object.keys(model.root).sort()) {
+	for (const k of Object.keys(model.root)) {
 		if (k === '/K' || k === '/ParentTree' || k === '/IDTree' || k === '/Type') continue;
-		rootKeys[k] = cv(model.root[k], 0, new Set());
+		rootKeys[k] = ctx.cv(model.root[k], 0, new Set());
 	}
 	const catKeys: Record<string, Json> = {};
-	for (const k of ['/MarkInfo', '/Lang', '/ViewerPreferences']) if (model.catalog[k] !== undefined) catKeys[k] = cv(model.catalog[k], 0, new Set());
-	const ids = model.ids.filter(([, v]) => isRef(v) && number.has(v)).map(([k, v]) => [k, number.get(v as string)]);
-	lines.push(JSON.stringify(['root', rootKeys, catKeys, ids]));
-	return lines;
+	for (const k of ['/MarkInfo', '/Lang', '/ViewerPreferences']) if (model.catalog[k] !== undefined) catKeys[k] = ctx.cv(model.catalog[k], 0, new Set());
+	return [...ctx.elems(), rootLine(rootKeys, catKeys, ctx.ids())];
+}
+
+/** What the export's tree must be: the sources' trees as pruned and merged by the graft, computed from the sources. */
+function expectedOf(graft: PartGraft[], totalKeys: number): Expected {
+	const lines: string[] = [];
+	const rootKeys: Record<string, Json> = {};
+	const ids: [Json, number | undefined][] = [];
+	const one = graft.length === 1;
+	let base = 0;
+	const ctxs = graft.map((g) => {
+		const ctx = canonCtx(g.model, (i) => g.pageOut.get(i), g.keep, base);
+		base += ctx.count;
+		return ctx;
+	});
+	graft.forEach((g, pi) => {
+		const ctx = ctxs[pi];
+		lines.push(...ctx.elems(g.lang));
+		ids.push(...ctx.ids());
+		for (const k of Object.keys(g.model.root)) {
+			if (k === '/K' || k === '/ParentTree' || k === '/IDTree' || k === '/Type') continue;
+			const v = ctx.cv(g.model.root[k], 0, new Set());
+			if (one) rootKeys[k] = v;
+			else if (k === '/RoleMap' || k === '/ClassMap') rootKeys[k] = sortKeys({ ...((rootKeys[k] as Record<string, Json>) ?? {}), ...((isDict(v) ? v : {}) as Record<string, Json>) });
+			else if (k === '/Namespaces') rootKeys[k] = [...((rootKeys[k] as Json[]) ?? []), ...(Array.isArray(v) ? v : [])];
+			else if (k !== '/ParentTreeNextKey' && rootKeys[k] === undefined) rootKeys[k] = v;
+		}
+	});
+	if (!one) {
+		rootKeys['/ParentTreeNextKey'] = totalKeys;
+		ids.sort((a, b) => cmp(String(a[0]), String(b[0])));
+	}
+	const catKeys: Record<string, Json> = {};
+	const mark = graft.findIndex((g) => g.model.catalog['/MarkInfo'] !== undefined);
+	if (mark >= 0) catKeys['/MarkInfo'] = ctxs[mark].cv(graft[mark].model.catalog['/MarkInfo'], 0, new Set());
+	for (const k of ['/Lang', '/ViewerPreferences']) if (graft[0].model.catalog[k] !== undefined) catKeys[k] = ctxs[0].cv(graft[0].model.catalog[k], 0, new Set());
+	const canon = [...lines, rootLine(rootKeys, catKeys, ids)];
+	return { canon, ...counts(canon), tolerated: [] };
+}
+
+function sortKeys(d: Record<string, Json>): Record<string, Json> {
+	const out: Record<string, Json> = {};
+	for (const k of Object.keys(d).sort()) out[k] = d[k];
+	return out;
 }
 
 /**
@@ -1267,16 +1428,11 @@ function counts(lines: string[]): { elements: number; alt: number; actualText: n
 	return { elements: lines.length - 1, alt, actualText };
 }
 
-function expectedOf(model: TagModel, keep: Keep, pageOut: Map<number, number>): Expected {
-	const canon = canonical(model, (i) => pageOut.get(i), keep);
-	return { canon, ...counts(canon), tolerated: [] };
-}
-
 /** The canonical tree of a whole file (for tests and the survey harness). */
 export async function canonicalTree(qpdf: Qpdf, bytes: Uint8Array, password?: string): Promise<string[] | null> {
 	const d = await dumpAll(qpdf, bytes, password);
 	const m = d && readModel(d);
-	return m ? canonical(m, (i) => i) : null;
+	return m ? canonical(m) : null;
 }
 
 // ------------------------------------------------------------------------------ verify
@@ -1295,7 +1451,7 @@ export async function verifyTags(qpdf: Qpdf, bytes: Uint8Array, expected: Expect
 	checkModel(model, content);
 	const problems = model.problems.filter((p) => !expected.tolerated.includes(`${p.kind}:${p.page}`));
 	if (problems.length) return fail(`The tree does not match the content: ${describe(problems)}.`);
-	const canon = canonical(model, (i) => i);
+	const canon = canonical(model);
 	if (canon.length !== expected.canon.length) return fail(`Expected ${expected.elements} structure elements, found ${canon.length - 1}.`);
 	for (let i = 0; i < canon.length; i++) {
 		if (canon[i] !== expected.canon[i]) {
