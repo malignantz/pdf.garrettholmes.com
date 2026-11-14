@@ -35,8 +35,9 @@
  *   point at nothing); pages from another file, tagged or not, other than blank pages
  *   (`merged`); a page used twice (`repeated`: two pages cannot share one set of MCIDs);
  *   a source whose tree is inconsistent (`damaged`); a tree this code does not carry
- *   (`unsupported`: streams in the tree other than form XObjects, more than MAX_ELEMENTS
- *   elements, content on pages it cannot place); and an export whose own check of the tags
+ *   (`unsupported`: more than MAX_ELEMENTS elements, an annotation or XObject on a kept
+ *   page without its copy, streams in the tree over MAX_STREAM_CHARS; embedded files of /AF
+ *   entries and other streams are copied with their stored data); and an export whose own check of the tags
  *   fails (`check`; the export is then built again without them).
  *
  * Added content (stamps, page numbers, the OCR text layer) is drawn as `/Artifact` marked
@@ -73,6 +74,8 @@ export type { TagsDropReason };
 
 /** Most struct elements carried (memory: the JSON of the tree is held a few times over). */
 export const MAX_ELEMENTS = 400_000;
+/** Most stream data in the tree carried (base64 characters: about 24 MB of data). */
+const MAX_STREAM_CHARS = 32 * 1024 * 1024;
 /** Text keys dropped from an element whose content lies partly on removed pages. */
 const PRUNED_TEXT = ['/Alt', '/ActualText', '/E', '/T'];
 const TEXT_KEYS = ['/Alt', '/ActualText', '/E', '/T'];
@@ -137,6 +140,28 @@ async function streamData(qpdf: Qpdf, bytes: Uint8Array, refs: string[], passwor
 		}
 	}
 	return out;
+}
+
+/** Stored (still encoded) data of the given streams, base64, as qpdf's JSON gives it. */
+async function rawStreams(qpdf: Qpdf, bytes: Uint8Array, refs: string[]): Promise<Map<string, string> | null> {
+	const res = await qpdf.run({
+		args: ['--json=2', '--json-key=qpdf', ...refs.map((r) => `--json-object=${objArg(r)}`), '--json-stream-data=inline', '--decode-level=none', '/t.pdf', '/t.json'],
+		inputs: { '/t.pdf': bytes },
+		outputs: ['/t.json']
+	});
+	const file = res.files.get('/t.json');
+	if ((res.code !== QPDF_OK && res.code !== QPDF_WARNINGS) || !file) return null;
+	try {
+		const objects = (JSON.parse(new TextDecoder().decode(file)) as { qpdf: [Dict, Objects] }).qpdf[1];
+		const out = new Map<string, string>();
+		for (const r of refs) {
+			const d = objects[objKey(r)]?.stream?.data;
+			if (typeof d === 'string') out.set(r, d);
+		}
+		return out;
+	} catch {
+		return null;
+	}
 }
 
 function emptyFilter(f: Json): boolean {
@@ -731,7 +756,6 @@ export async function planTags(
 		from.push(ref.pageIndex);
 	}
 	if (main.tags.fatal.length) return { kind: 'drop', reason: 'damaged' };
-	if (main.tags.streams) return { kind: 'drop', reason: 'unsupported' };
 	return { kind: 'keep', source: main.source, tags: main.tags, from, whole: seen.size === main.source.pages.length };
 }
 
@@ -893,6 +917,7 @@ export async function graftTags(qpdf: Qpdf, assembled: Uint8Array, plan: Extract
 	const updates: Record<string, Obj> = {};
 	const newElem = src.elems.map((_e, i) => (keep.kept[i] ? fresh() : null));
 	const copied = new Map<string, string>();
+	const streams: { src: string; dst: string; dict: Dict }[] = [];
 	let budget = 4 * src.elems.length + 20_000;
 	const T = (v: Json, depth: number): Json => {
 		if (depth > 64) throw new GraftError('too deep');
@@ -906,7 +931,16 @@ export async function graftTags(qpdf: Qpdf, assembled: Uint8Array, plan: Extract
 			if (o.stream) {
 				const d = o.stream.dict;
 				if (isDict(d) && (d['/Subtype'] === '/Form' || d['/Subtype'] === '/Image')) return null;
-				throw new GraftError('a stream in the tree');
+				// Another stream (an embedded file of an /AF entry, a pronunciation lexicon): copied
+				// with its data as it is stored (filters and all).
+				const done = copied.get(v);
+				if (done) return done;
+				if (--budget < 0) throw new GraftError('too many objects');
+				const nr = fresh();
+				copied.set(v, nr);
+				const { ['/Length']: _len, ...rest } = isDict(d) ? d : {};
+				streams.push({ src: v, dst: nr, dict: T(rest, depth + 1) as Dict });
+				return nr;
 			}
 			const d = o.value;
 			if (isDict(d) && (d['/Type'] === '/Page' || d['/Type'] === '/Pages' || d['/Type'] === '/Catalog' || isAnnotDict(d))) return null;
@@ -1051,6 +1085,23 @@ export async function graftTags(qpdf: Qpdf, assembled: Uint8Array, plan: Extract
 		return null;
 	}
 
+	if (streams.length) {
+		const data = await rawStreams(qpdf, plan.source.bytes, streams.map((x) => x.src));
+		let total = 0;
+		for (const x of streams) {
+			const d = data?.get(x.src);
+			if (d === undefined) {
+				note('tags: a stream in the tree could not be read');
+				return null;
+			}
+			total += d.length;
+			updates[objKey(x.dst)] = { stream: { dict: x.dict, data: d } };
+		}
+		if (total > MAX_STREAM_CHARS) {
+			note('tags: the streams in the tree are too large');
+			return null;
+		}
+	}
 	const json = new TextEncoder().encode(JSON.stringify({ qpdf: [out.header, updates] }));
 	const res = await qpdf.run({
 		args: ['/g.pdf', '--update-from-json=/g.json', '--object-streams=disable', '/g-out.pdf'],
@@ -1117,7 +1168,12 @@ function canonical(model: TagModel, pageNo: (i: number) => number | undefined, k
 			if (seen.has(v)) return 'cycle';
 			const ob = objects[objKey(v)];
 			if (!ob) return null;
-			if (ob.stream) return 'stream';
+			if (ob.stream) {
+				const sd = ob.stream.dict;
+				if (!isDict(sd)) return 'stream';
+				const { ['/Length']: _l, ...rest } = sd;
+				return { stream: cv(rest, depth + 1, new Set([...seen, v])) };
+			}
 			const d = ob.value;
 			if (isDict(d) && (d['/Type'] === '/Page' || d['/Type'] === '/Pages' || d['/Type'] === '/Catalog' || isAnnotDict(d))) return null;
 			return cv(d, depth + 1, new Set([...seen, v]));
@@ -1128,7 +1184,7 @@ function canonical(model: TagModel, pageNo: (i: number) => number | undefined, k
 			for (const k of Object.keys(v).sort()) out[k] = cv(v[k], depth + 1, seen);
 			return out;
 		}
-		return v;
+		return typeof v === 'string' ? textOf(v) : v;
 	};
 	const lines: string[] = [];
 	for (let i = 0; i < n; i++) {
@@ -1180,6 +1236,26 @@ function canonical(model: TagModel, pageNo: (i: number) => number | undefined, k
 	return lines;
 }
 
+/**
+ * A qpdf JSON string as text: "u:" strings are text already; "b:" (hex) strings are decoded
+ * as a PDF text string (UTF-16BE or UTF-8 with a byte order mark, else PDFDocEncoding, read
+ * as Latin-1). qpdf writes the same string as "u:" or "b:" depending on how it was stored, and
+ * writing a "u:" string back can store it differently (a trailing NUL makes it "b:"), so
+ * strings are compared as text. Names and refs pass through.
+ */
+export function textOf(v: string): string {
+	if (v.startsWith('u:')) return v;
+	if (!v.startsWith('b:')) return v;
+	const hex = v.slice(2);
+	const bytes = new Uint8Array(hex.length >> 1);
+	for (let i = 0; i < bytes.length; i++) bytes[i] = Number.parseInt(hex.slice(2 * i, 2 * i + 2), 16);
+	if (bytes[0] === 0xfe && bytes[1] === 0xff) return `u:${new TextDecoder('utf-16be').decode(bytes.subarray(2))}`;
+	if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) return `u:${new TextDecoder('utf-8').decode(bytes.subarray(3))}`;
+	let t = '';
+	for (const b of bytes) t += String.fromCharCode(b);
+	return `u:${t}`;
+}
+
 function counts(lines: string[]): { elements: number; alt: number; actualText: number } {
 	let alt = 0;
 	let actualText = 0;
@@ -1222,7 +1298,14 @@ export async function verifyTags(qpdf: Qpdf, bytes: Uint8Array, expected: Expect
 	const canon = canonical(model, (i) => i);
 	if (canon.length !== expected.canon.length) return fail(`Expected ${expected.elements} structure elements, found ${canon.length - 1}.`);
 	for (let i = 0; i < canon.length; i++) {
-		if (canon[i] !== expected.canon[i]) return fail(`Structure element ${i + 1} differs from the original: ${canon[i].slice(0, 160)} (expected ${expected.canon[i].slice(0, 160)}).`);
+		if (canon[i] !== expected.canon[i]) {
+			const a = canon[i];
+			const b = expected.canon[i];
+			let at = 0;
+			while (at < a.length && a[at] === b[at]) at++;
+			const from = Math.max(0, at - 60);
+			return fail(`Structure element ${i + 1} differs from the original: …${a.slice(from, at + 100)} (expected …${b.slice(from, at + 100)}).`);
+		}
 	}
 	const c = counts(canon);
 	return {

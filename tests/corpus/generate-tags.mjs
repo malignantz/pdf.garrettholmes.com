@@ -28,6 +28,10 @@
  *                     elements for page 1 (and none for page 2): must export without tags.
  *   tags-xobject.pdf  1 page whose tagged paragraph sits inside a Form XObject (MCR with
  *                     /Stm, the form has /StructParents).
+ *   tags-scan.pdf     page 1 of ocr-scans.pdf (a typed letter scanned at 300 ppi), its whole
+ *                     content one Figure with /Alt: for OCR with tags kept.
+ *   tags-photo.pdf    page 1 of print-cap.pdf (a 500 ppi photo JPEG and a label), its whole
+ *                     content one Figure with /Alt: for the print-size cap and JPEG repack.
  *
  * Called from generate.mjs (one line), or on its own: node tests/corpus/generate-tags.mjs
  * (writes only these files and merges their manifest entries).
@@ -361,7 +365,50 @@ function xobject() {
 	return pdf.bytes(cat);
 }
 
-export default async function generateTagsCorpus(write) {
+/**
+ * `bytes` (one page) with its whole content as one tagged Figure: the page's content
+ * streams joined into one, wrapped in `/Figure << /MCID 0 >> BDC … EMC`, and a structure
+ * tree (Document → Figure with /Alt) added. Made with qpdf's JSON update.
+ */
+async function tagWholePage(bytes, alt) {
+	const json = async (extra) => JSON.parse(Buffer.from(await qpdfOut(['--json=2', '--json-key=qpdf', '--json-key=pages', ...extra, '/in.pdf', '/out.pdf'], { '/in.pdf': bytes })).toString());
+	const first = await json(['--json-stream-data=none']);
+	const page = first.pages[0];
+	const contents = page.contents;
+	const data = await json(['--json-stream-data=inline', '--decode-level=generalized', ...contents.map((c) => `--json-object=${c.replace(/ (\d+) R$/, ',$1')}`)]);
+	const joined = Buffer.concat(contents.flatMap((c) => [Buffer.from(data.qpdf[1][`obj:${c}`].stream.data, 'base64'), Buffer.from('\n')]));
+	const body = Buffer.concat([Buffer.from('/Figure << /MCID 0 >> BDC\n'), joined, Buffer.from('\nEMC\n')]);
+	const objs = first.qpdf[1];
+	const trailer = objs.trailer.value;
+	const catRef = trailer['/Root'];
+	let next = first.qpdf[0].maxobjectid + 1;
+	const ref = () => `${next++} 0 R`;
+	const [content, root, doc, fig, pt] = [ref(), ref(), ref(), ref(), ref()];
+	const pageDict = { ...objs[`obj:${page.object}`].value, '/Contents': content, '/StructParents': 0 };
+	const updates = {
+		[`obj:${content}`]: { stream: { dict: {}, data: body.toString('base64') } },
+		[`obj:${page.object}`]: { value: pageDict },
+		[`obj:${root}`]: { value: { '/Type': '/StructTreeRoot', '/K': doc, '/ParentTree': pt, '/ParentTreeNextKey': 1 } },
+		[`obj:${doc}`]: { value: { '/Type': '/StructElem', '/S': '/Document', '/P': root, '/K': [fig] } },
+		[`obj:${fig}`]: { value: { '/Type': '/StructElem', '/S': '/Figure', '/P': doc, '/Pg': page.object, '/K': 0, '/Alt': `u:${alt}` } },
+		[`obj:${pt}`]: { value: { '/Nums': [0, [fig]] } },
+		[`obj:${catRef}`]: { value: { ...objs[`obj:${catRef}`].value, '/StructTreeRoot': root, '/MarkInfo': { '/Marked': true }, '/Lang': 'u:en-US' } }
+	};
+	return qpdf(['/in.pdf', '--update-from-json=/u.json', '/out.pdf'], { '/in.pdf': bytes, '/u.json': Buffer.from(JSON.stringify({ qpdf: [first.qpdf[0], updates] })) });
+}
+
+async function qpdfOut(args, inputs) {
+	const out = args[args.length - 1];
+	const q = await createQpdf({ locateFile: () => wasmPath, noInitialRun: true, preRun: [(m) => m.FS.init(() => null, () => {}, () => {})] });
+	for (const [p, d] of Object.entries(inputs)) q.FS.writeFile(p, d);
+	const saved = process.exitCode;
+	const code = q.callMain([...args]);
+	process.exitCode = saved;
+	if (code !== 0 && code !== 3) throw new Error(`qpdf ${args.join(' ')} failed (${code})`);
+	return q.FS.readFile(out);
+}
+
+export default async function generateTagsCorpus(write, outDir = path.join(here, 'files')) {
 	const basicBytes = basic();
 	const counts = { elements: 16, alt: 2, actualText: 1 };
 	write('tags-basic.pdf', basicBytes, { pages: 3, label: 'tags', tagged: true, ...counts, lang: 'en-US' });
@@ -382,6 +429,22 @@ export default async function generateTagsCorpus(write) {
 	write('tags-second.pdf', second(), { pages: 2, label: 'tags', tagged: true, elements: 4, alt: 0, actualText: 1 });
 	write('tags-broken.pdf', basic({ broken: true }), { pages: 3, label: 'tags', tagged: true, expect: 'tags dropped: ParentTree names the wrong elements' });
 	write('tags-xobject.pdf', xobject(), { pages: 1, label: 'tags', tagged: true, elements: 3 });
+	// Pages made by the other generators (they run first), tagged here as one Figure each.
+	const one = async (file) => qpdf(['--empty', '--pages', '/in.pdf', '1', '--', '/out.pdf'], { '/in.pdf': fs.readFileSync(path.join(outDir, file)) });
+	write('tags-scan.pdf', await tagWholePage(await one('ocr-scans.pdf'), 'A scanned typed letter'), {
+		pages: 1,
+		label: 'tags',
+		tagged: true,
+		elements: 2,
+		note: 'ocr-scans.pdf page 1 (a readable typed letter, 300 ppi) as one tagged Figure: OCR makes it searchable'
+	});
+	write('tags-photo.pdf', await tagWholePage(await one('print-cap.pdf'), 'A test photo'), {
+		pages: 1,
+		label: 'tags',
+		tagged: true,
+		elements: 2,
+		note: 'print-cap.pdf page 1 (a 500 ppi photo JPEG) as one tagged Figure: the print-size cap and the JPEG repack change it'
+	});
 }
 
 // Standalone: write only these files and merge into manifest.json.

@@ -100,6 +100,8 @@ export interface EngineOptions {
 	ocrTrace?: (t: OcrTrace) => void;
 	/** Print-size cap rules other than the app's (print-cap.ts CAP_RULES), for measurement tools only. */
 	printCapRules?: Partial<CapRules>;
+	/** false: never keep accessibility tags (today's behaviour before tags.ts), for measurement tools only. */
+	keepTags?: boolean;
 }
 
 export interface LosslessPasses {
@@ -128,6 +130,7 @@ const MIN_PAGE = 3;
 const MAX_PAGE = 14400;
 
 export function createCoreEngine(assets: EngineAssets, options: EngineOptions = {}): Engine {
+	const options_ = options;
 	const qpdf = new Qpdf(assets.qpdf);
 	const font = new StampFont(assets.font);
 	const maxInput = options.maxInputBytes ?? 1024 ** 3;
@@ -524,7 +527,9 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		// Accessibility tags: whether this export can keep its source's structure tree (tags.ts).
 		const tagsPlan: TagsPlan = again
 			? { kind: 'drop', reason: again.noTags }
-			: await planTags(qpdf, pages, byId, used, { redaction: hasRedaction, flatten: options.flattenForms });
+			: options_.keepTags === false
+				? { kind: 'none' }
+				: await planTags(qpdf, pages, byId, used, { redaction: hasRedaction, flatten: options.flattenForms });
 
 		// (a) Assemble.
 		let bytes = await assemble(qpdf, { pages, used, fileOf, run: (r, output) => runOrFail(r, output, warnings) });

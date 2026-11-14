@@ -2657,5 +2657,19 @@
 		"label": "tags",
 		"tagged": true,
 		"elements": 3
+	},
+	"tags-scan.pdf": {
+		"pages": 1,
+		"label": "tags",
+		"tagged": true,
+		"elements": 2,
+		"note": "ocr-scans.pdf page 1 (a readable typed letter, 300 ppi) as one tagged Figure: OCR makes it searchable"
+	},
+	"tags-photo.pdf": {
+		"pages": 1,
+		"label": "tags",
+		"tagged": true,
+		"elements": 2,
+		"note": "print-cap.pdf page 1 (a 500 ppi photo JPEG) as one tagged Figure: the print-size cap and the JPEG repack change it"
 	}
 }
