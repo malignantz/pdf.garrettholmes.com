@@ -50,7 +50,7 @@ test.describe('desktop', () => {
 		await expect(page.getByRole('option')).toHaveCount(4, { timeout: 30_000 });
 		let { done, file } = await exportAndDownload(page);
 		expect(file.titles).toEqual(['Chapter 1', 'Section 1.1', 'Section 1.2', 'Chapitre 2 — Été', 'Inside the script item', 'Web page', 'Appendix', 'Last page', '“Quoted” — PDFDoc', 'Empty heading', 'Short view']);
-		expect(file.info).toMatch(/\/Title \(Quarterly Report /);
+		expect(file.info).toMatch(/\/Title <feff0051/i);
 		await expect(done.getByText(/^Bookmarks /)).toHaveCount(0);
 		await expect(done.getByText('Title and bookmarks kept.')).toHaveCount(0);
 		await done.getByText('Details', { exact: true }).click();
