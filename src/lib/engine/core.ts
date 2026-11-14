@@ -71,6 +71,7 @@ import { graftTags, planTags, verifyTags, type GraftResult, type TagsPlan } from
 import { verifyWatermark, watermarkJob } from './watermark';
 import { applyCrops, croppedSize, validateCrop, verifyCrops } from './crop';
 import { graftOutline, outlineWork, planOutline, verifyOutline, type OutlineFailure, type OutlineGraft } from './outline';
+import { checkIsClean, finalCheck } from './final-check';
 
 export interface EngineAssets {
 	qpdf: QpdfLoader;
@@ -107,6 +108,8 @@ export interface EngineOptions {
 	keepTags?: boolean;
 	/** false: never keep the title, bookmarks and named destinations (before outline.ts), for measurement tools only. */
 	keepOutline?: boolean;
+	/** true: the export's final structure check always runs as a plain `qpdf --check` (final-check.ts), never the fast way. */
+	fullCheck?: boolean;
 }
 
 export interface LosslessPasses {
@@ -1032,17 +1035,12 @@ export function createCoreEngine(assets: EngineAssets, options: EngineOptions = 
 		progress?: (done: number, total: number) => void
 	): Promise<VerifyCheck[]> {
 		const checks: VerifyCheck[] = [];
-		const pw = password !== undefined ? [`--password=${password}`] : [];
 		const lib = await pdfjs();
 
-		// Structure and page count from qpdf.
-		progress?.(0, bytes.length);
-		const res = await qpdf.run({
-			args: [...pw, '--check', '--show-npages', '/v.pdf'],
-			inputs: { '/v.pdf': bytes },
-			readProgress: progress && { path: '/v.pdf', report: progress }
-		});
-		let clean = res.code === QPDF_OK && /No syntax or stream encoding errors found/.test(res.stdout);
+		// Structure and page count from qpdf (final-check.ts: the fast check, else the full one).
+		const res = await finalCheck(qpdf, bytes, { password, npages: true, progress, full: options_.fullCheck === true });
+		debug(`final-check: ${res.mode}, ${Object.entries(res.ms).map(([k, v]) => `${k} ${v} ms`).join(', ')}`);
+		let clean = checkIsClean(res);
 		let detail = clean
 			? 'qpdf --check found no syntax or stream errors.'
 			: `qpdf --check reported problems (exit ${res.code}): ${firstLines(res.stderr || res.stdout)}`;

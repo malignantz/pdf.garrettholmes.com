@@ -60,6 +60,13 @@ export interface QpdfRunOptions {
 	readProgress?: { path: string; report: (read: number, total: number) => void; everyMs?: number };
 	/** Also return stdout as bytes (`QpdfResult.stdoutLatin1`: one character per byte), for output that is not UTF-8 (`--show-object` of a string). */
 	latin1Stdout?: boolean;
+	/**
+	 * A command line run first, in the same instance, for settings qpdf keeps process-wide
+	 * (final-check.ts: the Flate compression level, which `--check` itself does not take).
+	 * Its output is discarded. If it does not exit 0 the main command is not run, and the
+	 * result has `code` -1 and `prelude` set to the prelude's exit code.
+	 */
+	prelude?: string[];
 }
 
 export interface QpdfResult {
@@ -69,6 +76,8 @@ export interface QpdfResult {
 	files: Map<string, Uint8Array>;
 	/** With `latin1Stdout`: stdout, one character per byte. */
 	stdoutLatin1?: string;
+	/** Exit code of `QpdfRunOptions.prelude`, when one was given. */
+	prelude?: number;
 }
 
 export interface QpdfLoader {
@@ -127,7 +136,7 @@ export class Qpdf {
 		return next;
 	}
 
-	async #runNow({ args, inputs = {}, outputs = [], outputDirs = [], readProgress, latin1Stdout }: QpdfRunOptions): Promise<QpdfResult> {
+	async #runNow({ args, inputs = {}, outputs = [], outputDirs = [], readProgress, latin1Stdout, prelude }: QpdfRunOptions): Promise<QpdfResult> {
 		const [module, factory] = await Promise.all([this.#getModule(), this.#getFactory()]);
 		const out: number[] = [];
 		const err: number[] = [];
@@ -167,7 +176,19 @@ export class Qpdf {
 			const watched = readProgress && inputs[readProgress.path];
 			if (readProgress && watched) watchReads(qpdf.FS, readProgress.path, watched.length, readProgress.report, readProgress.everyMs ?? READ_EVERY_MS);
 			let code: number;
+			let preludeCode: number | undefined;
 			try {
+				if (prelude) {
+					try {
+						preludeCode = qpdf.callMain([...prelude]);
+					} catch (e) {
+						if (isOutOfMemory(e)) throw e;
+						preludeCode = -1;
+					}
+					out.length = 0;
+					err.length = 0;
+					if (preludeCode !== 0) return { code: -1, stdout: '', stderr: '', files: new Map(), prelude: preludeCode };
+				}
 				code = qpdf.callMain([...args]);
 			} catch (e) {
 				if (isOutOfMemory(e)) {
@@ -200,7 +221,7 @@ export class Qpdf {
 					}
 				}
 			}
-			const res: QpdfResult = { code, stdout: decode(out), stderr: decode(err), files };
+			const res: QpdfResult = { code, stdout: decode(out), stderr: decode(err), files, ...(prelude ? { prelude: preludeCode } : {}) };
 			if (latin1Stdout) res.stdoutLatin1 = latin1(out);
 			return res;
 		} finally {
