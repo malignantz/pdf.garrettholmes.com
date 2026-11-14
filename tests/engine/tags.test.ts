@@ -195,6 +195,23 @@ describe('tags: one tagged file, all its pages (tier 1)', () => {
 		expect(altsOf(t)).toEqual(['Your name', 'Your city', 'Subscribe to the letter']);
 	}, T);
 
+	it('a tagged form, filled, stamped, numbered, compressed and with a password, all at once', async () => {
+		const src = await openCorpus('tags-form.pdf');
+		const pw = 'pw';
+		const res = await engine().exportPlan(
+			{
+				pages: all(src, () => [{ id: 't', kind: 'text', text: 'Signed today', x: 0.5, y: 0.5, size: 0.02, color: 'blue' }]),
+				options: { ...defaultOptions, compress: true, password: pw, numbering: { style: 'page-n', position: 'bottom-right', start: 1, skip: 0, size: 10 } },
+				formValues: { [src.id]: { name: 'Ada', subscribe: true } }
+			},
+			[src],
+			[]
+		);
+		for (const c of res.checks) expect(c.ok, `${c.name}: ${c.detail}`).toBe(true);
+		keptCheck(res);
+		await sameTrees(src, res, [0], pw);
+	}, T);
+
 	it('with "Keep filled blanks editable" (the new fields are outside the tree, the tree is whole)', async () => {
 		const src = await openCorpus('tags-basic.pdf');
 		const blank = { x: 0.1, y: 0.5, w: 0.4, h: 0.03 };
