@@ -789,7 +789,8 @@ function readRun(r: BitReader, black: boolean): number {
 }
 
 /**
- * Decodes CCITT Group 4 (as encodeG4 writes it: /K -1, BlackIs1 false, no byte alignment)
+ * Decodes CCITT Group 4 (as encodeG4 writes it: /K -1, BlackIs1 false, no byte alignment,
+ * ending with the end-of-block)
  * to packed 1-bit rows (1 = white, padding bits 0). Written independently of MuPDF's
  * decoder so the export check can read every converted picture twice. Throws on any data
  * that does not decode to exactly `h` rows of `w` pixels.
@@ -855,6 +856,9 @@ export function decodeG4(data: Uint8Array, w: number, h: number): Uint8Array {
 		[ref, cur] = [cur, ref];
 		nref = ncur;
 	}
+	// encodeG4 always ends with the end-of-block (two EOLs): data of another size or shape
+	// rarely lines up with it, so a picture read with the wrong width fails here.
+	if (r.code(MODES) !== MODE_EOL || r.code(MODES) !== MODE_EOL) throw new Error('G4: no end of block after the last row');
 	return out;
 }
 

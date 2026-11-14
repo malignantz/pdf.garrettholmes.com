@@ -13,6 +13,8 @@ import {
 	BILEVEL_RULES,
 	analyse,
 	binarize,
+	bitsDigest,
+	decodeG4,
 	encodeG4,
 	flateRows,
 	makeBilevel,
@@ -112,6 +114,8 @@ async function roundTrip(bits: Uint8Array, w: number, h: number) {
 	const mu = await mupdfBits(pdf);
 	expect(mu.length).toBe(rowBytesOf(w) * h);
 	expect(sameBits(mu, bits, w, h)).toBe(true);
+	// The export check's own reader agrees, digest for digest.
+	expect(await bitsDigest(decodeG4(g4, w, h), w, h)).toBe(await bitsDigest(mu, w, h));
 	for (const wasm of [true, false]) {
 		const js = await pdfjsBits(pdf, wasm);
 		expect([js.kind, js.width, js.height]).toEqual([1, w, h]);
@@ -146,6 +150,26 @@ describe('CCITT G4 encoder', () => {
 		const w2 = 400;
 		const bits2 = bitsOf(w2, 131, (x, y) => x >= y && x < 2 * y + 3);
 		await roundTrip(bits2, w2, 131);
+	});
+
+	it('its own reader refuses damaged or short data instead of guessing', async () => {
+		const w = 300;
+		const h = 40;
+		const bits = bitsOf(w, h, (x, y) => (x + y) % 17 < 4);
+		const g4 = encodeG4(bits, w, h);
+		expect(() => decodeG4(g4.slice(0, g4.length >> 1), w, h)).toThrow();
+		expect(() => decodeG4(g4, w, h + 5)).toThrow();
+		expect(() => decodeG4(new Uint8Array([0, 0, 0, 0]), w, h)).toThrow();
+		// G4 codes line ends relative to the line, so other widths can decode cleanly: the
+		// export check compares digests, which then differ.
+		const wide = (() => {
+			try {
+				return decodeG4(g4, w + 8, h);
+			} catch {
+				return null;
+			}
+		})();
+		if (wide) expect(await bitsDigest(wide, w + 8, h)).not.toBe(await bitsDigest(bits, w, h));
 	});
 
 	it('is smaller than the packed bits for text-like pictures', () => {
